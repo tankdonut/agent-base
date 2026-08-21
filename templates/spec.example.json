@@ -1,0 +1,85 @@
+{
+  "specVersion": 1,
+  "agent": {
+    "name": "example-agent"
+  },
+  "setup": {
+    "auth_choice": "zai-coding-global"
+  },
+  "model": {
+    "fallback": "zai/glm-4.7"
+  },
+  "config": [
+    {
+      "path": "updateNotifier.enabled",
+      "value": false
+    },
+    {
+      "path": "permissions.additionalDirectories",
+      "value": ["{data}/workspace", "{data}/skills"]
+    },
+    {
+      "path": "telegram.botToken",
+      "value": "{env:TELEGRAM_BOT_TOKEN}",
+      "strict": true
+    },
+    {
+      "path": "gateway.token",
+      "value": "{env:OPENCLAW_GATEWAY_TOKEN}",
+      "if_env": ["OPENCLAW_GATEWAY_TOKEN"]
+    },
+    {
+      "path": "approvals.plugin.mode",
+      "value": "targets",
+      "strict": true
+    }
+  ],
+  "channels": [
+    {
+      "type": "telegram"
+    }
+  ],
+  "mcp_servers": [
+    {
+      "name": "filesystem",
+      "command": "{data}/bin/filesystem-mcp",
+      "args": ["--root", "{data}/workspace"],
+      "env": {
+        "LOG_LEVEL": "debug"
+      }
+    },
+    {
+      "name": "ac-infinity",
+      "command": "ac-infinity-mcp",
+      "env": {
+        "AC_INFINITY_EMAIL": "{env:AC_INFINITY_EMAIL}",
+        "AC_INFINITY_PASSWORD": "{env:AC_INFINITY_PASSWORD}"
+      },
+      "no_probe": false,
+      "timeout": 30
+    },
+    {
+      "name": "sentiment",
+      "url": "https://mcp.example.com/sentiment",
+      "headers": {
+        "Authorization": "Bearer {env:SENTIMENT_API_KEY}"
+      },
+      "if_env": ["SENTIMENT_API_KEY"]
+    }
+  ],
+  "plugins": [
+    {
+      "name": "approvals"
+    },
+    {
+      "name": "internal-tools",
+      "source": "/opt/agent/plugins/internal-tools"
+    }
+  ],
+  "features": {
+    "gh_auth": true
+  },
+  "automations": {
+    "model": "zai/glm-4.7"
+  }
+}
