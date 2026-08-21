@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    # v-less date tags (YYYY.MM.DD) — tag name is AGENT_BASE_VERSION verbatim,
+    # matching the pinned-image convention in docs/standard-agent.md.
+    tags: ["20*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Run pre-commit checks
+        uses: tankdonut/github-actions/actions/pre-commit@v1
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # 3.11 = image floor (bookworm); 3.14 = host-current syntax-drift guard.
+        python-version: ["3.11", "3.14"]
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python + uv
+        uses: tankdonut/github-actions/actions/setup-python-uv@v1
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Run container test suites
+        run: python3 -m unittest discover -s container -v
+
+  image:
+    needs: [lint, test]
+    uses: tankdonut/github-actions/.github/workflows/build-and-publish-image.yaml@main
+    with:
+      image-name: agent-base
+      build-command: ./make.sh build
+      # Publish only from tag pushes; branch pushes, PRs, and dispatch are
+      # build-only. make.sh push refuses to run without AGENT_BASE_VERSION,
+      # which extra-env supplies on tag pushes (tag == version).
+      push-command: ${{ startsWith(github.ref, 'refs/tags/') && './make.sh push' || '' }}
+      extra-env: ${{ startsWith(github.ref, 'refs/tags/') && format('{"AGENT_BASE_VERSION":"{0}"}', github.ref_name) || '{}' }}
+      # make.sh auto-detects podman then docker; GH runners ship docker only.
+      install-podman: false
+      login-runtime: docker
+      setup-python: false
