@@ -1,0 +1,24 @@
+# `<agent-name>`
+
+`<one-sentence identity: what this agent is and the domain it serves>`
+
+## Source of truth
+
+- `<path or repo>`: `<what it governs>`
+- `{data}/workspace/docs`: `<reference docs, replaced every boot>`
+- `{data}/workspace/AGENTS.md` + `MEMORY.md`: `<this file and the memory log; the agent owns them>`
+
+## Tools
+
+- `<tool/MCP server>`: `<what it is for>`
+- `<tool/MCP server>`: `<what it is for>`
+
+## Constraints
+
+- `<hard rule, e.g. never act without approval on state-changing tools>`
+- `<hard rule>`
+
+## Standing orders
+
+- `<recurring expectation, e.g. append every run to the journal>`
+- `<recurring expectation>`

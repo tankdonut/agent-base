@@ -1,0 +1,47 @@
+# agent service snippet: paste into your project's compose.yml.
+#
+# Expects a thin project Dockerfile at the repo root (see
+# docs/standard-agent.md Quick start): FROM ghcr.io/tankdonut/agent-base:<date-tag>
+# plus COPY lines for spec.json, seed content, and automations.
+# Pair with compose.dev.agent.yml as the dev overlay:
+#   podman compose -f compose.yml -f compose.dev.agent.yml up -d agent
+#
+# Register the named volume next to your other volumes:
+#   volumes:
+#     <project>-agent-data:
+
+services:
+  agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    # Rootless-Podman + named volumes: each `podman compose up` assigns a
+    # fresh SELinux MCS category pair, so files written by a prior run get
+    # PermissionError under MCS enforcement. Disabling label confinement
+    # sidesteps the stale-category mismatch (rootless Podman, SELinux
+    # disabled on host).
+    security_opt:
+      - label=disable
+    env_file:
+      - .env
+    volumes:
+      - <project>-agent-data:/home/node/.openclaw
+    # Bind the gateway to localhost only; put a reverse proxy in front for
+    # remote access. AGENT_GATEWAY_PORT is host-side compose interpolation
+    # (templates/env.example section 4), never enters the container.
+    ports:
+      - "127.0.0.1:${AGENT_GATEWAY_PORT:-18789}:18789"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:18789/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    # Uncomment when the agent talks to a compose-internal service:
+    # depends_on:
+    #   mcp:
+    #     condition: service_healthy
+
+# volumes:
+#   <project>-agent-data:

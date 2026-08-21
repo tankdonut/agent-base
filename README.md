@@ -6,8 +6,10 @@ thin Dockerfile + a declarative `spec.json`; all boot logic lives here.
 
 ## Status
 
-Scaffold. See `docs/standard-agent.md` (landing) for the contract once T4
-completes.
+Active. The full agent-base contract (spec schema, env vars, seed
+lifecycle, boot sequence, extension checklist) lives in
+[`docs/standard-agent.md`](docs/standard-agent.md). Migration guides for
+Freya and Mimir land there as those projects move onto the image.
 
 ## Layout
 

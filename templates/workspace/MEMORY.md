@@ -1,0 +1,13 @@
+# MEMORY: `<agent-name>`
+
+Append-only log of what changed and why. Newest entry first; never rewrite
+history; correct mistakes with a new entry that names the old one.
+
+Format per entry:
+
+```text
+## YYYY-MM-DD: <short title>
+- What: <what the agent did or learned>
+- Why: <the reason or trigger>
+- Next: <follow-up, or "none">
+```

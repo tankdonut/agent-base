@@ -1,0 +1,21 @@
+# agent dev overlay, applied on top of compose.yml:
+#   podman compose -f compose.yml -f compose.dev.agent.yml up -d agent
+#
+# Hot-reload contract: AGENT_SKIP_SEED=1 disables content seeding (the bind
+# mounts below ARE the seed; config/MCP/plugin reconciliation still runs),
+# and the mounts shadow the image-baked copies under /opt/seed/ so edits to
+# workspace/, skills/, and docs/ reach the next session without a rebuild.
+# Automations are NEVER bind-mounted: writable cron prompt files would be a
+# self-modification surface for the agent, so rebuild the image instead.
+services:
+  agent:
+    # Podman: map container UID to host user so bind-mount reads/writes
+    # stay host-owned.
+    userns_mode: keep-id
+    environment:
+      - AGENT_SKIP_SEED=1
+    volumes:
+      - ./workspace:/opt/seed/workspace:z
+      - ./skills:/opt/seed/skills:z
+      - ./docs:/opt/seed/docs:z
+    restart: ""
