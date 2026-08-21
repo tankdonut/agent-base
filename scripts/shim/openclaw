@@ -1,0 +1,64 @@
+#!/bin/sh
+# Fake `openclaw` CLI for image smoke tests (driven by scripts/smoke.sh).
+#
+# Records every invocation — cwd plus each arg, single-quoted, space-joined,
+# one line per call — to $OPENCLAW_SHIM_LOG, and emulates just enough of the
+# real CLI to push container/entrypoint.py through a full boot:
+#   - list-style commands return empty JSON (so every add path fires)
+#   - `health` succeeds immediately (wait_for_gateway returns at once)
+#   - `memory status --json` reports a CLEAN index (files=0, not dirty,
+#     identity valid) — the entrypoint then takes the clean fast path and
+#     skips `memory index`, which smoke.sh asserts
+#   - `doctor`/`doctor --lint` reports no findings
+#   - everything else (setup, models, channels, plugins install, mcp add,
+#     config set, config validate, cron add/edit) exits 0
+#
+# Args are logged verbatim, values included (resolved MCP env/headers are
+# the interesting part) — the log is a throwaway local test artifact.
+set -u
+
+log_file=${OPENCLAW_SHIM_LOG:-/tmp/openclaw-shim.log}
+
+line="cwd=$PWD"
+for arg in "$@"; do
+  # shellcheck disable=SC2001  # escape embedded single quotes for the log
+  quoted=$(printf '%s' "$arg" | sed "s/'/'\\\\''/g")
+  line="$line '$quoted'"
+done
+printf '%s\n' "$line" >>"$log_file"
+
+cmd=${1:-}
+[ "$#" -gt 0 ] && shift
+sub=${1:-}
+opt=${2:-}
+
+case $cmd in
+  health)
+    exit 0
+    ;;
+  mcp)
+    if [ "$sub $opt" = "list --json" ]; then
+      printf '%s\n' '{"servers":[]}'
+    fi
+    ;;
+  plugins)
+    if [ "$sub $opt" = "list --json" ]; then
+      printf '%s\n' '{"plugins":[]}'
+    fi
+    ;;
+  cron)
+    if [ "$sub $opt" = "list --json" ]; then
+      printf '%s\n' '{"jobs":[]}'
+    fi
+    ;;
+  memory)
+    if [ "$sub" = "status" ]; then
+      printf '%s\n' '[{"status":{"files":0,"dirty":false,"custom":{"indexIdentity":{"status":"valid"}}}}]'
+    fi
+    ;;
+  doctor)
+    printf '%s\n' '{"findings":[]}'
+    ;;
+esac
+
+exit 0

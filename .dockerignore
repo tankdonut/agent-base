@@ -1,0 +1,23 @@
+# Build context is the repo root (podman build -f container/Dockerfile .);
+# the image only needs container/{entrypoint,seed_automations,spec}.py.
+# container/test_*.py are host-side suites — excluded to keep the context
+# (and accidental COPY globs) clean.
+.git
+.omo
+.codegraph
+.ruff_cache
+**/__pycache__
+*.pyc
+**/*.pyc
+.ruff.toml
+.markdownlint-cli2.yaml
+.pre-commit-config.yaml
+.gitignore
+.dockerignore
+docs
+README.md
+AGENTS.md
+scripts
+fixtures
+templates
+container/test_*.py
