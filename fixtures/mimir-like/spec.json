@@ -1,0 +1,67 @@
+{
+  "specVersion": 1,
+  "agent": {
+    "name": "mimir-like"
+  },
+  "setup": {
+    "auth_choice": "zai-coding-global"
+  },
+  "model": {
+    "fallback": "zai/glm-4.7"
+  },
+  "config": [
+    {
+      "path": "channels.telegram.dmPolicy",
+      "value": "allowlist"
+    },
+    {
+      "path": "agents.defaults.heartbeat.to",
+      "value": "{env:TELEGRAM_CHAT_ID}",
+      "strict": true,
+      "if_env": ["TELEGRAM_CHAT_ID"]
+    }
+  ],
+  "channels": [
+    {
+      "type": "telegram"
+    }
+  ],
+  "mcp_servers": [
+    {
+      "name": "trade-agent",
+      "url": "http://mcp:9090"
+    },
+    {
+      "name": "defillama",
+      "url": "https://mcp.defillama.com/mcp"
+    },
+    {
+      "name": "tradingview",
+      "command": "npx",
+      "args": ["-y", "tradingview-mcp-server"]
+    },
+    {
+      "name": "alpha-vantage",
+      "url": "https://mcp.alphavantage.co/mcp?apikey={env:ALPHAVANTAGE_API_KEY}"
+    },
+    {
+      "name": "lunarcrush",
+      "url": "https://lunarcrush.ai/mcp",
+      "headers": {
+        "Authorization": "Bearer {env:LUNARCRUSH_API_KEY}"
+      }
+    },
+    {
+      "name": "postgres",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-postgres", "{env:DATABASE_URL}"]
+    }
+  ],
+  "plugins": [],
+  "features": {
+    "gh_auth": false
+  },
+  "automations": {
+    "model": "zai/glm-5.2"
+  }
+}

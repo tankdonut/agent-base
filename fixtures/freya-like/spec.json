@@ -1,0 +1,92 @@
+{
+  "specVersion": 1,
+  "agent": {
+    "name": "freya-like"
+  },
+  "setup": {
+    "auth_choice": "zai-coding-global"
+  },
+  "model": {
+    "fallback": "zai/glm-4.7"
+  },
+  "config": [
+    {
+      "path": "channels.telegram.dmPolicy",
+      "value": "allowlist"
+    },
+    {
+      "path": "channels.telegram.allowFrom",
+      "value": "{env:TELEGRAM_ALLOWED_USERS}",
+      "split_csv": true,
+      "if_env": ["TELEGRAM_ALLOWED_USERS"]
+    },
+    {
+      "path": "agents.defaults.heartbeat.target",
+      "value": "telegram",
+      "if_env": ["TELEGRAM_CHAT_ID"]
+    },
+    {
+      "path": "agents.defaults.heartbeat.to",
+      "value": "{env:TELEGRAM_CHAT_ID}",
+      "strict": true,
+      "if_env": ["TELEGRAM_CHAT_ID"]
+    },
+    {
+      "path": "agents.defaults.heartbeat.directPolicy",
+      "value": "allow",
+      "strict": true,
+      "if_env": ["TELEGRAM_CHAT_ID"]
+    },
+    {
+      "path": "approvals.plugin.enabled",
+      "value": true
+    },
+    {
+      "path": "plugins.entries.grow-approval-gate.config.gatedTools",
+      "value": ["set_port_mode", "set_stage_thresholds", "calibrate_sensor"]
+    },
+    {
+      "path": "plugins.entries.grow-approval-gate.config.agentName",
+      "value": "Freya",
+      "strict": true
+    }
+  ],
+  "channels": [
+    {
+      "type": "telegram"
+    }
+  ],
+  "mcp_servers": [
+    {
+      "name": "ac-infinity",
+      "command": "ac-infinity-mcp",
+      "env": {
+        "AC_INFINITY_EMAIL": "{env:AC_INFINITY_EMAIL}",
+        "AC_INFINITY_PASSWORD": "{env:AC_INFINITY_PASSWORD}"
+      },
+      "timeout": 60
+    },
+    {
+      "name": "grow-docs",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "{data}/workspace/docs",
+        "{data}/workspace/journal"
+      ]
+    }
+  ],
+  "plugins": [
+    {
+      "name": "grow-approval-gate",
+      "source": "/opt/seed/plugins/grow-approval-gate"
+    }
+  ],
+  "features": {
+    "gh_auth": true
+  },
+  "automations": {
+    "model": "zai/glm-4.7"
+  }
+}

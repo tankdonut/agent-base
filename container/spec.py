@@ -78,6 +78,11 @@ class ConfigEntry:
       cli_value over as the value argument and appends --strict-json iff
       use_strict_json (strict=true always means JSON, as does any non-str
       value; a plain non-strict str is passed through unquoted).
+    - split_csv=true requires the resolved value to be a string; it is split
+      on commas (items stripped, empties dropped) and cli_value becomes the
+      strict-JSON list of items. An empty result is a SpecError naming the
+      referenced env var(s) — a configured CSV that yields nothing is a
+      misconfiguration.
     """
 
     path: str
@@ -86,6 +91,7 @@ class ConfigEntry:
     cli_value: str
     use_strict_json: bool
     if_env: tuple[str, ...] = ()
+    split_csv: bool = False
 
     def env_guard_satisfied(self, env: Mapping[str, str]) -> bool:
         """True iff every name in if_env is present in env; empty guard always passes."""
@@ -325,7 +331,7 @@ _TOP_LEVEL_KEYS = frozenset(
 _AGENT_KEYS = frozenset({"name"})
 _SETUP_KEYS = frozenset({"auth_choice"})
 _MODEL_KEYS = frozenset({"fallback"})
-_CONFIG_ENTRY_KEYS = frozenset({"path", "value", "strict", "if_env"})
+_CONFIG_ENTRY_KEYS = frozenset({"path", "value", "strict", "if_env", "split_csv"})
 _CHANNEL_KEYS = frozenset({"type", "use_env"})
 _MCP_ENTRY_KEYS = frozenset(
     {"name", "command", "url", "args", "env", "headers", "no_probe", "timeout", "if_env"}
@@ -346,17 +352,38 @@ def _parse_config_entries(
         path = _expect_str(_require_key(node, "path", base), _join(base, "path"))
         raw_value: JSONValue = _require_key(node, "value", base)
         strict = _expect_bool(node.get("strict", False), _join(base, "strict"))
+        split_csv = _expect_bool(node.get("split_csv", False), _join(base, "split_csv"))
         if_env = tuple(_expect_str_list(node.get("if_env", []), _join(base, "if_env")))
         resolved = _resolve_value(raw_value, env, _join(base, "value"))
-        use_strict = strict or not isinstance(resolved, str)
+        if split_csv:
+            if not isinstance(resolved, str):
+                _fail(
+                    _join(base, "value"),
+                    "split_csv requires the resolved value to be a string",
+                )
+            items = [item.strip() for item in resolved.split(",") if item.strip()]
+            if not items:
+                names = [
+                    token[len(_ENV_PREFIX) :]
+                    for token in _TOKEN_RE.findall(raw_value)
+                    if token.startswith(_ENV_PREFIX)
+                ]
+                hint = f" (environment variable {', '.join(names)})" if names else ""
+                _fail(_join(base, "value"), f"split_csv produced no non-empty items{hint}")
+            cli_value = json.dumps(items)
+            use_strict = True
+        else:
+            use_strict = strict or not isinstance(resolved, str)
+            cli_value = json.dumps(resolved) if use_strict else str(resolved)
         entries.append(
             ConfigEntry(
                 path=path,
                 raw_value=raw_value,
                 resolved_value=resolved,
-                cli_value=json.dumps(resolved) if use_strict else resolved,
+                cli_value=cli_value,
                 use_strict_json=use_strict,
                 if_env=if_env,
+                split_csv=split_csv,
             )
         )
     return entries

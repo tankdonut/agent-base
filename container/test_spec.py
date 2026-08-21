@@ -347,6 +347,65 @@ class ConfigMarshalling(SpecTestCase):
         entry = spec.config_entries[0]
         self.assertFalse(entry.use_strict_json)
         self.assertEqual((), entry.if_env)
+        self.assertFalse(entry.split_csv)
+
+
+class SplitCsvConfig(SpecTestCase):
+    CSV_ENV: Mapping[str, str] = {"CSV_LIST": " 111 , 222 ,, 333 "}
+
+    def test_split_csv_strips_items_and_drops_empties(self) -> None:
+        spec = self.load(self.config_spec("{env:CSV_LIST}", split_csv=True), env=self.CSV_ENV)
+        entry = spec.config_entries[0]
+        self.assertEqual('["111", "222", "333"]', entry.cli_value)
+        self.assertTrue(entry.use_strict_json)
+        self.assertTrue(entry.split_csv)
+        # resolved_value keeps the substituted string; only cli_value is the list.
+        self.assertEqual(" 111 , 222 ,, 333 ", entry.resolved_value)
+
+    def test_split_csv_without_env_splits_literal_string(self) -> None:
+        spec = self.load(self.config_spec("x, y", split_csv=True))
+        entry = spec.config_entries[0]
+        self.assertEqual('["x", "y"]', entry.cli_value)
+        self.assertTrue(entry.use_strict_json)
+
+    def test_split_csv_single_item_has_no_comma(self) -> None:
+        spec = self.load(self.config_spec("solo", split_csv=True))
+        self.assertEqual('["solo"]', spec.config_entries[0].cli_value)
+
+    def test_split_csv_empty_result_fails_closed_naming_env_var(self) -> None:
+        message = self.load_expect_error(
+            self.config_spec("{env:CSV_LIST}", split_csv=True),
+            env={"CSV_LIST": " , , "},
+            containing="config[0].value",
+        )
+        self.assertIn("CSV_LIST", message)
+
+    def test_split_csv_empty_literal_result_fails_closed_too(self) -> None:
+        # No env var to name — the error must still fire, naming the path.
+        self.load_expect_error(
+            self.config_spec(" , ", split_csv=True), containing="config[0].value"
+        )
+
+    def test_split_csv_non_string_resolved_value_is_rejected(self) -> None:
+        for bad in (["a,b"], {"k": "v"}, True, 3, None):
+            with self.subTest(bad=bad):
+                self.load_expect_error(
+                    self.config_spec(bad, split_csv=True),
+                    containing="config[0].value",
+                )
+
+    def test_split_csv_must_be_a_boolean(self) -> None:
+        for bad in ("yes", 1, None):
+            with self.subTest(bad=bad):
+                self.load_expect_error(
+                    self.config_spec("a,b", split_csv=bad),
+                    containing="config[0].split_csv",
+                )
+
+    def test_split_csv_applies_to_data_tokens(self) -> None:
+        spec = self.load(self.config_spec("{data}/a, {data}/b", split_csv=True))
+        home = str(Path.home() / ".openclaw")
+        self.assertEqual(json.dumps([f"{home}/a", f"{home}/b"]), spec.config_entries[0].cli_value)
 
 
 class IfEnvGuards(SpecTestCase):
