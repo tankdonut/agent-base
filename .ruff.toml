@@ -1,0 +1,9 @@
+# ruff config — container/ is stdlib-only Python with a 3.11 floor
+line-length = 100
+target-version = "py311"
+
+[lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+
+[lint.isort]
+known-first-party = ["spec", "seed_automations", "entrypoint"]

@@ -1,0 +1,9 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# oh-my-openagent working state
+.omo/
+
+# local tooling
+.venv/
