@@ -350,13 +350,501 @@ catches schema, templating, and automation errors in seconds.
 
 ## Migrations
 
+Each guide below is the exact cutover for that project onto
+`ghcr.io/tankdonut/agent-base:2026.08.21`. Both keep their existing named
+volumes: the base swap changes the image and entrypoint only, never volume
+data.
+
 ### Freya (grow-agent)
 
-Landing in a follow-up commit.
+#### 1. What changes
+
+| File | Action | Notes |
+| --- | --- | --- |
+| `freya/Dockerfile` | replace | Thin FROM + COPYs (below); no ENTRYPOINT, the base carries tini and the entrypoint chain. |
+| `freya/spec.json` | create | Declarative boot contract (below). |
+| `freya/scripts/automations/` | rename to `freya/automations/` | Base contract location; content unchanged (six jobs, `topic-env` headers stay). |
+| `freya/scripts/freya_entrypoint.py` | delete | Boot logic lives in the base entrypoint. |
+| `freya/scripts/seed_automations.py` | delete | The base ships `seed_automations.py`. |
+| `freya/scripts/test_freya_entrypoint.py`, `freya/scripts/test_seed_automations.py` | delete | The boot pipeline's suite lives in this repo (`container/`). |
+| `freya/skills/persist-state/SKILL.md`, `freya/skills/persist-state/scripts/persist-state.sh` | edit | Rename `FREYA_GIT_TOKEN` to `AGENT_GIT_TOKEN` (env read + error text). |
+| `freya/.env.example` | edit | Renames per the table below. |
+| `compose.yml` | edit | Port interpolation rename only. |
+| `compose.dev.yml` | edit | `AGENT_SKIP_SEED=1` plus `/opt/seed/*` mounts. |
+| `make.sh` | edit | New `REQUIRED_VARS` (below). |
+
+#### 2. Thin Dockerfile
+
+The base image already has python3 (no pip), tini, the entrypoint chain, and
+the `node` user. Freya adds the `ac-infinity-mcp` console script, `gh`, the
+approvals plugin, and its content. Build context stays the repo root:
+
+```dockerfile
+FROM ghcr.io/tankdonut/agent-base:2026.08.21
+
+# hadolint ignore=DL3002
+USER root
+
+# ac-infinity-mcp console script on PATH (base ships python3 but no pip).
+# hadolint ignore=DL3008
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends python3-pip \
+    && rm -rf /var/lib/apt/lists/*
+COPY tools/ac-infinity-mcp /tmp/ac-infinity-mcp
+RUN pip3 install --break-system-packages --no-cache-dir /tmp/ac-infinity-mcp \
+    && rm -rf /tmp/ac-infinity-mcp
+
+# --- GitHub CLI (gh), used by propose-doc-edit.sh to open review PRs ---
+# Verbatim keyring steps from the pre-migration freya/Dockerfile.
+# hadolint ignore=DL3008
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl ca-certificates \
+    && mkdir -p /etc/apt/keyrings \
+    && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+        -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+    && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+        > /etc/apt/sources.list.d/github-cli.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends gh \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --chown=node:node freya/spec.json     /opt/agent/spec.json
+COPY --chown=node:node freya/automations/  /opt/agent/automations/
+COPY --chown=node:node freya/workspace/    /opt/seed/workspace/
+COPY --chown=node:node freya/skills/       /opt/seed/skills/
+COPY --chown=node:node knowledge/content/  /opt/seed/docs/
+
+# Local plugin seed path: /opt/seed/plugins/<name>. Plugins are not part of
+# the base seed table; spec plugins[].source points here (absolute path).
+COPY --chown=node:node tools/grow-approval-gate/ /opt/seed/plugins/grow-approval-gate/
+
+USER node
+```
+
+#### 3. spec.json
+
+Two schema realities shape this spec. Config `path` strings are never
+templated (only values are), so the Telegram group ID is baked literally
+into the group paths; keep `TELEGRAM_GROUP_ID` equal to it, the var acts
+only as the on/off guard. Template resolution is eager, so every var
+referenced by `{env:...}` or `split_csv` must be set (non-empty) at every
+boot; `make.sh secrets check` enforces exactly that set:
+
+```json
+{
+  "specVersion": 1,
+  "agent": { "name": "Freya" },
+  "setup": { "auth_choice": "zai-coding-global" },
+  "model": { "fallback": "zai/glm-4.7" },
+  "config": [
+    { "path": "channels.telegram.dmPolicy", "value": "allowlist" },
+    { "path": "channels.telegram.allowFrom", "value": "{env:TELEGRAM_ALLOWED_USERS}", "split_csv": true, "if_env": ["TELEGRAM_ALLOWED_USERS"] },
+    { "path": "agents.defaults.heartbeat.target", "value": "telegram", "if_env": ["TELEGRAM_CHAT_ID"] },
+    { "path": "agents.defaults.heartbeat.to", "value": "{env:TELEGRAM_CHAT_ID}", "strict": true, "if_env": ["TELEGRAM_CHAT_ID"] },
+    { "path": "agents.defaults.heartbeat.directPolicy", "value": "allow", "strict": true, "if_env": ["TELEGRAM_CHAT_ID"] },
+    { "path": "agents.defaults.utilityModel", "value": "zai/glm-4.7" },
+    { "path": "tools.web.search.enabled", "value": true },
+    { "path": "tools.web.search.provider", "value": "duckduckgo" },
+    { "path": "agents.defaults.memorySearch.enabled", "value": true },
+    { "path": "agents.defaults.memorySearch.provider", "value": "local" },
+    { "path": "agents.defaults.memorySearch.extraPaths", "value": ["{data}/workspace/docs", "{data}/workspace/journal"] },
+    { "path": "channels.telegram.capabilities.inlineButtons", "value": "all" },
+    { "path": "channels.telegram.mediaMaxMb", "value": 20 },
+    { "path": "audit.enabled", "value": true },
+    { "path": "channels.telegram.groupPolicy", "value": "allowlist", "if_env": ["TELEGRAM_GROUP_ID"] },
+    { "path": "channels.telegram.groups.-1001234567890.requireMention", "value": true, "if_env": ["TELEGRAM_GROUP_ID"] },
+    { "path": "channels.telegram.groups.-1001234567890.enabled", "value": true, "if_env": ["TELEGRAM_GROUP_ID"] },
+    { "path": "channels.telegram.groups.-1001234567890.allowFrom", "value": "{env:TELEGRAM_GROUP_ALLOWED_USERS}", "split_csv": true, "if_env": ["TELEGRAM_GROUP_ID", "TELEGRAM_GROUP_ALLOWED_USERS"] },
+    { "path": "approvals.plugin.enabled", "value": true, "if_env": ["TELEGRAM_CHAT_ID"] },
+    { "path": "approvals.plugin.mode", "value": "targets", "if_env": ["TELEGRAM_CHAT_ID"] },
+    { "path": "approvals.plugin.agentFilter", "value": ["main"], "if_env": ["TELEGRAM_CHAT_ID"] },
+    {
+      "path": "approvals.plugin.targets",
+      "value": [
+        {
+          "channel": "telegram",
+          "to": "{env:TELEGRAM_CHAT_ID}",
+          "threadId": "{env:TELEGRAM_TOPIC_APPROVALS}"
+        }
+      ],
+      "if_env": ["TELEGRAM_CHAT_ID", "TELEGRAM_TOPIC_APPROVALS"]
+    },
+    { "path": "channels.telegram.execApprovals.approvers", "value": "{env:TELEGRAM_APPROVERS}", "split_csv": true, "if_env": ["TELEGRAM_APPROVERS"] },
+    { "path": "plugins.allow", "value": ["grow-approval-gate", "llama-cpp"] },
+    { "path": "plugins.entries.grow-approval-gate.enabled", "value": true },
+    { "path": "plugins.entries.grow-approval-gate.hooks.allowConversationAccess", "value": true },
+    { "path": "plugins.entries.grow-approval-gate.config.gatedTools", "value": ["set_port_mode", "set_stage_thresholds", "calibrate_sensor"] },
+    { "path": "plugins.entries.grow-approval-gate.config.agentName", "value": "Freya", "strict": true },
+    { "path": "secrets.providers.default", "value": { "source": "env" }, "if_env": ["OPENCLAW_GATEWAY_TOKEN"] },
+    { "path": "gateway.auth.token", "value": { "source": "env", "provider": "default", "id": "OPENCLAW_GATEWAY_TOKEN" }, "if_env": ["OPENCLAW_GATEWAY_TOKEN"] }
+  ],
+  "channels": [
+    { "type": "telegram" }
+  ],
+  "mcp_servers": [
+    {
+      "name": "ac-infinity",
+      "command": "ac-infinity-mcp",
+      "env": {
+        "AC_INFINITY_EMAIL": "{env:AC_INFINITY_EMAIL}",
+        "AC_INFINITY_PASSWORD": "{env:AC_INFINITY_PASSWORD}"
+      },
+      "timeout": 60
+    },
+    {
+      "name": "grow-docs",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "{data}/workspace/docs", "{data}/workspace/journal"]
+    }
+  ],
+  "plugins": [
+    { "name": "grow-approval-gate", "source": "/opt/seed/plugins/grow-approval-gate" }
+  ],
+  "features": { "gh_auth": true },
+  "automations": { "model": "zai/glm-4.7" }
+}
+```
+
+Replace `-1001234567890` with the real supergroup ID. The approvals target
+always carries `threadId` (Freya's deployment uses forum topics); deployments
+without the approvals topic delete that field and the
+`TELEGRAM_TOPIC_APPROVALS` references.
+
+#### 4. Env and secret changes
+
+| Old name | New name | Read by |
+| --- | --- | --- |
+| `FREYA_SKIP_SEED` | `AGENT_SKIP_SEED` | Base, dev overlay. |
+| `FREYA_MANAGE_CONFIG` | `AGENT_MANAGE_CONFIG` | Base, optional. |
+| `FREYA_MEMORY_REINDEX` | `AGENT_MEMORY_REINDEX` | Base, optional. |
+| `FREYA_GIT_TOKEN` | `AGENT_GIT_TOKEN` | Base `gh auth` (features.gh_auth) and the persist-state skill (edited). |
+| `TELEGRAM_HOME_CHANNEL` | `TELEGRAM_CHAT_ID` | Spec heartbeat/approvals templates and cron delivery. |
+| `FREYA_GATEWAY_PORT` | `AGENT_GATEWAY_PORT` | Compose port interpolation, host-side only. |
+
+Unchanged: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_USERS`, `ZAI_API_KEY`,
+`OPENCLAW_GATEWAY_TOKEN`, `AC_INFINITY_EMAIL`/`AC_INFINITY_PASSWORD`,
+`AUTOMATION_MODEL` (manual-run fallback; the boot always passes
+`automations.model`), `FREYA_GIT_NAME`/`FREYA_GIT_EMAIL`/`FREYA_GIT_REMOTE`
+(skill-side), and the `TELEGRAM_TOPIC_*` family (automation `topic-env`
+headers). New required entries: `TELEGRAM_APPROVERS`,
+`TELEGRAM_TOPIC_APPROVALS`, `TELEGRAM_GROUP_ID`,
+`TELEGRAM_GROUP_ALLOWED_USERS`. `make.sh` becomes:
+
+```sh
+REQUIRED_VARS=(
+  OPENCLAW_GATEWAY_TOKEN
+  ZAI_API_KEY
+  TELEGRAM_BOT_TOKEN
+  TELEGRAM_ALLOWED_USERS
+  TELEGRAM_CHAT_ID
+  TELEGRAM_APPROVERS
+  TELEGRAM_GROUP_ID
+  TELEGRAM_GROUP_ALLOWED_USERS
+  TELEGRAM_TOPIC_APPROVALS
+  AC_INFINITY_EMAIL
+  AC_INFINITY_PASSWORD
+  AGENT_GIT_TOKEN
+)
+```
+
+#### 5. Compose changes
+
+Only the `ports` line and the dev overlay change in the `freya` service;
+`build.dockerfile: freya/Dockerfile`, `env_file: freya/.env`,
+`security_opt`, the healthcheck, and the `freya-data` volume (it persists)
+all stay:
+
+```yaml
+    ports:
+      - "127.0.0.1:${AGENT_GATEWAY_PORT:-18789}:18789"
+```
+
+`compose.dev.yml` adopts the base dev contract (mounts shadow the seed, not
+the live data dir; the old journal bind mount is dropped, journal files stay
+volume-side):
+
+```yaml
+services:
+  freya:
+    userns_mode: keep-id
+    environment:
+      - AGENT_SKIP_SEED=1
+    volumes:
+      - ./freya/workspace:/opt/seed/workspace:z
+      - ./freya/skills:/opt/seed/skills:z
+      - ./knowledge/content:/opt/seed/docs:z
+    restart: ""
+```
+
+#### 6. One-time manual ops
+
+The base drops Freya's legacy state migrations (tent-state renames,
+strain-to-crop, legacy layout moves). The old image ran them every boot, so
+an up-to-date volume already satisfies them; run the equivalent by hand once
+(ordered before the first new-image boot), or accept the seed defaults on
+volumes restored from old backups:
+
+```sh
+podman compose -f compose.yml stop freya
+podman run --rm -i -v freya-data:/data docker.io/library/python:3.12-slim python3 - <<'EOF'
+import json
+import shutil
+from pathlib import Path
+
+data = Path("/data")
+journal = data / "workspace" / "journal"
+
+# old migrate_state_file: current-state.json -> tent-state.json
+old_state, new_state = journal / "current-state.json", journal / "tent-state.json"
+if old_state.exists() and not new_state.exists():
+    old_state.rename(new_state)
+
+# old migrate_strain_to_crop: active_run.strain key becomes active_run.crop
+state = journal / "tent-state.json"
+if state.is_file():
+    doc = json.loads(state.read_text(encoding="utf-8"))
+    active_run = doc.get("active_run")
+    if isinstance(active_run, dict) and "strain" in active_run and "crop" not in active_run:
+        doc["active_run"] = {
+            ("crop" if key == "strain" else key): value for key, value in active_run.items()
+        }
+        state.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+
+# old migrate_legacy_layout: {data}/journal/* -> workspace/journal/, drop {data}/docs
+legacy_journal = data / "journal"
+if legacy_journal.is_dir():
+    journal.mkdir(parents=True, exist_ok=True)
+    for entry in legacy_journal.iterdir():
+        if not (journal / entry.name).exists():
+            shutil.move(str(entry), str(journal / entry.name))
+    if not any(legacy_journal.iterdir()):
+        legacy_journal.rmdir()
+if (data / "docs").is_dir():
+    shutil.rmtree(data / "docs")
+
+print("freya state migration complete")
+EOF
+```
+
+Two follow-ups. A warm volume carries a stale `grow-docs` MCP entry with
+pre-workspace paths; the new reconcile sees the name and skips re-registering,
+so unset it once and the first standard boot re-adds it with `{data}` paths:
+
+```sh
+podman run --rm -v freya-data:/home/node/.openclaw \
+  --entrypoint openclaw ghcr.io/tankdonut/agent-base:2026.08.21 \
+  mcp unset grow-docs
+```
+
+Pre-JSON volumes (no `tent-state.json` at all): copy
+`freya/workspace/journal/tent-state.json` from the repo into the volume's
+`workspace/journal/` and set `active_run.stage` by hand from the
+`**Current Stage:**` line of `docs/journal/tent-state.md` before the first
+boot; the docs reseed overwrites that markdown file, so it is the only
+record. Then run the first validation locally (the same command CI uses):
+
+```sh
+podman run --rm \
+  -v ./freya/spec.json:/opt/agent/spec.json:ro \
+  -v ./freya/automations:/opt/agent/automations:ro \
+  --env-file freya/.env \
+  --entrypoint python3 \
+  ghcr.io/tankdonut/agent-base:2026.08.21 \
+  /opt/agent/entrypoint.py --validate-spec
+```
+
+#### 7. Test and CI changes
+
+The ported suites are deleted with the scripts they tested (table in step
+1); grow-agent keeps no agent-boot tests, this repo's `container/` suite is
+the pipeline's coverage. CI (and optionally a local make target) replaces
+them with the `--validate-spec` run above. In CI, pass an env file with
+dummy non-empty values for every `split_csv` and `{env:...}` var: the run
+only parses and resolves, it applies nothing and logs no values. The
+existing hadolint hook keeps linting the thin Dockerfile; there was no
+python hook to remove.
+
+#### 8. Rollback
+
+The pre-migration commit still builds the old bespoke image (old Dockerfile
+plus `freya/scripts/`), and `freya-data` is untouched by the swap: rolling
+back is a checkout, a rebuild, and restoring the old env names
+(`TELEGRAM_HOME_CHANNEL`, `FREYA_*`) in `freya/.env`. State written by the
+standard image is layout-compatible with the old entrypoint.
 
 ### Mimir (trade-agent)
 
-Landing in a follow-up commit.
+#### 1. What changes
+
+| File | Action | Notes |
+| --- | --- | --- |
+| `agent/Dockerfile` | replace | Thin FROM + COPYs (below). |
+| `agent/spec.json` | create | Declarative boot contract (below). |
+| `agent/scripts/automations/` | rename to `agent/automations/` | Four jobs, unchanged. |
+| `agent/scripts/mimir_entrypoint.py` | delete | Boot logic lives in the base entrypoint. |
+| `agent/scripts/seed_automations.py` | delete | The base ships `seed_automations.py`. |
+| `agent/scripts/test_mimir_entrypoint.py`, `agent/scripts/test_seed_automations.py` | delete | Suites live in this repo. |
+| `agent/.env.example` | edit | `AGENT_*` optional entries, load-time-required var notes. |
+| `compose.yml` | no change | Same build path, volume, env wiring. |
+| `compose.dev.yml` | edit | `MIMIR_SKIP_SEED` rename. |
+| `make.sh` | edit | `secrets_check` additions (below); `write_agent_env` vars unchanged. |
+| `.pre-commit-config.yaml` | edit | Drop the `python-test` hook. |
+
+#### 2. Thin Dockerfile
+
+The base carries python3, tini, the entrypoint chain, and the `node` user;
+Mimir adds only content. Build context stays the repo root:
+
+```dockerfile
+FROM ghcr.io/tankdonut/agent-base:2026.08.21
+
+COPY --chown=node:node agent/spec.json     /opt/agent/spec.json
+COPY --chown=node:node agent/automations/  /opt/agent/automations/
+COPY --chown=node:node agent/workspace/    /opt/seed/workspace/
+COPY --chown=node:node .opencode/skills/   /opt/seed/skills/
+COPY --chown=node:node knowledge/content/  /opt/seed/docs/
+```
+
+#### 3. spec.json
+
+```json
+{
+  "specVersion": 1,
+  "agent": { "name": "Mimir" },
+  "setup": { "auth_choice": "zai-coding-global" },
+  "model": { "fallback": "zai/glm-4.7" },
+  "config": [
+    { "path": "channels.telegram.dmPolicy", "value": "allowlist" },
+    { "path": "channels.telegram.allowFrom", "value": "{env:TELEGRAM_ALLOWED_USERS}", "split_csv": true, "if_env": ["TELEGRAM_ALLOWED_USERS"] },
+    { "path": "agents.defaults.heartbeat.target", "value": "telegram", "if_env": ["TELEGRAM_CHAT_ID"] },
+    { "path": "agents.defaults.heartbeat.to", "value": "{env:TELEGRAM_CHAT_ID}", "strict": true, "if_env": ["TELEGRAM_CHAT_ID"] },
+    { "path": "agents.defaults.heartbeat.directPolicy", "value": "allow", "strict": true, "if_env": ["TELEGRAM_CHAT_ID"] },
+    { "path": "agents.defaults.utilityModel", "value": "zai/glm-4.7" },
+    { "path": "tools.web.search.enabled", "value": true },
+    { "path": "tools.web.search.provider", "value": "duckduckgo" },
+    { "path": "agents.defaults.memorySearch.enabled", "value": true },
+    { "path": "agents.defaults.memorySearch.provider", "value": "local" },
+    { "path": "agents.defaults.memorySearch.extraPaths", "value": ["{data}/workspace/docs", "{data}/workspace/journal"] },
+    { "path": "secrets.providers.default", "value": { "source": "env" }, "if_env": ["OPENCLAW_GATEWAY_TOKEN"] },
+    { "path": "gateway.auth.token", "value": { "source": "env", "provider": "default", "id": "OPENCLAW_GATEWAY_TOKEN" }, "if_env": ["OPENCLAW_GATEWAY_TOKEN"] }
+  ],
+  "channels": [
+    { "type": "telegram" }
+  ],
+  "mcp_servers": [
+    { "name": "trade-agent", "url": "http://mcp:9090" },
+    { "name": "defillama", "url": "https://mcp.defillama.com/mcp" },
+    { "name": "tradingview", "command": "npx", "args": ["-y", "tradingview-mcp-server"] },
+    { "name": "alpha-vantage", "url": "https://mcp.alphavantage.co/mcp?apikey={env:ALPHAVANTAGE_API_KEY}" },
+    {
+      "name": "lunarcrush",
+      "url": "https://lunarcrush.ai/mcp",
+      "headers": { "Authorization": "Bearer {env:LUNARCRUSH_API_KEY}" }
+    },
+    {
+      "name": "postgres",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-postgres", "{env:DATABASE_URL}"]
+    }
+  ],
+  "plugins": [],
+  "features": { "gh_auth": false },
+  "automations": { "model": "zai/glm-5.2" }
+}
+```
+
+Two differences from the old script are intentional. `memorySearch.extraPaths`
+is new: the old entrypoint never set it, and the docs standard
+(`{data}/workspace/docs`, there is no other destination) needs both paths on
+the index. `automations.model` is `zai/glm-5.2` per project decision.
+
+#### 4. Env and secret changes
+
+| Old name | New name | Where |
+| --- | --- | --- |
+| `MIMIR_SKIP_SEED` | `AGENT_SKIP_SEED` | `compose.dev.yml`. |
+| `MIMIR_MANAGE_CONFIG` | `AGENT_MANAGE_CONFIG` | Optional, `secrets/agent.env`. |
+| `MIMIR_MEMORY_REINDEX` | `AGENT_MEMORY_REINDEX` | Optional, `secrets/agent.env`. |
+
+`TELEGRAM_CHAT_ID` (already the base standard), `AUTOMATION_MODEL`
+(manual-run fallback only), and `write_agent_env`'s variable list are
+unchanged. Eager template resolution makes these load-time-required and
+non-empty at every boot: `TELEGRAM_ALLOWED_USERS` (`split_csv` fails closed
+on empty), `TELEGRAM_CHAT_ID`, `ALPHAVANTAGE_API_KEY`, `LUNARCRUSH_API_KEY`,
+`DATABASE_URL` (compose sets the last via `x-db-env`). Add the first four to
+`make.sh secrets_check`'s `agent.env` requires alongside
+`OPENCLAW_GATEWAY_TOKEN`, `ZAI_API_KEY`, and `DATABASE_URL`.
+
+#### 5. Compose changes
+
+`compose.yml` needs no edits: `build.dockerfile: agent/Dockerfile` now
+points at the thin file, `env_file: ./secrets/agent.env`, the
+`trade-agent_agent-data` volume (pinned compose project name), `x-db-env`,
+the `127.0.0.1:18789` publish, the healthcheck, and `depends_on: mcp` all
+persist. The dev overlay renames one variable; its mounts already target
+`/opt/seed/*`:
+
+```yaml
+    environment:
+      - AGENT_SKIP_SEED=1
+```
+
+#### 6. One-time manual ops
+
+Move the volume's legacy docs layout once, ordered before the first
+new-image boot (afterwards the image re-seeds `workspace/docs` every boot;
+this move clears `{data}/docs` and preserves any file that drifted from the
+image):
+
+```sh
+podman compose -f compose.yml stop agent
+podman run --rm -v trade-agent_agent-data:/data docker.io/library/busybox:latest sh -c \
+  'mkdir -p /data/workspace/docs && cp -a /data/docs/. /data/workspace/docs/ && rm -rf /data/docs'
+```
+
+No other state moves: skills already seed to the same path, workspace is
+first-boot-only and present, and the base creates `workspace/journal` every
+boot. The `memorySearch.extraPaths` addition is part of the spec above, not
+an operation.
+
+#### 7. Test and CI changes
+
+Delete `agent/scripts/test_mimir_entrypoint.py` and
+`agent/scripts/test_seed_automations.py` with the scripts, and remove the
+pre-commit hook that ran them:
+
+```yaml
+      - id: python-test
+        name: python test (agent scripts)
+        entry: python3 -m unittest discover -s agent/scripts -p "test_*.py"
+        language: system
+        files: ^agent/scripts/
+        pass_filenames: false
+```
+
+Replace with the `--validate-spec` gate (CI dummy env values are fine; the
+run parses and resolves only, applying and logging nothing):
+
+```sh
+podman run --rm \
+  -v ./agent/spec.json:/opt/agent/spec.json:ro \
+  -v ./agent/automations:/opt/agent/automations:ro \
+  --env-file secrets/agent.env \
+  --entrypoint python3 \
+  ghcr.io/tankdonut/agent-base:2026.08.21 \
+  /opt/agent/entrypoint.py --validate-spec
+```
+
+Slot the step into the existing lint/test job (composed from
+`tankdonut/github-actions`), after the project image builds.
+
+#### 8. Rollback
+
+The pre-migration commit still builds the old image (`agent/Dockerfile` plus
+`agent/scripts/`), and `agent-data` is untouched by the swap. A rollback
+boot re-creates `{data}/docs` from its own image content; the copy at
+`workspace/docs` is a harmless leftover it ignores.
 
 ## Agent contract
 
