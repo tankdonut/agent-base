@@ -49,9 +49,11 @@ jobs:
       build-command: ./make.sh build
       # Publish only from tag pushes; branch pushes, PRs, and dispatch are
       # build-only. make.sh push refuses to run without AGENT_BASE_VERSION,
-      # which extra-env supplies on tag pushes (tag == version).
+      # which extra-env supplies on tag pushes (tag == version). format()
+      # requires .NET-style doubled braces for literal { and } — single braces
+      # fail the whole call at evaluation and the image job never starts.
       push-command: ${{ startsWith(github.ref, 'refs/tags/') && './make.sh push' || '' }}
-      extra-env: ${{ startsWith(github.ref, 'refs/tags/') && format('{"AGENT_BASE_VERSION":"{0}"}', github.ref_name) || '{}' }}
+      extra-env: ${{ startsWith(github.ref, 'refs/tags/') && format('{{"AGENT_BASE_VERSION":"{0}"}}', github.ref_name) || '{}' }}
       # make.sh auto-detects podman then docker; GH runners ship docker only.
       install-podman: false
       login-runtime: docker
