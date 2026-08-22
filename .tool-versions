@@ -1,0 +1,12 @@
+# asdf pins.
+#
+# python: 3.11 = image floor (bookworm python3, container/Dockerfile);
+# 3.14 = CI syntax-drift guard (.github/workflows/ci.yml). First entry is
+# the default — develop against the floor.
+# Lint tools mirror the pre-commit revs in .pre-commit-config.yaml so
+# direct CLI runs match ./make.sh lint. ruff stays unpinned here: it runs
+# only inside pre-commit's managed env (rev v0.15.21).
+python 3.11 3.14
+pre-commit 4.6.0
+hadolint 2.13.1
+markdownlint-cli2 0.23.2
