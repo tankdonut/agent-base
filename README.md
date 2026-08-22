@@ -1,4 +1,4 @@
-# agent — Standard OpenClaw Agent Base Image
+# agent-base — Standard OpenClaw Agent Base Image
 
 Shared agent implementation and container (`agent-base`) distilled from Freya
 (grow-agent) and Mimir (trade-agent). Projects extend the base image with a
