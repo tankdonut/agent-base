@@ -12,6 +12,12 @@ services:
     # Podman: map container UID to host user so bind-mount reads/writes
     # stay host-owned.
     userns_mode: keep-id
+    # Rootless podman denies the container access to bind-mounted repo
+    # files under the default MCS label handling (breaks even with
+    # SELinux disabled on some hosts); disable labeling for the mounts
+    # below. Safe for a local dev container.
+    security_opt:
+      - label=disable
     environment:
       - AGENT_SKIP_SEED=1
     volumes:
