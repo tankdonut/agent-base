@@ -15,6 +15,9 @@ jobs:
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
+          # No checkout in this job; gh resolves the repo via GH_REPO instead
+          # of shelling out to git (fatal: not a git repository otherwise).
+          GH_REPO: ${{ github.repository }}
         run: |
           gh release create "$GITHUB_REF_NAME" \
             --title "$GITHUB_REF_NAME" \
