@@ -1,0 +1,22 @@
+name: Release
+
+on:
+  push:
+    # v-less date tags (YYYY.MM.DD) — the same tag set CI publishes images
+    # from; the tag name is AGENT_BASE_VERSION verbatim.
+    tags: ["20*"]
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --notes "Image: \`ghcr.io/tankdonut/agent-base:$GITHUB_REF_NAME\`" \
+            --generate-notes
