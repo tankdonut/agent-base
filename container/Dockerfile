@@ -16,10 +16,11 @@ FROM ghcr.io/openclaw/openclaw:2026.7.1-2
 # Image version (OCI label + io.agent.base.version); date-tag default.
 ARG AGENT_BASE_VERSION=2026.08.21
 
-# The base image runs as the non-root `node` user (uid 1000); root is
-# needed only for apt and /opt writes.
+# The base image runs as the non-root `node` user (uid/gid 1000); root is
+# needed only for apt and /opt writes. Numeric IDs need no /etc/passwd
+# resolution by the host runtime (hadolint DL3066).
 # hadolint ignore=DL3002
-USER root
+USER 0:0
 
 # --- Python (for the spec-driven entrypoint) ---
 # The OpenClaw base is node:24-bookworm-slim (Debian, no Python). python3
@@ -54,8 +55,9 @@ LABEL org.opencontainers.image.title="agent-base" \
 # Entry logs must stream (docker logs --follow) before the gateway is up.
 ENV PYTHONUNBUFFERED=1
 
-# Drop back to the non-root node user for runtime.
-USER node
+# Drop back to the non-root node user for runtime (node is uid/gid 1000 in
+# the base image; numeric form per hadolint DL3066).
+USER 1000:1000
 
 # OpenClaw gateway WebSocket + HTTP port (health, API, agent sessions).
 EXPOSE 18789
