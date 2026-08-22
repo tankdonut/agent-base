@@ -7,6 +7,6 @@
 # direct CLI runs match ./make.sh lint. ruff stays unpinned here: it runs
 # only inside pre-commit's managed env (rev v0.15.21).
 python 3.14.7
-pre-commit 4.6.1
+pre-commit 4.6.2
 hadolint 2.15.1
 markdownlint-cli2 0.23.2
