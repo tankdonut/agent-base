@@ -148,6 +148,15 @@ smoke_fixture() { # smoke_fixture FIXTURE EXPECTED_MCP_NAME
 echo "[smoke] building $IMAGE (podman/docker build -f container/Dockerfile .)"
 "$ENGINE" build --build-arg AGENT_BASE_VERSION=smoke -f container/Dockerfile -t "$IMAGE" .
 
+# --- image contract: gh CLI present for the gh-auth phase ---
+# --entrypoint bypasses tini + the boot entrypoint; gh --version exits 0
+# only when the binary is installed and runnable.
+if "$ENGINE" run --rm --entrypoint gh "$IMAGE" --version >.smoke-gh.log 2>&1; then
+  pass "gh CLI present in image"
+else
+  fail "gh CLI missing from image:" && sed 's/^/    /' .smoke-gh.log >&2
+fi
+
 smoke_fixture freya-like ac-infinity
 smoke_fixture mimir-like trade-agent
 

@@ -72,8 +72,9 @@ AGENT_GIT_TOKEN=ghp_...
 
 The entrypoint runs `gh auth login --with-token` on every boot when
 `features.gh_auth` is true (gh state lives outside the data volume, so it
-does not survive restarts). The base image does not ship the `gh` binary;
-a project that enables `gh_auth` installs it in its own Dockerfile.
+does not survive restarts). The base image ships the `gh` binary — Debian
+has no gh package, so the Dockerfile installs it from the cli.github.com
+apt repo; projects enabling `gh_auth` need no extra install step.
 Failure is non-fatal and the token is never logged.
 
 Wire the runtime up with `templates/compose.agent.yml` (service snippet)
@@ -375,9 +376,10 @@ data.
 
 #### 2. Thin Dockerfile
 
-The base image already has python3 (no pip), tini, the entrypoint chain, and
-the `node` user. Freya adds the `ac-infinity-mcp` console script, `gh`, the
-approvals plugin, and its content. Build context stays the repo root:
+The base image already has python3 (no pip), gh, tini, the entrypoint
+chain, and the `node` user. Freya adds the `ac-infinity-mcp` console
+script, the approvals plugin, and its content. Build context stays the
+repo root:
 
 ```dockerfile
 FROM ghcr.io/tankdonut/agent-base:2026.08.21
@@ -393,21 +395,6 @@ RUN apt-get update \
 COPY tools/ac-infinity-mcp /tmp/ac-infinity-mcp
 RUN pip3 install --break-system-packages --no-cache-dir /tmp/ac-infinity-mcp \
     && rm -rf /tmp/ac-infinity-mcp
-
-# --- GitHub CLI (gh), used by propose-doc-edit.sh to open review PRs ---
-# Verbatim keyring steps from the pre-migration freya/Dockerfile.
-# hadolint ignore=DL3008
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl ca-certificates \
-    && mkdir -p /etc/apt/keyrings \
-    && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
-        -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
-    && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
-    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
-        > /etc/apt/sources.list.d/github-cli.list \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends gh \
-    && rm -rf /var/lib/apt/lists/*
 
 COPY --chown=node:node freya/spec.json     /opt/agent/spec.json
 COPY --chown=node:node freya/automations/  /opt/agent/automations/

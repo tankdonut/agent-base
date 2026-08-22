@@ -31,6 +31,24 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends python3 \
     && rm -rf /var/lib/apt/lists/*
 
+# --- GitHub CLI (gh), for the gh-auth boot phase ---
+# entrypoint.authenticate_gh runs `gh auth login --with-token` from
+# AGENT_GIT_TOKEN on every boot when the spec enables features.gh_auth.
+# Debian bookworm ships no gh package, hence the cli.github.com apt repo
+# and its keyring steps.
+# hadolint ignore=DL3008
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl ca-certificates \
+    && mkdir -p /etc/apt/keyrings \
+    && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+        -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+    && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+        > /etc/apt/sources.list.d/github-cli.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends gh \
+    && rm -rf /var/lib/apt/lists/*
+
 # --- Agent modules (the image contract; paths are load-bearing) ---
 # entrypoint.py imports seed_automations and spec as top-level modules —
 # all three must sit in the same directory (/opt/agent).

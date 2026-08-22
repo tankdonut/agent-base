@@ -11,7 +11,7 @@ internals only.
 | `entrypoint.py` | Boot phases, each a plain function over `(spec, env)`, individually callable from wrapper entrypoints |
 | `spec.py` | Fail-closed spec.json loader — library only (shebang is dead; no `__main__`) |
 | `seed_automations.py` | Cron reconciler, dual-mode: imported in-process by entrypoint AND standalone CLI |
-| `Dockerfile` | `FROM ghcr.io/openclaw/openclaw:2026.7.1-2`; apt python3 only (no pip — stdlib by construction); tini → entrypoint → `openclaw gateway`; `USER 1000:1000` (node); EXPOSE 18789 |
+| `Dockerfile` | `FROM ghcr.io/openclaw/openclaw:2026.7.1-2`; apt python3 (no pip — stdlib by construction) + gh CLI from the cli.github.com apt repo (Debian ships none; consumed by `authenticate_gh`); tini → entrypoint → `openclaw gateway`; `USER 1000:1000` (node); EXPOSE 18789 |
 | `test_{spec,entrypoint,seed_automations}.py` | One suite per module; never shipped (explicit COPYs only) |
 
 ## Boot Phase → Function
