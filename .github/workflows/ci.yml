@@ -38,6 +38,11 @@ jobs:
 
   image:
     needs: [lint, test]
+    # Reusable workflow's build job requests packages: write; without an
+    # explicit grant here the token default (packages: read) fails validation.
+    permissions:
+      contents: read
+      packages: write
     uses: tankdonut/github-actions/.github/workflows/build-and-publish-image.yaml@main
     with:
       image-name: agent-base
