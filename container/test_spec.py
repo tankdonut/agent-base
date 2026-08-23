@@ -287,6 +287,39 @@ class AuthChoiceEnvGate(SpecTestCase):
         self.assertNotIn("ZAI_API_KEY", message)
 
 
+class AutomationsDefaultTools(SpecTestCase):
+    """automations.default_tools (optional): overrides the base's bounded
+    tool allow-list for seeded jobs that don't declare their own `tools:`."""
+
+    def test_absent_key_loads_with_empty_tuple(self) -> None:
+        spec = self.load(MINIMAL, env={"ZAI_API_KEY": "zai-key"})
+        self.assertEqual((), spec.automations_default_tools)
+
+    def test_valid_list_accepted(self) -> None:
+        variant = copy.deepcopy(MINIMAL)
+        variant["automations"] = {
+            "model": "zai/glm-4.7",
+            "default_tools": ["read", "exec", "bundle-mcp"],
+        }
+        spec = self.load(variant, env={"ZAI_API_KEY": "zai-key"})
+        self.assertEqual(("read", "exec", "bundle-mcp"), spec.automations_default_tools)
+
+    def test_star_means_unrestricted(self) -> None:
+        variant = copy.deepcopy(MINIMAL)
+        variant["automations"] = {"model": "zai/glm-4.7", "default_tools": ["*"]}
+        spec = self.load(variant, env={"ZAI_API_KEY": "zai-key"})
+        self.assertEqual(("*",), spec.automations_default_tools)
+
+    def test_malformed_values_fail_closed(self) -> None:
+        for bad in ([], ["read", ""], ["read write"], [42], "read"):
+            with self.subTest(bad=bad):
+                variant = copy.deepcopy(MINIMAL)
+                variant["automations"] = {"model": "zai/glm-4.7", "default_tools": bad}
+                self.load_expect_error(
+                    variant, env={"ZAI_API_KEY": "zai-key"}, containing="default_tools"
+                )
+
+
 class TemplateResolution(SpecTestCase):
     def test_env_token_resolved_inline(self) -> None:
         spec = self.load(self.config_spec("Hello {env:GREETING} world"))

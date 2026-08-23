@@ -90,6 +90,8 @@ def stored_job(schedule: object, message: str = "do things", **overrides: object
         "schedule": schedule,
         "payload": {"kind": "agentTurn", "message": message},
         "delivery": {},
+        # Currency now includes tool policy: the default-bounded fixture.
+        "toolsAllow": list(seed_automations.DEFAULT_JOB_TOOLS),
     }
     job.update(overrides)
     return job
@@ -336,6 +338,68 @@ class EnvContract(unittest.TestCase):
         finally:
             importlib.reload(seed_automations)
         self.assertEqual(seed_automations.CHAT, original)
+
+
+class JobToolsPolicy(TempSpecDir):
+    """X2: seeded jobs run with a bounded tool allow-list by default
+    (--tools on cron add); per-job `tools:` overrides. Today omitting
+    --tools stores no policy — functionally unrestricted, i.e. the cron
+    tool can self-replicate jobs (OWASP ASI06 class)."""
+
+    def test_default_tools_applied_when_job_omits_tools(self) -> None:
+        self.write("test-job.md", VALID_SPEC)
+        with mock.patch.object(seed_automations, "DEFAULT_JOB_TOOLS", ("read", "exec")):
+            specs = self.load()
+        self.assertEqual(("read", "exec"), specs[0].tools)
+
+    def test_job_tools_csv_overrides_default(self) -> None:
+        spec_text = VALID_SPEC.replace(
+            "deliver: announce", "deliver: announce\ntools: read,write,bundle-mcp"
+        )
+        self.write("test-job.md", spec_text)
+        specs = self.load()
+        self.assertEqual(("read", "write", "bundle-mcp"), specs[0].tools)
+
+    def test_job_tools_star_means_unrestricted(self) -> None:
+        spec_text = VALID_SPEC.replace("deliver: announce", "deliver: announce\ntools: *")
+        self.write("test-job.md", spec_text)
+        specs = self.load()
+        self.assertEqual(("*",), specs[0].tools)
+
+    def test_invalid_tools_values_fail_closed(self) -> None:
+        for bad in ("", "read,,write", "read write", ","):
+            with self.subTest(tools=bad):
+                spec_text = VALID_SPEC.replace(
+                    "deliver: announce", f"deliver: announce\ntools: {bad}"
+                )
+                self.write("test-job.md", spec_text)
+                with self.assertRaises(seed_automations.AutomationSpecError) as ctx:
+                    self.load()
+                self.assertIn("tools", str(ctx.exception))
+
+    def test_cron_add_receives_tools_flag(self) -> None:
+        self.write("test-job.md", VALID_SPEC)
+        with mock.patch.object(seed_automations, "DEFAULT_JOB_TOOLS", ("read", "exec")):
+            specs = self.load()
+        argv = seed_automations.cron_add_argv(specs[0], "model-x", [])
+        self.assertIn("--tools", argv)
+        self.assertEqual("read,exec", argv[argv.index("--tools") + 1])
+        self.assertNotIn("*", argv)
+
+    def test_unrestricted_job_omits_tools_flag_entirely(self) -> None:
+        spec_text = VALID_SPEC.replace("deliver: announce", "deliver: announce\ntools: *")
+        self.write("test-job.md", spec_text)
+        specs = self.load()
+        argv = seed_automations.cron_add_argv(specs[0], "model-x", [])
+        self.assertNotIn("--tools", argv)
+
+    def test_default_tools_flag_overrides_builtin(self) -> None:
+        self.write("test-job.md", VALID_SPEC)
+        specs = self.load()
+        argv = seed_automations.cron_add_argv(
+            specs[0], "model-x", [], default_tools=("web_search",)
+        )
+        self.assertEqual("web_search", argv[argv.index("--tools") + 1])
 
 
 class ScheduleValidation(TempSpecDir):
@@ -666,6 +730,8 @@ class ReconcileContract(unittest.TestCase):
                 "isolated",
                 "--model",
                 "zai/test-model",
+                "--tools",
+                ",".join(seed_automations.DEFAULT_JOB_TOOLS),
                 "--announce",
                 "--channel",
                 "telegram",
@@ -695,6 +761,7 @@ class ReconcileContract(unittest.TestCase):
         seed_automations.reconcile(spec, [job], "m")
         self.oc.assert_called_once_with(
             ["cron", "edit", "job-1", "--message", "do things", "--every", "10m"]
+            + ["--tools", ",".join(seed_automations.DEFAULT_JOB_TOOLS)]
         )
 
     def test_cron_schedule_drift_edits_with_cron_flag(self) -> None:
@@ -703,6 +770,7 @@ class ReconcileContract(unittest.TestCase):
         seed_automations.reconcile(spec, [job], "m")
         self.oc.assert_called_once_with(
             ["cron", "edit", "job-1", "--message", "do things", "--cron", "2 9 * * *"]
+            + ["--tools", ",".join(seed_automations.DEFAULT_JOB_TOOLS)]
         )
 
     def test_stored_cron_form_for_every_spec_edits(self) -> None:
@@ -714,6 +782,7 @@ class ReconcileContract(unittest.TestCase):
         seed_automations.reconcile(spec, [job], "m")
         self.oc.assert_called_once_with(
             ["cron", "edit", "job-1", "--message", "do things", "--every", "15m"]
+            + ["--tools", ",".join(seed_automations.DEFAULT_JOB_TOOLS)]
         )
 
     def test_message_drift_edits_with_schedule_flags(self) -> None:
@@ -722,6 +791,7 @@ class ReconcileContract(unittest.TestCase):
         seed_automations.reconcile(spec, [job], "m")
         self.oc.assert_called_once_with(
             ["cron", "edit", "job-1", "--message", "do things", "--every", "15m"]
+            + ["--tools", ",".join(seed_automations.DEFAULT_JOB_TOOLS)]
         )
 
     def test_chat_drift_edits_with_chat_flags(self) -> None:
@@ -738,6 +808,8 @@ class ReconcileContract(unittest.TestCase):
                 "do things",
                 "--every",
                 "15m",
+                "--tools",
+                ",".join(seed_automations.DEFAULT_JOB_TOOLS),
                 "--announce",
                 "--channel",
                 "telegram",
@@ -760,6 +832,8 @@ class ReconcileContract(unittest.TestCase):
                 "do things",
                 "--every",
                 "15m",
+                "--tools",
+                ",".join(seed_automations.DEFAULT_JOB_TOOLS),
                 "--announce",
                 "--channel",
                 "telegram",
@@ -858,6 +932,8 @@ class MainFlow(unittest.TestCase):
                 "isolated",
                 "--model",
                 "cli/model",
+                "--tools",
+                ",".join(seed_automations.DEFAULT_JOB_TOOLS),
             ]
         )
 

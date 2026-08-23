@@ -299,6 +299,15 @@ def _snapshot_base_plugins() -> None:
         warn("could not write agent-managed-plugins marker")
 
 
+# Default tool denials for the agent's own turns: the recursion/spawn
+# surfaces (OWASP ASI06 class — a scheduled turn reaching the cron tool
+# can self-replicate jobs; spawn chains multiply blast radius).
+# heartbeat_respond stays allowed so heartbeat delivery keeps working.
+# Any spec config entry under tools.* disables the base default (operator
+# owns tool policy from then on).
+TOOLS_DENY_DEFAULT = ("cron", "subagents", "sessions_spawn", "nodes")
+
+
 def reconcile_config(spec: Spec, env: Mapping[str, str]) -> None:
     """Apply spec config entries in spec order via config_set. Entries whose
     if_env guard is unsatisfied are skipped with a log line (never an
@@ -319,6 +328,11 @@ def reconcile_config(spec: Spec, env: Mapping[str, str]) -> None:
     applied = config_reconcile_stats["applied"]
     skipped = config_reconcile_stats["skipped"]
     log(f"Config reconcile: {applied} set, {skipped} already current")
+
+    spec_owns_tools = any(entry.path.startswith("tools.") for entry in spec.config_entries)
+    if not spec_owns_tools:
+        log("Applying base tools.deny default (agent tool policy unconfigured)")
+        config_set("tools.deny", json.dumps(list(TOOLS_DENY_DEFAULT)), "--strict-json")
 
 
 def mcp_exists(name: str) -> bool:
@@ -732,13 +746,17 @@ def disable_unavailable_skills() -> None:
         warn("could not update doctor-disabled-skills marker")
 
 
-def run_seed_automations(model: str) -> int:
+def run_seed_automations(model: str, default_tools: tuple[str, ...] = ()) -> int:
     """Invoke seed_automations.main in-process with the spec's automation
-    model. The automations dir (AGENT_AUTOMATIONS_DIR, default
-    /opt/agent/automations) is resolved inside that module. Returns the
-    would-be exit code (main() signals failure via SystemExit)."""
+    model (and, when the spec sets one, its default tool allow-list). The
+    automations dir (AGENT_AUTOMATIONS_DIR, default /opt/agent/automations)
+    is resolved inside that module. Returns the would-be exit code (main()
+    signals failure via SystemExit)."""
+    argv = ["--model", model]
+    if default_tools:
+        argv.extend(("--default-tools", ",".join(default_tools)))
     try:
-        seed_automations.main(["--model", model])
+        seed_automations.main(argv)
     except SystemExit as exc:
         return exc.code if isinstance(exc.code, int) else 1
     return 0
@@ -759,7 +777,7 @@ def post_startup(spec: Spec, env: Mapping[str, str]) -> None:
     log("Gateway healthy — running post-startup tasks")
 
     log("cron seeding: starting")
-    cron_exit = run_seed_automations(spec.automations_model)
+    cron_exit = run_seed_automations(spec.automations_model, spec.automations_default_tools)
     if cron_exit != 0:
         warn(f"cron seeding failed (exit {cron_exit}, non-fatal)")
     else:

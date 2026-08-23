@@ -138,6 +138,7 @@ smoke_fixture() { # smoke_fixture FIXTURE EXPECTED_MCP_NAME
   assert_present "'config' 'set'" "reconcile_config applied config entries"
   assert_present "'mcp' 'add' '$mcp'" "reconcile_mcp registered '$mcp'"
   assert_present "'cron' 'list'" "post_startup seeded cron jobs (cron list)"
+  assert_present "'--tools'" "seeded cron jobs carry a bounded tool allow-list"
   assert_present "'memory' 'status'" "memory ladder checked index status"
   assert_present "'health'" "post_startup waited for gateway health"
   # The shim reports a CLEAN memory index (files=0, dirty=false, identity

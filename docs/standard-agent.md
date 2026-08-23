@@ -98,6 +98,7 @@ split with copy-paste entries.
 | `AGENT_GIT_TOKEN` | unset | gh token, used only when `features.gh_auth` is true. Never logged. |
 | `AGENT_AUTOMATIONS_DIR` | `/opt/agent/automations` | Override the automations directory. |
 | `AUTOMATION_MODEL` | unset | Cron model fallback when `--model` is not passed. The entrypoint always passes `spec.automations.model`, so this matters only for manual `seed_automations.py` runs. |
+| `automations.default_tools` (spec) | built-in list | Default tool allow-list for seeded jobs without their own `tools:` header; `["*"]` restores unrestricted. |
 | `AGENT_BASE_VERSION` | baked `ENV` | Image version (from the build ARG; also the OCI label). Read-only signal for the upgrade-backup phase — a delta against `{data}/last-image-version` triggers a verified backup before migration. |
 | `AGENT_BACKUP_DIR` | `/backups` | Destination for the upgrade backup (the CLI refuses output inside `{data}`). Mount a named volume at `/backups` to keep archives across containers. |
 
@@ -304,7 +305,13 @@ wrapper entrypoint.
      mutation — invalid `every:` durations or `cron:` expressions are
      load errors, not silent drift) and drift-healing (see decisions
      below). Every CLI spawn carries a 60s timeout, so a hung cron call
-     cannot hang the forked child.
+     cannot hang the forked child. Seeded jobs run with a **bounded tool
+     allow-list** by default (fs, runtime, web, and memory tools plus
+     `bundle-mcp`; no `cron`, spawn, or browser tools — a scheduled turn
+     reaching the cron tool could self-replicate jobs). Override per job
+     with a `tools:` header, or globally with
+     `automations.default_tools` in the spec (`["*"]` restores
+     unrestricted).
    - Memory reindex (unless `AGENT_MEMORY_REINDEX=0`): clear stale
      reindex locks, check status, then full rebuild, incremental pass, or
      skip. Three attempts with 10s backoff; a degraded success
@@ -328,6 +335,22 @@ automations directory) for CI.
 | `TELEGRAM_CHAT_ID` is base-standard | Cron delivery needs one chat target the reconciler can read directly. All other `TELEGRAM_*` names stay project-side in spec refs (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_USERS`, `TELEGRAM_TOPIC_*`). |
 | Docs at `{data}/workspace/docs`, never `{data}/docs` | Docs are workspace-adjacent reference material seeded every boot. Migrating agents (Mimir layout) move once in a wrapper entrypoint. |
 | `automations.model` is required per project | A baked default would silently drift models between agents sharing one image. No default, no drift. |
+| Seeded jobs get a bounded tool allow-list | A scheduled turn reaching the `cron` tool can self-replicate jobs (OWASP ASI06); the base default excludes recursion, spawn, and browser tools. Per-job `tools:` / spec `automations.default_tools` / `["*"]` escape hatches keep this the operator's call. |
+| Base sets `tools.deny` (cron, subagents, sessions_spawn, nodes) unless the spec configures `tools.*` | Same recursion/spawn surfaces denied for the agent's own turns; `heartbeat_respond` stays allowed so heartbeats work. Any spec entry under `tools.*` signals operator ownership and the base default stands down. |
+
+### Persona file trust model
+
+Workspace persona files (`AGENTS.md`, `SOUL.md`, `MEMORY.md`, `USER.md`)
+are agent-writable by design — OpenClaw injects them as prompt context and
+the agent is expected to maintain its own memory and journal. The base's
+guardrails around this surface: automations are image-baked and never
+writable (spec changes go through a rebuild + review), seeded skills and
+docs are replaced wholesale every boot (drift heals on restart), and the
+tool defaults above keep scheduled turns off the self-replication paths.
+For tamper-evidence beyond that, keep `{data}/workspace` in a private git
+repository (the agent commits its own history) — the volume is the
+authoritative record, and the X1 backup track snapshots it on every image
+bump.
 | Cron reconcile heals drift | Stored schedule shapes are compared precisely; anything legacy or foreign is treated as drift and healed with exactly one idempotent `cron edit`. A missing or broken spec aborts the whole run rather than pruning live jobs. |
 | Automations are image-baked, never host-mounted | Writable cron prompt files would let the agent rewrite its own schedules. |
 
@@ -408,7 +431,9 @@ the actions repo; projects reference them instead of copying YAML.
 4. Assemble `skills/` and `docs/` as image-baked content; remember skills
    and docs are replaced wholesale every boot.
 5. Write `automations/*.md` (name must match the file stem; exactly one of
-   `every` or `cron`; `deliver`; optional `topic-env`).
+   `every` or `cron`; `deliver`; optional `topic-env`; optional `tools` —
+   a comma-separated tool allow-list; `*` opts a job back to
+   unrestricted).
 6. Write the thin Dockerfile per Quick start, pinning the current date tag.
 7. Add the `agent` service from `templates/compose.agent.yml` and, for
    development, the overlay from `templates/compose.dev.agent.yml`.

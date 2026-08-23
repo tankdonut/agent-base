@@ -507,7 +507,10 @@ class ReconcileConfigPhases(EntrypointTestCase):
         self.assertEqual("", err)
         self.assertIn("skipped (if_env unsatisfied: agents.defaults.heartbeat.target)", out)
         self.assertEqual(
-            [["openclaw", "config", "set", "channels.telegram.dmPolicy", "allowlist"]],
+            [
+                ["openclaw", "config", "set", "channels.telegram.dmPolicy", "allowlist"],
+                *self._deny_calls(),
+            ],
             self.calls_with("openclaw", "config", "set"),
         )
 
@@ -538,9 +541,23 @@ class ReconcileConfigPhases(EntrypointTestCase):
                     '"-100123"',
                     "--strict-json",
                 ],
+                *self._deny_calls(),
             ],
             self.calls_with("openclaw", "config", "set"),
         )
+
+    @staticmethod
+    def _deny_calls() -> list[list[str]]:
+        return [
+            [
+                "openclaw",
+                "config",
+                "set",
+                "tools.deny",
+                json.dumps(list(entrypoint.TOOLS_DENY_DEFAULT)),
+                "--strict-json",
+            ]
+        ]
 
     def test_entries_applied_in_spec_order(self) -> None:
         spec_doc = copy.deepcopy(MINIMAL_SPEC)
@@ -552,7 +569,7 @@ class ReconcileConfigPhases(EntrypointTestCase):
         spec = self.load_spec_with(spec_doc)
         self.capture(lambda: entrypoint.reconcile_config(spec, os.environ))
         paths = [c[3] for c in self.calls_with("openclaw", "config", "set")]
-        self.assertEqual(["z.last", "a.first", "m.middle"], paths)
+        self.assertEqual(["z.last", "a.first", "m.middle", "tools.deny"], paths)
 
     def test_split_csv_entry_marshals_as_strict_json_list(self) -> None:
         spec_doc = copy.deepcopy(MINIMAL_SPEC)
@@ -574,7 +591,8 @@ class ReconcileConfigPhases(EntrypointTestCase):
                     "channels.telegram.allowFrom",
                     '["111", "222"]',
                     "--strict-json",
-                ]
+                ],
+                *self._deny_calls(),
             ],
             self.calls_with("openclaw", "config", "set"),
         )
@@ -1519,6 +1537,61 @@ class PluginOrphanReport(EntrypointTestCase):
             ["zai", "llama-cpp"],
             json.loads(self._marker().read_text(encoding="utf-8")),
         )
+
+
+class ToolsDenyDefault(EntrypointTestCase):
+    """X2: the base applies a default tools.deny (recursion/spawn surfaces)
+    unless the spec configures tools itself — the agent's own chat turns
+    must not reach the cron tool (self-replication) or spawn chains.
+    heartbeat_respond is deliberately NOT denied (heartbeat delivery)."""
+
+    def test_default_applied_when_spec_silent(self) -> None:
+        spec = self.load_default_spec()
+        self.capture(lambda: entrypoint.reconcile_config(spec, os.environ))
+        calls = self.calls_with("openclaw", "config", "set", "tools.deny")
+        self.assertEqual(1, len(calls))
+        self.assertEqual(
+            ["cron", "subagents", "sessions_spawn", "nodes"],
+            json.loads(calls[0][calls[0].index("tools.deny") + 1]),
+        )
+
+    def test_spec_tools_deny_wins_over_base_default(self) -> None:
+        spec_dict = copy.deepcopy(MINIMAL_SPEC)
+        spec_dict["config"] = [{"path": "tools.deny", "value": "custom"}]
+        spec = self.load_spec_with(spec_dict)
+        self.capture(lambda: entrypoint.reconcile_config(spec, os.environ))
+        calls = self.calls_with("openclaw", "config", "set", "tools.deny")
+        self.assertEqual(1, len(calls))
+        self.assertEqual("custom", calls[0][calls[0].index("tools.deny") + 1])
+
+    def test_spec_tools_profile_also_disables_base_default(self) -> None:
+        # Any explicit tools configuration in the spec signals operator
+        # ownership of tool policy; the base default stands down entirely.
+        spec_dict = copy.deepcopy(MINIMAL_SPEC)
+        spec_dict["config"] = [{"path": "tools.profile", "value": "coding"}]
+        spec = self.load_spec_with(spec_dict)
+        self.capture(lambda: entrypoint.reconcile_config(spec, os.environ))
+        self.assertEqual([], self.calls_with("openclaw", "config", "set", "tools.deny"))
+
+    def test_post_startup_passes_default_tools_flag(self) -> None:
+        spec_dict = copy.deepcopy(MINIMAL_SPEC)
+        spec_dict["automations"] = {
+            "model": "zai/glm-4.7",
+            "default_tools": ["read"],
+        }
+        spec = self.load_spec_with(spec_dict)
+        self.capture(lambda: entrypoint.post_startup(spec, os.environ))
+        self.assertEqual(1, len(self.automation_argv))
+        self.assertIn("--default-tools", self.automation_argv[0])
+        self.assertEqual(
+            "read", self.automation_argv[0][self.automation_argv[0].index("--default-tools") + 1]
+        )
+
+    def test_post_startup_omits_flag_without_spec_default(self) -> None:
+        spec = self.load_default_spec()
+        self.capture(lambda: entrypoint.post_startup(spec, os.environ))
+        self.assertEqual(1, len(self.automation_argv))
+        self.assertNotIn("--default-tools", self.automation_argv[0])
 
 
 class MainFlow(EntrypointTestCase):

@@ -179,6 +179,7 @@ class Spec:
     auth_choice: str
     model_fallback: str
     automations_model: str
+    automations_default_tools: tuple[str, ...] = ()
     config_entries: list[ConfigEntry] = field(default_factory=list)
     channels: list[Channel] = field(default_factory=list)
     mcp_servers: list[McpServer] = field(default_factory=list)
@@ -219,6 +220,7 @@ def mcp_to_cli_args(server: McpServer) -> list[str]:
 
 _TOKEN_RE = re.compile(r"\{([^{}]*)\}")
 _UNCLOSED_TOKEN_RE = re.compile(r"\{[^{}]*$")
+_TOOL_ENTRY_RE = re.compile(r"[a-z0-9_][a-z0-9_.:-]*|\*")
 _ENV_PREFIX = "env:"
 
 
@@ -341,7 +343,7 @@ _MCP_ENTRY_KEYS = frozenset(
 )
 _PLUGIN_KEYS = frozenset({"name", "source"})
 _FEATURES_KEYS = frozenset({"gh_auth"})
-_AUTOMATIONS_KEYS = frozenset({"model"})
+_AUTOMATIONS_KEYS = frozenset({"model", "default_tools"})
 
 
 def _parse_config_entries(
@@ -565,6 +567,17 @@ def load_spec(path: Path, env: Mapping[str, str]) -> Spec:
     automations_model = _expect_str(
         _require_key(automations, "model", "automations"), "automations.model"
     )
+    default_tools_raw = automations.get("default_tools", [])
+    bad_default_tools = not isinstance(default_tools_raw, list) or not default_tools_raw
+    if "default_tools" in automations and bad_default_tools:
+        _fail("automations.default_tools", "must be a non-empty list of tool names")
+    for token in default_tools_raw:
+        if not isinstance(token, str) or not _TOOL_ENTRY_RE.fullmatch(token):
+            _fail(
+                "automations.default_tools",
+                f"invalid tool entry {token!r} (tool names or * for unrestricted)",
+            )
+    automations_default_tools = tuple(default_tools_raw)
     config_entries = _parse_config_entries(root, env)
     channels = _parse_channels(root)
     mcp_servers = _parse_mcp_servers(root, env)
@@ -586,6 +599,7 @@ def load_spec(path: Path, env: Mapping[str, str]) -> Spec:
         auth_choice=auth_choice,
         model_fallback=model_fallback,
         automations_model=automations_model,
+        automations_default_tools=automations_default_tools,
         config_entries=config_entries,
         channels=channels,
         mcp_servers=mcp_servers,

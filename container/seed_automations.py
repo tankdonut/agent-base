@@ -71,8 +71,32 @@ TOKEN_RE = re.compile(r"\{\{\s*([A-Z][A-Z_]*)\s*\}\}")
 NAME_RE = re.compile(r"[a-z0-9][a-z0-9-]*")
 ENV_NAME_RE = re.compile(r"[A-Z][A-Z0-9_]*")
 
-HEADER_KEYS = frozenset({"name", "every", "cron", "deliver", "topic-env"})
+HEADER_KEYS = frozenset({"name", "every", "cron", "deliver", "topic-env", "tools"})
 DELIVER_MODES = frozenset({"announce", "no-deliver"})
+
+# Bounded tool allow-list for seeded jobs (overridden per job via `tools:`
+# or globally via spec automations.default_tools / --default-tools). The
+# roster is source-verified at the pinned base tag: fs + runtime + web +
+# memory core tools, plus bundle-mcp for MCP server tools (an allow-list
+# of core names alone would starve every MCP tool). Deliberately absent:
+# cron (self-replication), sessions_spawn/subagents (spawn chains),
+# browser/canvas (exfiltration surface), message, gateway, nodes,
+# skill_workshop (persistence). `tools: *` opts a job back to unrestricted.
+DEFAULT_JOB_TOOLS: tuple[str, ...] = (
+    "read",
+    "write",
+    "edit",
+    "apply_patch",
+    "exec",
+    "process",
+    "web_search",
+    "web_fetch",
+    "x_search",
+    "memory_search",
+    "memory_get",
+    "bundle-mcp",
+)
+TOOL_NAME_RE = re.compile(r"[a-z0-9_][a-z0-9_.:-]*|\*")
 
 DURATION_TOKEN_RE = re.compile(r"(\d+(?:\.\d+)?)(ms|s|m|h|d|w)")
 DURATION_UNITS_MS: dict[str, float] = {
@@ -106,6 +130,8 @@ class JobSpec:
     prompt: str
     topic: str
     deliver: str
+    tools: tuple[str, ...] = DEFAULT_JOB_TOOLS
+    tools_declared: bool = False
 
 
 def resolve_model(cli_model: str | None) -> str:
@@ -203,6 +229,21 @@ def _load_spec(path: Path) -> JobSpec:
         raise AutomationSpecError(f"{path.name}: invalid topic-env {topic_env!r}")
     topic = os.environ.get(topic_env, "") if topic_env else ""
 
+    tools_declared = "tools" in header
+    tools_raw = header.get("tools", "")
+    if tools_declared:
+        candidates = [token.strip() for token in tools_raw.split(",")]
+        if not candidates or any(
+            token == "" or TOOL_NAME_RE.fullmatch(token) is None for token in candidates
+        ):
+            raise AutomationSpecError(
+                f"{path.name}: invalid tools {tools_raw!r} "
+                "(comma-separated tool names, or * for unrestricted)"
+            )
+        tools = tuple(candidates)
+    else:
+        tools = DEFAULT_JOB_TOOLS
+
     prompt = _render_prompt(body, path)
     if not prompt:
         raise AutomationSpecError(f"{path.name}: prompt body is empty")
@@ -214,6 +255,8 @@ def _load_spec(path: Path) -> JobSpec:
         prompt=prompt,
         topic=topic,
         deliver=deliver,
+        tools=tools,
+        tools_declared=tools_declared,
     )
 
 
@@ -382,7 +425,9 @@ def _schedule_is_current(job: dict, spec: JobSpec) -> bool:
 
 def _job_is_current(job: dict, spec: JobSpec) -> bool:
     """Current requires message, threadId (when the spec has a topic),
-    delivery.to (when CHAT is set), and schedule to all match."""
+    delivery.to (when CHAT is set), schedule, and tool policy to match.
+    A stored job with no toolsAllow is unrestricted: current only when
+    the spec explicitly opts back to `*`."""
     msg = ""
     payload = job.get("payload") or {}
     if isinstance(payload, dict) and payload.get("kind") == "agentTurn":
@@ -393,13 +438,81 @@ def _job_is_current(job: dict, spec: JobSpec) -> bool:
     msg_match = msg == spec.prompt
     thread_match = spec.topic == "" or str(stored_thread) == str(spec.topic)
     chat_match = CHAT == "" or str(stored_to) == str(CHAT)
-    return msg_match and thread_match and chat_match and _schedule_is_current(job, spec)
+    return (
+        msg_match
+        and thread_match
+        and chat_match
+        and _schedule_is_current(job, spec)
+        and _tools_are_current(job, spec)
+    )
 
 
-def reconcile(spec: JobSpec, jobs: list[dict], model: str) -> None:
+def _tools_are_current(job: dict, spec: JobSpec) -> bool:
+    stored = job.get("toolsAllow")
+    if spec.tools == ("*",):
+        return stored is None
+    if not isinstance(stored, list):
+        return False
+    return sorted(str(t) for t in stored) == sorted(spec.tools)
+
+
+def cron_add_argv(
+    spec: JobSpec, model: str, flags: list[str], default_tools: tuple[str, ...] | None = None
+) -> list[str]:
+    """Argv for `openclaw cron add`. Tool policy: `*` omits --tools
+    (unrestricted, explicit opt-out). Otherwise: a job-declared `tools:`
+    header wins; jobs without one take default_tools, else
+    DEFAULT_JOB_TOOLS."""
+    tools = spec.tools if spec.tools_declared or default_tools is None else default_tools
+    argv = [
+        "cron",
+        "add",
+        spec.schedule_flag,
+        spec.schedule_value,
+        "--message",
+        spec.prompt,
+        "--name",
+        spec.name,
+        "--agent",
+        "main",
+        "--session",
+        "isolated",
+        "--model",
+        model,
+    ]
+    if tools != ("*",):
+        argv.extend(("--tools", ",".join(tools)))
+    argv.extend(flags)
+    return argv
+
+
+def cron_edit_argv(spec: JobSpec, job_id: str, flags: list[str]) -> list[str]:
+    """Argv for `openclaw cron edit` (message, schedule, delivery, tools)."""
+    argv = [
+        "cron",
+        "edit",
+        job_id,
+        "--message",
+        spec.prompt,
+        spec.schedule_flag,
+        spec.schedule_value,
+    ]
+    if spec.tools != ("*",):
+        argv.extend(("--tools", ",".join(spec.tools)))
+    argv.extend(flags)
+    return argv
+
+
+def reconcile(
+    spec: JobSpec,
+    jobs: list[dict],
+    model: str,
+    default_tools: tuple[str, ...] | None = None,
+) -> None:
     """Converge the live job for `spec`: prune same-name duplicates
     (keeping the delivery routed to CHAT), create via `cron add`, or edit
-    when message/thread/chat/schedule drifted. Skips when current."""
+    when message/thread/chat/schedule/tool-policy drifted. Skips when
+    current."""
     matches = [j for j in jobs if isinstance(j, dict) and j.get("name") == spec.name]
 
     if len(matches) > 1:
@@ -431,25 +544,7 @@ def reconcile(spec: JobSpec, jobs: list[dict], model: str) -> None:
             f"[seed-automations] creating '{spec.name}' "
             f"({spec.schedule_flag} {spec.schedule_value})"
         )
-        result = openclaw(
-            [
-                "cron",
-                "add",
-                spec.schedule_flag,
-                spec.schedule_value,
-                "--message",
-                spec.prompt,
-                "--name",
-                spec.name,
-                "--agent",
-                "main",
-                "--session",
-                "isolated",
-                "--model",
-                model,
-                *flags,
-            ]
-        )
+        result = openclaw(cron_add_argv(spec, model, flags, default_tools))
         if result.returncode != 0:
             print(
                 f"[seed-automations] WARNING: cron add failed: {spec.name}: {result.stderr.strip()}"
@@ -464,18 +559,7 @@ def reconcile(spec: JobSpec, jobs: list[dict], model: str) -> None:
     job_id = job.get("id", "")
     print(f"[seed-automations] updating '{spec.name}'")
     flags = delivery_flags(spec)
-    result = openclaw(
-        [
-            "cron",
-            "edit",
-            job_id,
-            "--message",
-            spec.prompt,
-            spec.schedule_flag,
-            spec.schedule_value,
-            *flags,
-        ]
-    )
+    result = openclaw(cron_edit_argv(spec, job_id, flags))
     if result.returncode != 0:
         print(f"[seed-automations] WARNING: cron edit failed: {spec.name}: {result.stderr.strip()}")
 
@@ -488,6 +572,12 @@ def main(argv: list[str] | None = None) -> None:
         "--model",
         default="",
         help="model for cron agent turns (overrides AUTOMATION_MODEL)",
+    )
+    parser.add_argument(
+        "--default-tools",
+        default="",
+        help="comma-separated default tool allow-list for jobs without "
+        "their own 'tools:' header (overrides the built-in default)",
     )
     args = parser.parse_args(argv)
 
@@ -502,6 +592,14 @@ def main(argv: list[str] | None = None) -> None:
         )
         sys.exit(1)
 
+    default_tools: tuple[str, ...] | None = None
+    if args.default_tools:
+        tokens = [token.strip() for token in args.default_tools.split(",")]
+        if any(token == "" for token in tokens):
+            print("[seed-automations] ERROR: --default-tools has empty entries", file=sys.stderr)
+            sys.exit(1)
+        default_tools = tuple(tokens)
+
     # One listing for the whole run: reconcile operations only touch their
     # own job (names are unique per spec), so per-spec listings would spend
     # N CLI spawns to observe the same state.
@@ -515,7 +613,7 @@ def main(argv: list[str] | None = None) -> None:
 
     for spec in specs:
         try:
-            reconcile(spec, jobs, model)
+            reconcile(spec, jobs, model, default_tools)
         except Exception as exc:
             print(
                 f"[seed-automations] ERROR reconciling '{spec.name}': {exc}",
