@@ -14,7 +14,10 @@
 FROM ghcr.io/openclaw/openclaw:2026.7.1-2
 
 # Image version (OCI label + io.agent.base.version); date-tag default.
+# Promoted to ENV so the entrypoint's upgrade-backup phase can detect
+# image-version deltas at runtime ({data}/last-image-version marker).
 ARG AGENT_BASE_VERSION=2026.08.23
+ENV AGENT_BASE_VERSION=${AGENT_BASE_VERSION}
 
 # The base image runs as the non-root `node` user (uid/gid 1000); root is
 # needed only for apt and /opt writes. Numeric IDs need no /etc/passwd
@@ -73,7 +76,11 @@ LABEL org.opencontainers.image.title="agent-base" \
 # Entry logs must stream (docker logs --follow) before the gateway is up.
 ENV PYTHONUNBUFFERED=1
 
-# Drop back to the non-root node user for runtime (node is uid/gid 1000 in
+# Upgrade-backup destination (the CLI refuses output inside {data}).
+# Consumers mount a named volume here to keep archives across containers.
+RUN mkdir /backups && chown 1000:1000 /backups
+
+# Drop back to the non-root node user for runtime (node is uid/guid 1000 in
 # the base image; numeric form per hadolint DL3066).
 USER 1000:1000
 

@@ -18,13 +18,14 @@ internals only.
 
 | Phase | Function (entrypoint.py) | Gist |
 | ----- | ------------------------ | ---- |
-| Load | `load_agent_spec` :114 | fail-closed; `AGENT_SPEC_PATH` override |
-| First boot | `first_boot_setup` :211 | only when `openclaw.json` absent; llama-cpp provider install is base behavior, not spec-configurable; a failed `setup` aborts the boot cleanly (exit 1, named env var) — `zai-coding-*` auth is load-gated on `ZAI_API_KEY` (see `spec.required_env_for_auth_choice`) |
-| Reconcile | `reconcile_config` :247 → `reconcile_mcp` :278 → `reconcile_plugins` :305 | idempotent; `config_set` shells out only on drift (compares `openclaw.json` directly) |
-| gh auth | `authenticate_gh` :322 | every boot when `features.gh_auth`; non-fatal |
-| Seed | `seed_content` :360 | workspace first boot only; skills + docs full replace every boot; `AGENT_SKIP_SEED=1` skips seeding only |
-| Post-startup | `post_startup` :617 | forked child: gateway wait ≤180s, cron seed in-process, memory reindex (3 tries / 10s backoff; degraded success is retryable), doctor skills reconcile (`disable_unavailable_skills` :536 — disable flagged, re-enable healed via `{data}/doctor-disabled-skills` marker; stdout is authoritative because doctor exits 1 iff findings exist) |
-| CI gate | `validate_spec` :605 | dry parse of spec + automations; zero mutation |
+| Load | `load_agent_spec` :125 | fail-closed; `AGENT_SPEC_PATH` override |
+| Upgrade backup | `backup_before_upgrade` :792 | on `AGENT_BASE_VERSION` delta vs `{data}/last-image-version`, warm volume → `openclaw backup create --verify --output /backups` (CLI refuses inside `{data}`); failure aborts (exit 1, marker kept → retry); fresh volume records marker only |
+| First boot | `first_boot_setup` :222 | only when `openclaw.json` absent; llama-cpp provider install is base behavior, not spec-configurable; a failed `setup` aborts the boot cleanly (exit 1, named env var) — `zai-coding-*` auth is load-gated on `ZAI_API_KEY` (see `spec.required_env_for_auth_choice`); ends with `_snapshot_base_plugins` → `{data}/agent-managed-plugins` (ownership for the orphan report) |
+| Reconcile | `reconcile_config` :302 → `reconcile_mcp` :333 → `reconcile_plugins` :402 | idempotent; `config_set` shells out only on drift (compares `openclaw.json` directly); MCP removal is ownership-marked (`{data}/agent-managed-mcp`; if_env-skipped entries count as still spec'd); plugin orphan report is warn-only and disabled without the plugins marker |
+| gh auth | `authenticate_gh` :464 | every boot when `features.gh_auth`; non-fatal |
+| Seed | `seed_content` :502 | workspace first boot only; skills + docs full replace every boot; `AGENT_SKIP_SEED=1` skips seeding only |
+| Post-startup | `post_startup` :747 | forked child: gateway wait ≤180s, cron seed in-process, memory reindex (3 tries / 10s backoff; degraded success is retryable), doctor skills reconcile (`disable_unavailable_skills` — disable flagged, re-enable healed via `{data}/doctor-disabled-skills` marker; stdout is authoritative because doctor exits 1 iff findings exist) |
+| CI gate | `validate_spec` :848 | dry parse of spec + automations; zero mutation |
 
 ## Conventions
 

@@ -742,7 +742,9 @@ class ReconcilePluginsMatrix(EntrypointTestCase):
         )
         for call in self.calls_with("openclaw", "plugins", "install"):
             self.assertIn("--force", call)
-        self.assertEqual([], self.calls_with("openclaw", "plugins", "list"))
+        # No first boot ran here → no agent-managed-plugins marker → the
+        # orphan report is disabled and never lists.
+        self.assertEqual([], self.calls_with("openclaw", "plugins", "list", "--json"))
 
     def test_local_plugin_install_failure_warns(self) -> None:
         def failing(cmd: list[str]) -> subprocess.CompletedProcess[str]:
@@ -1222,6 +1224,303 @@ class PostStartupFlow(EntrypointTestCase):
         self.assertIn("doctor lint found issues", err)
 
 
+class BackupBeforeUpgrade(EntrypointTestCase):
+    """X1a: verified backup before an image-version delta touches a warm
+    volume (`openclaw backup create --verify --output <dir>`, verified at
+    the pinned tag). Fail-closed: a failed backup aborts the boot — data
+    safety outranks gateway availability for a migration event."""
+
+    def _marker(self) -> Path:
+        return self.data / "last-image-version"
+
+    def _delta_boot(self, version: str) -> None:
+        self.data.mkdir(parents=True, exist_ok=True)
+        entrypoint.backup_before_upgrade(
+            {
+                "AGENT_BASE_VERSION": version,
+                "AGENT_BACKUP_DIR": str(self.data / "backups"),
+            }
+        )
+
+    def test_dev_boot_without_version_skips_entirely(self) -> None:
+        self.write_openclaw_config("{}")
+        entrypoint.backup_before_upgrade({})
+        self.assertEqual([], self.calls_with("openclaw", "backup"))
+        self.assertFalse(self._marker().exists())
+
+    def test_fresh_volume_writes_marker_without_backup(self) -> None:
+        self._delta_boot("1.0")
+        self.assertEqual([], self.calls_with("openclaw", "backup"))
+        self.assertEqual("1.0", self._marker().read_text(encoding="utf-8").strip())
+
+    def test_same_version_warm_volume_skips(self) -> None:
+        self.write_openclaw_config("{}")
+        self._marker().write_text("1.0", encoding="utf-8")
+        self._delta_boot("1.0")
+        self.assertEqual([], self.calls_with("openclaw", "backup"))
+        self.assertEqual("1.0", self._marker().read_text(encoding="utf-8").strip())
+
+    def test_version_delta_warm_volume_backs_up_and_updates_marker(self) -> None:
+        self.write_openclaw_config("{}")
+        self._marker().write_text("1.0", encoding="utf-8")
+        self._delta_boot("2.0")
+        call = self.calls_with("openclaw", "backup", "create")[0]
+        self.assertIn("--verify", call)
+        self.assertTrue(str(call[call.index("--output") + 1]).endswith("/backups"))
+        self.assertEqual("2.0", self._marker().read_text(encoding="utf-8").strip())
+
+    def test_missing_marker_on_warm_volume_counts_as_delta(self) -> None:
+        # Volumes migrating from older images have no marker — they get the
+        # backup on their first boot on a versioned image.
+        self.write_openclaw_config("{}")
+        self._delta_boot("2.0")
+        self.assertEqual(1, len(self.calls_with("openclaw", "backup", "create")))
+
+    def test_backup_failure_aborts_and_keeps_marker(self) -> None:
+        self.write_openclaw_config("{}")
+        self._marker().write_text("1.0", encoding="utf-8")
+
+        def failing(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+            if cmd[:3] == ["openclaw", "backup", "create"]:
+                return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="disk full")
+            return self._ok(cmd)
+
+        self.handler = failing
+        err = io.StringIO()
+        with self.assertRaises(SystemExit) as ctx, redirect_stderr(err):
+            self._delta_boot("2.0")
+        self.assertEqual(1, ctx.exception.code)
+        self.assertIn("upgrade backup failed", err.getvalue())
+        self.assertEqual("1.0", self._marker().read_text(encoding="utf-8").strip())
+
+    def test_backup_timeout_aborts(self) -> None:
+        self.write_openclaw_config("{}")
+        self._marker().write_text("1.0", encoding="utf-8")
+
+        def hanging(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+            if cmd[:3] == ["openclaw", "backup", "create"]:
+                raise subprocess.TimeoutExpired(cmd, 600)
+            return self._ok(cmd)
+
+        self.handler = hanging
+        with self.assertRaises(SystemExit):
+            self._delta_boot("2.0")
+
+    def test_backup_dir_override_respected(self) -> None:
+        self.write_openclaw_config("{}")
+        self._marker().write_text("1.0", encoding="utf-8")
+        custom = self.data / "custom-backups"
+        entrypoint.backup_before_upgrade(
+            {
+                "AGENT_BASE_VERSION": "2.0",
+                "AGENT_BACKUP_DIR": str(custom),
+            }
+        )
+        call = self.calls_with("openclaw", "backup", "create")[0]
+        self.assertEqual(str(custom), call[call.index("--output") + 1])
+        self.assertEqual("2.0", self._marker().read_text(encoding="utf-8").strip())
+
+
+class ManagedMcpRemoval(EntrypointTestCase):
+    """X1c: de-specified MCP servers are removed — but only ones the base
+    itself registered (marker `{data}/agent-managed-mcp`), never operator-
+    additions, and never spec servers merely skipped by if_env."""
+
+    SPEC: dict[str, object] = {
+        **copy.deepcopy(MINIMAL_SPEC),
+        "mcp_servers": [
+            {"name": "kept", "command": "tool"},
+            {"name": "guarded", "command": "tool", "if_env": ["NEEDED_KEY"]},
+        ],
+    }
+
+    def _marker(self) -> Path:
+        return self.data / "agent-managed-mcp"
+
+    def _write_marker(self, names: list[str]) -> None:
+        self.data.mkdir(parents=True, exist_ok=True)
+        self._marker().write_text(json.dumps(names), encoding="utf-8")
+
+    def _registered(self, cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        if cmd[:3] == ["openclaw", "mcp", "list"]:
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                stdout=json.dumps({"servers": ["kept", "guarded", "stale", "manual"]}),
+                stderr="",
+            )
+        return self._ok(cmd)
+
+    def test_despecified_managed_server_is_unset(self) -> None:
+        self._write_marker(["kept", "guarded", "stale"])
+        self.handler = self._registered
+        spec = self.load_spec_with(self.SPEC)
+        out, _err = self.capture(lambda: entrypoint.reconcile_mcp(spec, os.environ))
+        self.assertEqual(
+            [["openclaw", "mcp", "unset", "stale"]],
+            self.calls_with("openclaw", "mcp", "unset"),
+        )
+        self.assertIn("Removed MCP server 'stale'", out)
+        self.assertEqual(
+            ["kept", "guarded"], json.loads(self._marker().read_text(encoding="utf-8"))
+        )
+
+    def test_if_env_guarded_server_is_never_unset(self) -> None:
+        # 'guarded' is in the spec (env merely unsatisfied this boot) — it
+        # must not be treated as de-specified.
+        self._write_marker(["kept", "guarded"])
+        self.handler = self._registered
+        spec = self.load_spec_with(self.SPEC)
+        self.capture(lambda: entrypoint.reconcile_mcp(spec, os.environ))
+        self.assertEqual([], self.calls_with("openclaw", "mcp", "unset"))
+
+    def test_manual_server_never_touched(self) -> None:
+        # 'manual' is registered but was never base-managed (absent from
+        # the marker) — removal must not consider it.
+        self._write_marker(["kept"])
+        self.handler = self._registered
+        spec = self.load_spec_with(self.SPEC)
+        self.capture(lambda: entrypoint.reconcile_mcp(spec, os.environ))
+        self.assertEqual([], self.calls_with("openclaw", "mcp", "unset"))
+
+    def test_unset_failure_warns_and_keeps_marker_entry(self) -> None:
+        self._write_marker(["kept", "stale"])
+
+        def failing_unset(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+            if cmd[:3] == ["openclaw", "mcp", "unset"]:
+                return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="locked")
+            return self._registered(cmd)
+
+        self.handler = failing_unset
+        spec = self.load_spec_with(self.SPEC)
+        _out, err = self.capture(lambda: entrypoint.reconcile_mcp(spec, os.environ))
+        self.assertIn("mcp unset failed: stale", err)
+        self.assertEqual(
+            ["kept", "guarded", "stale"],
+            json.loads(self._marker().read_text(encoding="utf-8")),
+        )
+
+    def test_already_gone_server_dropped_from_marker_silently(self) -> None:
+        self._write_marker(["kept", "ghost"])
+
+        def listing(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+            if cmd[:3] == ["openclaw", "mcp", "list"]:
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout=json.dumps({"servers": ["kept"]}), stderr=""
+                )
+            return self._ok(cmd)
+
+        self.handler = listing
+        spec = self.load_spec_with(self.SPEC)
+        self.capture(lambda: entrypoint.reconcile_mcp(spec, os.environ))
+        self.assertEqual([], self.calls_with("openclaw", "mcp", "unset"))
+        self.assertEqual(
+            ["kept", "guarded"], json.loads(self._marker().read_text(encoding="utf-8"))
+        )
+
+    def test_first_boot_writes_marker_with_spec_names(self) -> None:
+        self.handler = self._registered
+        spec = self.load_spec_with(self.SPEC)
+        self.capture(lambda: entrypoint.reconcile_mcp(spec, os.environ))
+        self.assertEqual([], self.calls_with("openclaw", "mcp", "unset"))
+        self.assertEqual(
+            ["kept", "guarded"], json.loads(self._marker().read_text(encoding="utf-8"))
+        )
+
+
+class PluginOrphanReport(EntrypointTestCase):
+    """X1d: registry plugins installed but absent from the spec surface as
+    a warn-only report. The base's own installs are recorded at first boot
+    ({data}/agent-managed-plugins) — bundled and marker plugins are never
+    orphans, and a missing marker (older-image volume) disables the report."""
+
+    SPEC: dict[str, object] = {
+        **copy.deepcopy(MINIMAL_SPEC),
+        "plugins": [{"name": "approvals"}],
+    }
+
+    def _marker(self) -> Path:
+        return self.data / "agent-managed-plugins"
+
+    def _write_base_marker(self, ids: list[str]) -> None:
+        self.data.mkdir(parents=True, exist_ok=True)
+        self._marker().write_text(json.dumps(ids), encoding="utf-8")
+
+    def _listing(
+        self, installed: list[dict[str, object]]
+    ) -> Callable[[list[str]], subprocess.CompletedProcess[str]]:
+        def handler(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+            if cmd[:3] == ["openclaw", "plugins", "list"]:
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout=json.dumps({"plugins": installed}), stderr=""
+                )
+            return self._ok(cmd)
+
+        return handler
+
+    def test_extra_registry_plugin_warns(self) -> None:
+        self._write_base_marker(["zai", "llama-cpp"])
+        self.handler = self._listing(
+            [
+                {"id": "approvals", "origin": "registry"},
+                {"id": "old-plugin", "origin": "registry"},
+            ]
+        )
+        spec = self.load_spec_with(self.SPEC)
+        _out, err = self.capture(lambda: entrypoint.reconcile_plugins(spec))
+        self.assertIn("plugin 'old-plugin' installed but not in spec", err)
+        self.assertNotIn("approvals", err)
+
+    def test_bundled_and_base_plugins_are_not_orphans(self) -> None:
+        self._write_base_marker(["zai", "llama-cpp"])
+        self.handler = self._listing(
+            [
+                {"id": "approvals", "origin": "registry"},
+                {"id": "active-memory", "origin": "bundled"},
+                {"id": "llama-cpp", "origin": "npm"},
+                {"id": "zai", "origin": "registry"},
+            ]
+        )
+        spec = self.load_spec_with(self.SPEC)
+        _out, err = self.capture(lambda: entrypoint.reconcile_plugins(spec))
+        self.assertNotIn("not in spec", err)
+
+    def test_missing_marker_disables_report(self) -> None:
+        # Volumes from older images have no marker — never mis-attribute.
+        self.handler = self._listing([{"id": "old-plugin", "origin": "registry"}])
+        spec = self.load_spec_with(self.SPEC)
+        _out, err = self.capture(lambda: entrypoint.reconcile_plugins(spec))
+        self.assertNotIn("not in spec", err)
+
+    def test_unparseable_listing_stays_silent(self) -> None:
+        self._write_base_marker([])
+
+        def bad(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+            if cmd[:3] == ["openclaw", "plugins", "list"]:
+                return subprocess.CompletedProcess(cmd, 0, stdout="not json", stderr="")
+            return self._ok(cmd)
+
+        self.handler = bad
+        spec = self.load_spec_with(self.SPEC)
+        _out, err = self.capture(lambda: entrypoint.reconcile_plugins(spec))
+        self.assertNotIn("not in spec", err)
+
+    def test_first_boot_snapshots_base_plugins(self) -> None:
+        self.handler = self._listing(
+            [
+                {"id": "active-memory", "origin": "bundled"},
+                {"id": "zai", "origin": "registry"},
+                {"id": "llama-cpp", "origin": "npm"},
+            ]
+        )
+        spec = self.load_spec_with(self.SPEC)
+        self.capture(lambda: entrypoint.first_boot_setup(spec))
+        self.assertEqual(
+            ["zai", "llama-cpp"],
+            json.loads(self._marker().read_text(encoding="utf-8")),
+        )
+
+
 class MainFlow(EntrypointTestCase):
     def test_full_boot_orders_phases_and_hands_off_via_execvp(self) -> None:
         result = self.boot()
@@ -1245,7 +1544,9 @@ class MainFlow(EntrypointTestCase):
         self.assertEqual(0, result.code)
         self.assertFalse(self.has_call("openclaw", "config", "set"))
         self.assertFalse(self.has_call("openclaw", "mcp"))
-        self.assertFalse(self.has_call("openclaw", "plugins", "list"))
+        # The only plugins list is first boot's ownership snapshot — the
+        # reconcile-side orphan report never runs under AGENT_MANAGE_CONFIG=0.
+        self.assertEqual(1, len(self.calls_with("openclaw", "plugins", "list", "--json")))
         self.assertTrue(self.has_call("openclaw", "setup"))
         # First boot installs the llama-cpp provider (the only plugins
         # install in this boot: the default spec declares no plugins).

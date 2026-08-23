@@ -98,6 +98,47 @@ split with copy-paste entries.
 | `AGENT_GIT_TOKEN` | unset | gh token, used only when `features.gh_auth` is true. Never logged. |
 | `AGENT_AUTOMATIONS_DIR` | `/opt/agent/automations` | Override the automations directory. |
 | `AUTOMATION_MODEL` | unset | Cron model fallback when `--model` is not passed. The entrypoint always passes `spec.automations.model`, so this matters only for manual `seed_automations.py` runs. |
+| `AGENT_BASE_VERSION` | baked `ENV` | Image version (from the build ARG; also the OCI label). Read-only signal for the upgrade-backup phase — a delta against `{data}/last-image-version` triggers a verified backup before migration. |
+| `AGENT_BACKUP_DIR` | `/backups` | Destination for the upgrade backup (the CLI refuses output inside `{data}`). Mount a named volume at `/backups` to keep archives across containers. |
+
+## Upgrades
+
+Bumping a consumer's base image tag is the upgrade path; the base makes
+it safe in two ways:
+
+1. **Verified backup before migration.** On every boot the entrypoint
+   compares `AGENT_BASE_VERSION` (baked `ENV`) against
+   `{data}/last-image-version`. When it changes on a warm volume —
+   including a volume's first boot on a versioned image — the boot runs
+   `openclaw backup create --verify --output /backups` (the CLI refuses
+   output inside `{data}`; `AGENT_BACKUP_DIR` relocates it) before any
+   other phase mutates state. A failed backup **aborts the boot** (exit
+   1, named reason; data safety outranks gateway availability for a
+   migration), and the un-updated marker makes the next boot retry.
+   Backups are only as durable as their destination — mount a named
+   volume at `/backups` so archives survive container replacement.
+2. **Ownership-marked MCP removal.** Servers the base registered are
+   tracked in `{data}/agent-managed-mcp`. A server that leaves the spec
+   is unset (`openclaw mcp unset`) with a log line; servers the operator
+   registered by hand are never touched, and a spec server merely
+   skipped by `if_env` this boot is still spec'd — never removed.
+
+### Upgrade runbook
+
+1. `docker/podman compose down` (stop the agent; a live SQLite volume
+   must not be raw-copied).
+2. Optional but recommended: copy the newest `/backups/` archive to host
+   storage.
+3. Bump the base tag in the project Dockerfile
+   (`FROM ghcr.io/tankdonut/agent-base:<new-date-tag>`), rebuild, `up`.
+4. Expect one log line: `Image changed (<old> → <new>) — creating
+   verified backup`, then the normal boot sequence. A de-specified MCP
+   server logs `Removed MCP server '<name>' (no longer in spec)`.
+5. Verify: gateway healthy, `openclaw mcp list --json` shows exactly the
+   spec'd servers, `openclaw cron list --json` shows the seeded jobs.
+6. Rollback if anything is wrong: `down`, restore the backup archive per
+   `openclaw backup` docs, revert the tag, `up`. The version marker
+   rides the volume, so a rollback re-runs its own backup first.
 | `TELEGRAM_CHAT_ID` | unset | Chat ID for cron delivery (base-standardized). Unset means jobs run without Telegram delivery. |
 
 Do not set `OPENCLAW_HOME`. The entrypoint pops it at import: OpenClaw
@@ -184,7 +225,11 @@ adds only the missing. `no_probe` defaults to `true` (skip the startup
 probe); set `false` when you want registration to verify connectivity.
 `timeout` (seconds, local and remote) caps the startup probe. `if_env` skips the
 server when a listed variable is absent, which is the standard way to make
-an optional API-keyed server conditional.
+an optional API-keyed server conditional. Removing an entry from the spec
+removes its registration on the next boot — but only servers the base
+itself registered (tracked in `{data}/agent-managed-mcp`); operator-added
+servers are never pruned, and `if_env`-skipped entries count as still
+spec'd.
 
 ### Worked examples
 
@@ -231,6 +276,11 @@ wrapper entrypoint.
 1. **Load spec** (`load_agent_spec`): parse and template-resolve
    `spec.json` against the environment. Any violation aborts the boot
    before a single side effect.
+1b. **Upgrade backup** (`backup_before_upgrade`): when `AGENT_BASE_VERSION`
+   changed since the last boot on a warm volume, run
+   `openclaw backup create --verify` into `{data}/backups` before any
+   mutation; failure aborts (see [Upgrades](#upgrades)). Fresh volumes
+   just record the version; dev boots without the env var skip.
 2. **First boot** (`first_boot_setup`, only when `{data}/openclaw.json` is
    absent): `openclaw setup --auth-choice <setup.auth_choice>`, register
    `model.fallback`, add each channel, install

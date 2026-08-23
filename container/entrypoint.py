@@ -88,17 +88,28 @@ def warn(msg: str) -> None:
 
 
 def run(
-    *args: str, check: bool = True, capture: bool = False
+    *args: str, check: bool = True, capture: bool = False, timeout: float | None = None
 ) -> subprocess.CompletedProcess[str] | None:
     """Spawn a CLI command; check=True propagates failure, else the failed
-    result (or exception object) is returned for the caller to inspect."""
+    result (or exception object) is returned for the caller to inspect.
+    With timeout set, an expired spawn returns None when check=False (so
+    timeout maps to the existing "could not run" contract) and raises
+    otherwise."""
+    kwargs: dict[str, object] = {}
+    if timeout is not None:
+        kwargs["timeout"] = timeout
     try:
         return subprocess.run(
             list(args),
             check=check,
             capture_output=capture,
             text=True,
+            **kwargs,
         )
+    except subprocess.TimeoutExpired:
+        if check:
+            raise
+        return None
     except subprocess.CalledProcessError as exc:
         if check:
             raise
@@ -253,7 +264,39 @@ def first_boot_setup(spec: Spec) -> None:
     log("Installing local embedding provider (key-free semantic search)")
     run("openclaw", "plugins", "install", "@openclaw/llama-cpp-provider")
 
+    _snapshot_base_plugins()
+
     log("Infrastructure setup complete (MCP + plugins reconciled every boot)")
+
+
+def _snapshot_base_plugins() -> None:
+    """Record the non-bundled plugins present at the end of first boot —
+    the setup auth provider and llama-cpp — as {data}/agent-managed-plugins.
+    The orphan report never flags these. A missing marker (volumes from
+    older images) disables the report rather than mis-attributing."""
+    result = run("openclaw", "plugins", "list", "--json", check=False, capture=True)
+    if result is None or result.returncode != 0:
+        return
+    try:
+        data = json.loads(result.stdout)
+    except (json.JSONDecodeError, ValueError):
+        return
+    installed = data.get("plugins") if isinstance(data, dict) else None
+    if not isinstance(installed, list):
+        return
+    base_ids = [
+        entry.get("id")
+        for entry in installed
+        if isinstance(entry, dict)
+        and isinstance(entry.get("id"), str)
+        and entry.get("origin") != "bundled"
+    ]
+    try:
+        marker = data_dir() / "agent-managed-plugins"
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(json.dumps(base_ids), encoding="utf-8")
+    except OSError:
+        warn("could not write agent-managed-plugins marker")
 
 
 def reconcile_config(spec: Spec, env: Mapping[str, str]) -> None:
@@ -290,8 +333,10 @@ def mcp_exists(name: str) -> bool:
 def reconcile_mcp(spec: Spec, env: Mapping[str, str]) -> None:
     """Register each spec MCP server when missing (flags come from
     mcp_to_cli_args; --no-probe is included by that builder). Servers whose
-    if_env guard is unsatisfied are skipped with a log line. Failures warn
-    and never raise."""
+    if_env guard is unsatisfied are skipped with a log line. Servers the
+    base itself registered (tracked in {data}/agent-managed-mcp) that left
+    the spec are unset; operator-registered servers are never touched.
+    Failures warn and never raise."""
     for server in spec.mcp_servers:
         if not guard_satisfied(server.if_env, env):
             log(f"MCP server '{server.name}' skipped (if_env unsatisfied)")
@@ -303,6 +348,46 @@ def reconcile_mcp(spec: Spec, env: Mapping[str, str]) -> None:
         result = run("openclaw", "mcp", "add", server.name, *mcp_to_cli_args(server), check=False)
         if result is not None and result.returncode != 0:
             warn(f"mcp add failed: {server.name}")
+
+    _reconcile_managed_mcp(spec)
+
+
+def _reconcile_managed_mcp(spec: Spec) -> None:
+    """Ownership-marked removal: only servers recorded in the marker — ones
+    a previous base boot registered — and absent from the CURRENT spec
+    (including if_env-skipped entries, which are still spec'd) are unset.
+    The marker converges to the spec's server list plus failed removals."""
+    marker = data_dir() / "agent-managed-mcp"
+    try:
+        managed_raw = json.loads(marker.read_text(encoding="utf-8"))
+        managed = (
+            [name for name in managed_raw if isinstance(name, str)]
+            if isinstance(managed_raw, list)
+            else []
+        )
+    except (OSError, json.JSONDecodeError):
+        managed = []
+
+    spec_names = [server.name for server in spec.mcp_servers]
+    still_managed = [name for name in managed if name in spec_names]
+    for name in managed:
+        if name in spec_names:
+            continue
+        if not mcp_exists(name):
+            continue
+        result = run("openclaw", "mcp", "unset", name, check=False)
+        if result is not None and result.returncode == 0:
+            log(f"Removed MCP server '{name}' (no longer in spec)")
+            continue
+        warn(f"mcp unset failed: {name} (will retry next boot)")
+        still_managed.append(name)
+
+    converged = spec_names + [name for name in still_managed if name not in spec_names]
+    try:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(json.dumps(converged), encoding="utf-8")
+    except OSError:
+        warn("could not update agent-managed-mcp marker")
 
 
 def plugin_exists(name: str) -> bool:
@@ -317,7 +402,9 @@ def plugin_exists(name: str) -> bool:
 def reconcile_plugins(spec: Spec) -> None:
     """Local-source plugins (absolute path) are force-installed on every
     boot — their content is image-baked and must track the image. Registry
-    plugins install only when absent. Failures warn and never raise."""
+    plugins install only when absent. Non-bundled registry plugins absent
+    from the spec surface as a warn-only orphan report. Failures warn and
+    never raise."""
     for plugin in spec.plugins:
         if plugin.source is not None:
             log(f"Reconciling local plugin '{plugin.name}'")
@@ -331,6 +418,47 @@ def reconcile_plugins(spec: Spec) -> None:
                 warn(f"plugin install failed: {plugin.name}")
         else:
             log(f"Plugin '{plugin.name}' already installed — skipping")
+
+    _report_orphan_plugins(spec)
+
+
+def _report_orphan_plugins(spec: Spec) -> None:
+    """Warn-once-per-boot diff of installed vs spec'd registry plugins.
+    The base's own installs (marker from first boot) and bundled plugins
+    are never orphans. No marker (older-image volume) disables the report;
+    removal stays the operator's call — plugin installs carry no
+    per-install ownership record the MCP marker can rely on."""
+    try:
+        base_raw = json.loads((data_dir() / "agent-managed-plugins").read_text(encoding="utf-8"))
+        base_ids = (
+            {name for name in base_raw if isinstance(name, str)}
+            if isinstance(base_raw, list)
+            else set()
+        )
+    except (OSError, json.JSONDecodeError):
+        return
+
+    result = run("openclaw", "plugins", "list", "--json", check=False, capture=True)
+    if result is None or result.returncode != 0:
+        return
+    try:
+        data = json.loads(result.stdout)
+    except (json.JSONDecodeError, ValueError):
+        return
+    installed = data.get("plugins") if isinstance(data, dict) else None
+    if not isinstance(installed, list):
+        return
+
+    spec_names = {plugin.name for plugin in spec.plugins}
+    for entry in installed:
+        if not isinstance(entry, dict):
+            continue
+        plugin_id = entry.get("id")
+        if not isinstance(plugin_id, str):
+            continue
+        if entry.get("origin") == "bundled" or plugin_id in spec_names or plugin_id in base_ids:
+            continue
+        warn(f"plugin '{plugin_id}' installed but not in spec")
 
 
 def authenticate_gh(env: Mapping[str, str]) -> None:
@@ -661,6 +789,62 @@ def post_startup(spec: Spec, env: Mapping[str, str]) -> None:
         warn("doctor lint found issues")
 
 
+def backup_before_upgrade(env: Mapping[str, str]) -> None:
+    """Verified backup before an image-version delta touches a warm volume.
+
+    The image version comes from AGENT_BASE_VERSION (Dockerfile ENV, baked
+    from the build ARG); the last-seen version lives in
+    {data}/last-image-version. A warm volume (openclaw.json present) whose
+    marker differs — including volumes from pre-marker images — gets
+    `openclaw backup create --verify --output /backups` (AGENT_BACKUP_DIR
+    overrides) BEFORE any other phase mutates state. Failure aborts the boot
+    (exit 1): data
+    safety outranks gateway availability for a migration event, and the
+    un-updated marker makes the next boot retry. Fresh volumes record the
+    version without a backup. Dev boots without the env var skip entirely."""
+    version = env.get("AGENT_BASE_VERSION", "").strip()
+    if not version:
+        log("image version unknown (dev boot) — skipping upgrade backup check")
+        return
+
+    marker = data_dir() / "last-image-version"
+    try:
+        previous = marker.read_text(encoding="utf-8").strip()
+    except OSError:
+        previous = ""
+    if previous == version:
+        return
+
+    # The CLI refuses output inside its source tree ({data}), so backups
+    # default to the dedicated /backups path — mount a named volume there.
+    if (data_dir() / "openclaw.json").exists():
+        backups = Path(env.get("AGENT_BACKUP_DIR", "/backups"))
+        log(f"Image changed ({previous or 'unknown'} → {version}) — creating verified backup")
+        try:
+            backups.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            warn("upgrade backup failed: cannot create backups directory — aborting boot")
+            raise SystemExit(1) from None
+        result = run(
+            "openclaw",
+            "backup",
+            "create",
+            "--verify",
+            "--output",
+            str(backups),
+            check=False,
+            timeout=600,
+        )
+        if result is None or result.returncode != 0:
+            warn("upgrade backup failed — aborting boot (fix the backup, then restart)")
+            raise SystemExit(1)
+
+    try:
+        marker.write_text(version, encoding="utf-8")
+    except OSError:
+        warn("could not record image version (backup check will rerun next boot)")
+
+
 def validate_spec(env: Mapping[str, str]) -> int:
     """--validate-spec mode for downstream CI: load the spec and the
     automations directory WITHOUT any mutation. Returns 0 when both parse,
@@ -694,6 +878,8 @@ def main(argv: list[str] | None = None) -> int:
     spec = load_agent_spec(env)
 
     data_dir().mkdir(parents=True, exist_ok=True)
+
+    backup_before_upgrade(env)
 
     if not (data_dir() / "openclaw.json").exists():
         first_boot_setup(spec)

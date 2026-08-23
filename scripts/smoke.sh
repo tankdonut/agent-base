@@ -36,6 +36,7 @@ import entrypoint
 env = os.environ
 spec = entrypoint.load_agent_spec(env)
 entrypoint.data_dir().mkdir(parents=True, exist_ok=True)
+entrypoint.backup_before_upgrade(env)
 
 if not (entrypoint.data_dir() / "openclaw.json").exists():
     entrypoint.first_boot_setup(spec)
@@ -48,6 +49,8 @@ if spec.features.gh_auth:
 entrypoint.seed_content(spec, env)
 entrypoint.post_startup(spec, env)
 
+print(f"=== MARKER: version={(entrypoint.data_dir() / 'last-image-version').read_text(encoding='utf-8').strip() if (entrypoint.data_dir() / 'last-image-version').exists() else 'MISSING'} ===")
+print(f"=== MARKER: managed-mcp={(entrypoint.data_dir() / 'agent-managed-mcp').read_text(encoding='utf-8').strip() if (entrypoint.data_dir() / 'agent-managed-mcp').exists() else 'MISSING'} ===")
 print("=== SHIM LOG ===")
 with open(os.environ["OPENCLAW_SHIM_LOG"], encoding="utf-8") as f:
     sys.stdout.write(f.read())
@@ -117,6 +120,18 @@ smoke_fixture() { # smoke_fixture FIXTURE EXPECTED_MCP_NAME
     return 0
   fi
   sed -n '/^=== SHIM LOG ===$/,$p' "$boot_log" | tail -n +2 >"$LOG"
+
+  # --- X1 phase markers (printed by the runner from {data}) ---
+  if grep -q "^=== MARKER: version=smoke ===$" "$boot_log"; then
+    pass "upgrade-backup phase recorded image version (fresh volume, no backup)"
+  else
+    fail "upgrade-backup phase did not record the image version"
+  fi
+  if grep -q "^=== MARKER: managed-mcp=\[" "$boot_log"; then
+    pass "managed-mcp marker written (ownership tracking active)"
+  else
+    fail "managed-mcp marker missing"
+  fi
 
   # --- shim.log assertions (args are single-quoted per arg in the log) ---
   assert_present "'setup'" "first boot: openclaw setup ran"
