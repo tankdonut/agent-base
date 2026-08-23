@@ -118,7 +118,7 @@ class GoldenExampleSpec(SpecTestCase):
         self.assertEqual("zai-coding-global", spec.auth_choice)
         self.assertEqual("zai/glm-4.7", spec.model_fallback)
         self.assertEqual("zai/glm-4.7", spec.automations_model)
-        self.assertEqual(Features(gh_auth=True), spec.features)
+        self.assertEqual(Features(gh_auth=True, gateway_auth=True), spec.features)
 
         by_path = {entry.path: entry for entry in spec.config_entries}
         token = by_path["telegram.botToken"]
@@ -318,6 +318,114 @@ class AutomationsDefaultTools(SpecTestCase):
                 self.load_expect_error(
                     variant, env={"ZAI_API_KEY": "zai-key"}, containing="default_tools"
                 )
+
+
+class PathTemplating(SpecTestCase):
+    """Config paths accept {env:...} tokens (chat IDs stop being baked
+    into git). Resolution mirrors values: fail-closed when unguarded,
+    deferred when the entry's if_env guard is unsatisfied at load."""
+
+    def test_path_tokens_resolve(self) -> None:
+        variant = copy.deepcopy(MINIMAL)
+        variant["config"] = [
+            {
+                "path": "channels.telegram.groups.{env:TELEGRAM_GROUP_ID}.enabled",
+                "value": True,
+            }
+        ]
+        spec = self.load(variant, env={"ZAI_API_KEY": "zai-key", "TELEGRAM_GROUP_ID": "-10042"})
+        self.assertEqual("channels.telegram.groups.-10042.enabled", spec.config_entries[0].path)
+
+    def test_missing_path_var_fails_closed_naming_var(self) -> None:
+        variant = copy.deepcopy(MINIMAL)
+        variant["config"] = [
+            {"path": "channels.telegram.groups.{env:TELEGRAM_GROUP_ID}.enabled", "value": True}
+        ]
+        message = self.load_expect_error(
+            variant, env={"ZAI_API_KEY": "zai-key"}, containing="TELEGRAM_GROUP_ID"
+        )
+        self.assertIn("path", message)
+
+    def test_guarded_entry_with_unresolvable_path_loads_inert(self) -> None:
+        variant = copy.deepcopy(MINIMAL)
+        variant["config"] = [
+            {
+                "path": "channels.telegram.groups.{env:TELEGRAM_GROUP_ID}.enabled",
+                "value": True,
+                "if_env": ["TELEGRAM_GROUP_ID"],
+            }
+        ]
+        spec = self.load(variant, env={"ZAI_API_KEY": "zai-key"})
+        self.assertEqual(1, len(spec.config_entries))
+
+
+class OptionalSecrets(SpecTestCase):
+    """if_env-guarded entries are optional: when the guard is unsatisfied
+    at load, value resolution is deferred (raw tokens preserved, entry
+    inert) instead of aborting the boot on the missing var."""
+
+    def test_guarded_entry_missing_var_loads_and_stays_raw(self) -> None:
+        variant = copy.deepcopy(MINIMAL)
+        variant["config"] = [
+            {
+                "path": "approvals.plugin.mode",
+                "value": "{env:OPTIONAL_TOKEN}",
+                "if_env": ["OPTIONAL_TOKEN"],
+            }
+        ]
+        spec = self.load(variant, env={"ZAI_API_KEY": "zai-key"})
+        self.assertEqual("{env:OPTIONAL_TOKEN}", spec.config_entries[0].resolved_value)
+
+    def test_guard_satisfied_missing_var_still_fails_closed(self) -> None:
+        variant = copy.deepcopy(MINIMAL)
+        variant["config"] = [
+            {
+                "path": "agents.defaults.heartbeat.to",
+                "value": "{env:TELEGRAM_CHAT_ID}",
+                "if_env": ["TELEGRAM_BOT_TOKEN"],
+            }
+        ]
+        self.load_expect_error(
+            variant,
+            env={"ZAI_API_KEY": "zai-key", "TELEGRAM_BOT_TOKEN": "bot-1"},
+            containing="TELEGRAM_CHAT_ID",
+        )
+
+    def test_unguarded_missing_var_still_fails_closed(self) -> None:
+        variant = copy.deepcopy(MINIMAL)
+        variant["config"] = [{"path": "x.y", "value": "{env:MISSING_ONE}"}]
+        self.load_expect_error(variant, env={"ZAI_API_KEY": "zai-key"}, containing="MISSING_ONE")
+
+    def test_guarded_mcp_server_missing_key_loads(self) -> None:
+        variant = copy.deepcopy(MINIMAL)
+        variant["mcp_servers"] = [
+            {
+                "name": "optional-remote",
+                "url": "https://mcp.example.com/s",
+                "headers": {"Authorization": "Bearer {env:OPTIONAL_MCP_KEY}"},
+                "if_env": ["OPTIONAL_MCP_KEY"],
+            }
+        ]
+        spec = self.load(variant, env={"ZAI_API_KEY": "zai-key"})
+        self.assertEqual(1, len(spec.mcp_servers))
+        server = spec.mcp_servers[0]
+        self.assertIsInstance(server, RemoteMcpServer)
+        self.assertEqual("Bearer {env:OPTIONAL_MCP_KEY}", server.headers["Authorization"])
+
+    def test_guarded_mcp_server_satisfied_resolves(self) -> None:
+        variant = copy.deepcopy(MINIMAL)
+        variant["mcp_servers"] = [
+            {
+                "name": "optional-remote",
+                "url": "https://mcp.example.com/s",
+                "headers": {"Authorization": "Bearer {env:OPTIONAL_MCP_KEY}"},
+                "if_env": ["OPTIONAL_MCP_KEY"],
+            }
+        ]
+        spec = self.load(variant, env={"ZAI_API_KEY": "zai-key", "OPTIONAL_MCP_KEY": "sk-1"})
+        server = spec.mcp_servers[0]
+        self.assertIsInstance(server, RemoteMcpServer)
+        self.assertEqual("Bearer sk-1", server.headers["Authorization"])
 
 
 class TemplateResolution(SpecTestCase):

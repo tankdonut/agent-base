@@ -70,7 +70,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import seed_automations
-from spec import Spec, SpecError, load_spec, mcp_to_cli_args, required_env_for_auth_choice
+from spec import (
+    ConfigEntry,
+    Spec,
+    SpecError,
+    load_spec,
+    mcp_to_cli_args,
+    required_env_for_auth_choice,
+)
 
 SPEC_PATH = Path("/opt/agent/spec.json")
 SEED_BASE = Path("/opt/seed")
@@ -338,6 +345,41 @@ def reconcile_config(spec: Spec, env: Mapping[str, str]) -> None:
     if not spec_owns_tools:
         log("Applying base tools.deny default (agent tool policy unconfigured)")
         config_set("tools.deny", json.dumps(list(TOOLS_DENY_DEFAULT)), "--strict-json")
+
+    if spec.features.gateway_auth:
+        log("Applying gateway auth pair (features.gateway_auth)")
+        for synthetic in _gateway_auth_entries():
+            if not synthetic.env_guard_satisfied(env):
+                continue
+            if synthetic.use_strict_json:
+                config_set(synthetic.path, synthetic.cli_value, "--strict-json")
+            else:
+                config_set(synthetic.path, synthetic.cli_value)
+
+
+def _gateway_auth_entries() -> list[ConfigEntry]:
+    """The gateway-token auth pair both consumers hand-rolled before
+    features.gateway_auth; guarded on OPENCLAW_GATEWAY_TOKEN (absent token
+    → both skipped)."""
+    pair_value = {"source": "env", "provider": "default", "id": "OPENCLAW_GATEWAY_TOKEN"}
+    return [
+        ConfigEntry(
+            path="secrets.providers.default",
+            raw_value={"source": "env"},
+            resolved_value={"source": "env"},
+            cli_value=json.dumps({"source": "env"}),
+            use_strict_json=True,
+            if_env=("OPENCLAW_GATEWAY_TOKEN",),
+        ),
+        ConfigEntry(
+            path="gateway.auth.token",
+            raw_value=pair_value,
+            resolved_value=pair_value,
+            cli_value=json.dumps(pair_value),
+            use_strict_json=True,
+            if_env=("OPENCLAW_GATEWAY_TOKEN",),
+        ),
+    ]
 
 
 def mcp_exists(name: str) -> bool:

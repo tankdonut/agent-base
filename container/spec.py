@@ -160,9 +160,11 @@ class Plugin:
 @dataclass(frozen=True, slots=True)
 class Features:
     """Toggles for optional base-image behaviour; gh_auth bootstraps GitHub
-    CLI auth at startup (default off)."""
+    CLI auth, gateway_auth installs the gateway-token auth pair (both
+    default off)."""
 
     gh_auth: bool = False
+    gateway_auth: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -221,6 +223,34 @@ def mcp_to_cli_args(server: McpServer) -> list[str]:
 _TOKEN_RE = re.compile(r"\{([^{}]*)\}")
 _UNCLOSED_TOKEN_RE = re.compile(r"\{[^{}]*$")
 _TOOL_ENTRY_RE = re.compile(r"[a-z0-9_][a-z0-9_.:-]*|\*")
+
+
+class _DeferredEnv(Mapping[str, str]):
+    """Lookup for an if_env-unsatisfied entry: missing vars substitute
+    their literal token, so nothing aborts and the inert entry keeps its
+    raw shape (it is skipped at reconcile and never applies)."""
+
+    def __init__(self, env: Mapping[str, str]) -> None:
+        self._env = env
+
+    def __getitem__(self, key: str) -> str:
+        return self._env.get(key, f"{{env:{key}}}")
+
+    def __iter__(self):
+        return iter(self._env)
+
+    def __len__(self) -> int:
+        return len(self._env)
+
+
+def _env_for(if_env: tuple[str, ...], env: Mapping[str, str]) -> Mapping[str, str]:
+    """Env used to resolve an entry: the real one when its guard is
+    satisfied, a deferred one otherwise (optional-secret pattern)."""
+    if all(name in env for name in if_env):
+        return env
+    return _DeferredEnv(env)
+
+
 _ENV_PREFIX = "env:"
 
 
@@ -342,7 +372,7 @@ _MCP_ENTRY_KEYS = frozenset(
     {"name", "command", "url", "args", "env", "headers", "no_probe", "timeout", "if_env"}
 )
 _PLUGIN_KEYS = frozenset({"name", "source"})
-_FEATURES_KEYS = frozenset({"gh_auth"})
+_FEATURES_KEYS = frozenset({"gh_auth", "gateway_auth"})
 _AUTOMATIONS_KEYS = frozenset({"model", "default_tools"})
 
 
@@ -354,12 +384,17 @@ def _parse_config_entries(
         base = f"config[{index}]"
         node = _expect_object(raw, base)
         _reject_unknown_keys(node, _CONFIG_ENTRY_KEYS, base)
-        path = _expect_str(_require_key(node, "path", base), _join(base, "path"))
-        raw_value: JSONValue = _require_key(node, "value", base)
         strict = _expect_bool(node.get("strict", False), _join(base, "strict"))
         split_csv = _expect_bool(node.get("split_csv", False), _join(base, "split_csv"))
         if_env = tuple(_expect_str_list(node.get("if_env", []), _join(base, "if_env")))
-        resolved = _resolve_value(raw_value, env, _join(base, "value"))
+        lookup = _env_for(if_env, env)
+        path = _resolve_string(
+            _expect_str(_require_key(node, "path", base), _join(base, "path")),
+            lookup,
+            _join(base, "path"),
+        )
+        raw_value: JSONValue = _require_key(node, "value", base)
+        resolved = _resolve_value(raw_value, lookup, _join(base, "value"))
         if split_csv:
             if not isinstance(resolved, str):
                 _fail(
@@ -417,6 +452,7 @@ def _parse_mcp_servers(root: Mapping[str, JSONValue], env: Mapping[str, str]) ->
         _reject_unknown_keys(node, _MCP_ENTRY_KEYS, base)
         name = _expect_str(_require_key(node, "name", base), _join(base, "name"))
         if_env = tuple(_expect_str_list(node.get("if_env", []), _join(base, "if_env")))
+        lookup = _env_for(if_env, env)
         no_probe = _expect_bool(node.get("no_probe", True), _join(base, "no_probe"))
         has_command = "command" in node
         has_url = "url" in node
@@ -436,10 +472,10 @@ def _parse_mcp_servers(root: Mapping[str, JSONValue], env: Mapping[str, str]) ->
                 RemoteMcpServer(
                     name=name,
                     url=_resolve_string(
-                        _expect_str(node["url"], _join(base, "url")), env, _join(base, "url")
+                        _expect_str(node["url"], _join(base, "url")), lookup, _join(base, "url")
                     ),
                     headers={
-                        key: _resolve_string(value, env, _join(f"{base}.headers", key))
+                        key: _resolve_string(value, lookup, _join(f"{base}.headers", key))
                         for key, value in _expect_str_dict(
                             node.get("headers", {}), _join(base, "headers")
                         ).items()
@@ -458,17 +494,17 @@ def _parse_mcp_servers(root: Mapping[str, JSONValue], env: Mapping[str, str]) ->
                     name=name,
                     command=_resolve_string(
                         _expect_str(node["command"], _join(base, "command")),
-                        env,
+                        lookup,
                         _join(base, "command"),
                     ),
                     args=tuple(
-                        _resolve_string(arg, env, f"{base}.args[{i}]")
+                        _resolve_string(arg, lookup, f"{base}.args[{i}]")
                         for i, arg in enumerate(
                             _expect_str_list(node.get("args", []), _join(base, "args"))
                         )
                     ),
                     env={
-                        key: _resolve_string(value, env, _join(f"{base}.env", key))
+                        key: _resolve_string(value, lookup, _join(f"{base}.env", key))
                         for key, value in _expect_str_dict(
                             node.get("env", {}), _join(base, "env")
                         ).items()
@@ -509,7 +545,10 @@ def _parse_plugins(root: Mapping[str, JSONValue]) -> list[Plugin]:
 def _parse_features(root: Mapping[str, JSONValue]) -> Features:
     node = _expect_object(root.get("features", {}), "features")
     _reject_unknown_keys(node, _FEATURES_KEYS, "features")
-    return Features(gh_auth=_expect_bool(node.get("gh_auth", False), "features.gh_auth"))
+    return Features(
+        gh_auth=_expect_bool(node.get("gh_auth", False), "features.gh_auth"),
+        gateway_auth=_expect_bool(node.get("gateway_auth", False), "features.gateway_auth"),
+    )
 
 
 _ZAI_AUTH_PREFIX = "zai-coding-"

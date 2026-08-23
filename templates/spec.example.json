@@ -77,7 +77,8 @@
     }
   ],
   "features": {
-    "gh_auth": true
+    "gh_auth": true,
+    "gateway_auth": true
   },
   "automations": {
     "model": "zai/glm-4.7"

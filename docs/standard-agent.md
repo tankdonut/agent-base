@@ -179,11 +179,11 @@ and every error message starts with the JSON path of the offending node
 | `setup` | `auth_choice` | Required. Passed to `openclaw setup --auth-choice` on first boot (e.g. `zai-coding-global`). `zai-coding-*` choices require `ZAI_API_KEY` in the environment — the loader fails closed naming the var, and a setup that still fails aborts the boot with a named-var hint (exit 1) instead of crash-looping. |
 | `model` | `fallback` | Required. Registered via `openclaw models fallbacks add` on first boot. |
 | `automations` | `model` | Required. Model for cron agent turns. No default exists by design (see decisions below). |
-| `config` | `path`, `value`, `strict`, `if_env`, `split_csv` | `path` and `value` required; the rest are optional booleans / string lists. Applied in spec order. |
+| `config` | `path`, `value`, `strict`, `if_env`, `split_csv` | `path` and `value` required; the rest are optional booleans / string lists. Applied in spec order. `path` accepts `{env:...}` tokens (chat IDs stop being baked into git); resolution mirrors `value`, including the guard deferral above. |
 | `channels` | `type`, `use_env` | `type` required. `use_env` (default `true`) feeds the channel credentials from the environment. |
 | `mcp_servers` | `name`, `command` or `url`, `args`, `env`, `headers`, `no_probe`, `timeout`, `if_env` | Exactly one of `command` (local stdio) and `url` (remote HTTP); specifying both or neither is an error. |
 | `plugins` | `name`, `source` | `source` absent means install `name` from the registry; present means a local plugin directory and must be an absolute path. |
-| `features` | `gh_auth` | Default `false`. See Quick start. |
+| `features` | `gh_auth`, `gateway_auth` | Both default `false`. `gh_auth`: see Quick start. `gateway_auth`: the base installs the gateway-token auth pair (`secrets.providers.default` + `gateway.auth.token` from `OPENCLAW_GATEWAY_TOKEN`) — replaces the hand-rolled entries; the pair is skipped when the token is absent. |
 
 ### Templating
 
@@ -198,13 +198,17 @@ Any other brace content, or an unclosed brace, is an error. Template
 resolution happens once, eagerly, against the environment the loader was
 given; nothing re-resolves later.
 
-One consequence deserves calling out: `if_env` guards runtime application,
-not load-time resolution. A spec that templates `{env:TELEGRAM_CHAT_ID}`
-inside an `if_env: ["TELEGRAM_CHAT_ID"]` entry still requires the variable
-at load time; a boot without it aborts loudly rather than running
-half-configured. Pair `if_env` with literal values you want applied only
-when some other variable exists (the freya-like fixture's
-`heartbeat.target: telegram` entry shows the pattern).
+`if_env`-guarded entries are the exception — the optional-secret pattern:
+when an entry's guard is UNSATISFIED at load, its `value` (and `path`)
+resolution is deferred (raw tokens preserved) and the entry is inert; the
+reconciler skips it. A spec that templates `{env:TELEGRAM_CHAT_ID}`
+inside an `if_env: ["TELEGRAM_CHAT_ID"]` entry boots fine without the
+variable — optional secrets are genuinely optional. The fail-closed rule
+is unchanged for everything else: unguarded refs, and refs inside
+entries whose guard IS satisfied, abort the load naming the variable.
+The same deferral applies to guarded `mcp_servers` entries (headers/urls
+stay raw when the guard is unsatisfied; the server is skipped at
+reconcile).
 
 ### config entries
 

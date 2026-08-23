@@ -1539,6 +1539,50 @@ class PluginOrphanReport(EntrypointTestCase):
         )
 
 
+class FeaturesGatewayAuth(EntrypointTestCase):
+    """X6: features.gateway_auth replaces the gateway-auth + secrets-provider
+    pair both consumers hand-rolled. The base emits the pair (guarded on
+    OPENCLAW_GATEWAY_TOKEN) after the spec's own entries."""
+
+    SPEC_WITH_FLAG: dict[str, object] = {
+        **copy.deepcopy(MINIMAL_SPEC),
+        "features": {"gateway_auth": True},
+    }
+
+    def test_flag_plus_token_applies_the_pair(self) -> None:
+        spec = self.load_spec_with(self.SPEC_WITH_FLAG, {"OPENCLAW_GATEWAY_TOKEN": "gw-1"})
+        env = dict(os.environ)
+        env["OPENCLAW_GATEWAY_TOKEN"] = "gw-1"
+        self.capture(lambda: entrypoint.reconcile_config(spec, env))
+        sets = self.calls_with("openclaw", "config", "set")
+        paths = [c[3] for c in sets]
+        self.assertIn("secrets.providers.default", paths)
+        self.assertIn("gateway.auth.token", paths)
+        token_call = next(c for c in sets if c[3] == "gateway.auth.token")
+        self.assertEqual(
+            '{"source": "env", "provider": "default", "id": "OPENCLAW_GATEWAY_TOKEN"}',
+            token_call[4],
+        )
+        self.assertIn("--strict-json", token_call)
+
+    def test_flag_without_token_sets_nothing_extra(self) -> None:
+        with mock.patch.dict(os.environ):
+            os.environ.pop("OPENCLAW_GATEWAY_TOKEN", None)
+            spec = self.load_spec_with(self.SPEC_WITH_FLAG)
+            self.capture(lambda: entrypoint.reconcile_config(spec, os.environ))
+        paths = [c[3] for c in self.calls_with("openclaw", "config", "set")]
+        self.assertNotIn("gateway.auth.token", paths)
+        self.assertNotIn("secrets.providers.default", paths)
+
+    def test_flag_absent_sets_nothing_extra(self) -> None:
+        env = dict(os.environ)
+        env["OPENCLAW_GATEWAY_TOKEN"] = "gw-1"
+        spec = self.load_default_spec()
+        self.capture(lambda: entrypoint.reconcile_config(spec, env))
+        paths = [c[3] for c in self.calls_with("openclaw", "config", "set")]
+        self.assertNotIn("gateway.auth.token", paths)
+
+
 class ToolsDenyDefault(EntrypointTestCase):
     """X2: the base applies a default tools.deny (recursion/spawn surfaces)
     unless the spec configures tools itself — the agent's own chat turns
@@ -1809,12 +1853,24 @@ class ValidateSpecMode(EntrypointTestCase):
             {
                 "AGENT_SPEC_PATH": str(FIXTURES / "freya-like" / "spec.json"),
                 "AGENT_AUTOMATIONS_DIR": str(FIXTURES / "freya-like" / "automations"),
-                **{k: v for k, v in FREYA_ENV.items() if k != "TELEGRAM_ALLOWED_USERS"},
+                **{k: v for k, v in FREYA_ENV.items() if k != "AC_INFINITY_PASSWORD"},
             },
         ):
             code, _out, err = self.validate()
         self.assertEqual(1, code)
-        self.assertIn("TELEGRAM_ALLOWED_USERS", err)
+        self.assertIn("AC_INFINITY_PASSWORD", err)
+
+    def test_missing_optional_guarded_env_passes_validation(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {
+                "AGENT_SPEC_PATH": str(FIXTURES / "freya-like" / "spec.json"),
+                "AGENT_AUTOMATIONS_DIR": str(FIXTURES / "freya-like" / "automations"),
+                **{k: v for k, v in FREYA_ENV.items() if k != "TELEGRAM_ALLOWED_USERS"},
+            },
+        ):
+            code, _out, _err = self.validate()
+        self.assertEqual(0, code)
 
     def test_empty_automations_dir_is_rejected(self) -> None:
         empty = self.home / "empty-automations"
@@ -1908,9 +1964,9 @@ class FixtureBoots(EntrypointTestCase):
 
     def test_freya_like_fails_closed_without_declared_env(self) -> None:
         # heartbeat.to templates {env:TELEGRAM_CHAT_ID}; templates resolve
-        # at load time even for if_env-guarded entries, so a boot without
-        # the declared env aborts loudly instead of running half-configured.
-        env = {k: v for k, v in FREYA_ENV.items() if k != "TELEGRAM_CHAT_ID"}
+        # Unguarded refs stay fail-closed: a boot without the required
+        # AC credentials aborts loudly instead of running half-configured.
+        env = {k: v for k, v in FREYA_ENV.items() if k != "AC_INFINITY_EMAIL"}
         fixture = FIXTURES / "freya-like"
         with (
             mock.patch.dict(
@@ -1925,8 +1981,16 @@ class FixtureBoots(EntrypointTestCase):
             self.assertRaises(entrypoint.SpecError) as ctx,
         ):
             self.boot()
-        self.assertIn("TELEGRAM_CHAT_ID", str(ctx.exception))
+        self.assertIn("AC_INFINITY_EMAIL", str(ctx.exception))
         self.assertEqual([], self.calls)
+
+    def test_freya_like_boots_without_optional_chat_env(self) -> None:
+        # Optional-secret pattern (X6): TELEGRAM_CHAT_ID is guarded
+        # everywhere it appears, so a boot without it succeeds — the
+        # heartbeat entries skip instead of aborting the load.
+        env = {k: v for k, v in FREYA_ENV.items() if k != "TELEGRAM_CHAT_ID"}
+        result = self.boot_fixture("freya-like", env)
+        self.assertEqual(0, result.code)
 
     def test_mimir_like_full_boot_registers_all_six_servers(self) -> None:
         result = self.boot_fixture("mimir-like", MIMIR_ENV)
