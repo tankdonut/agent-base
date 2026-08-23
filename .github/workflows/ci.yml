@@ -109,6 +109,7 @@ jobs:
       - name: Build release notes (changes + digest)
         run: |
           TAG="$GITHUB_REF_NAME"
+          BASE_URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
           PREV=$(git tag -l '20*' | sort -V | awk -v t="$TAG" '$0==t{print p} {p=$0}')
           TOKEN=$(curl -sf "https://ghcr.io/token?scope=repository:tankdonut/agent-base:pull&service=ghcr.io" |
             sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
@@ -126,9 +127,9 @@ jobs:
             echo "### Changes"
             echo
             if [ -n "$PREV" ]; then
-              git log --format='- %s' "$PREV..$TAG"
+              git log --format="- %s ([%h]($BASE_URL/commit/%H))" "$PREV..$TAG"
             else
-              git log --format='- %s' "$TAG"
+              git log --format="- %s ([%h]($BASE_URL/commit/%H))" "$TAG"
             fi
           } > release-notes.md
           cat release-notes.md
