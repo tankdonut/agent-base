@@ -14,10 +14,10 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Run pre-commit checks
-        uses: tankdonut/github-actions/actions/pre-commit@v1
+        uses: tankdonut/github-actions/actions/pre-commit@246ecbe1d54fe84165f0b9f7d8aae44a0e5fa373 # v1
 
   test:
     runs-on: ubuntu-latest
@@ -26,10 +26,10 @@ jobs:
         # 3.11 = image floor (bookworm); 3.14 = host-current syntax-drift guard.
         python-version: ["3.11", "3.14"]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Python + uv
-        uses: tankdonut/github-actions/actions/setup-python-uv@v1
+        uses: tankdonut/github-actions/actions/setup-python-uv@246ecbe1d54fe84165f0b9f7d8aae44a0e5fa373 # v1
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -47,7 +47,7 @@ jobs:
     # bug (including via renovate base-image bumps, whose PRs run CI).
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Build image (build-only; the image job owns publishing)
         run: docker build --build-arg AGENT_BASE_VERSION=contract
@@ -63,7 +63,9 @@ jobs:
     permissions:
       contents: read
       packages: write
-    uses: tankdonut/github-actions/.github/workflows/build-and-publish-image.yaml@main
+    # SHA-pinned (the trailing comment tracks the mutable ref renovate
+    # maintains — tj-actions CVE-2025-30066 class protection).
+    uses: tankdonut/github-actions/.github/workflows/build-and-publish-image.yaml@77a3164f27e2dfb209949dda22e6d5f4b3ac7fc6 # main
     with:
       image-name: agent-base
       build-command: ./make.sh build
@@ -78,3 +80,30 @@ jobs:
       install-podman: false
       login-runtime: docker
       setup-python: false
+
+  release:
+    # Chained after the image job — a release can no longer exist while the
+    # image 404s (the standalone release.yml raced the image publish on tag
+    # pushes; both fired with no ordering). Tag pushes only.
+    needs: [image]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Verify tracked image refs exist in GHCR
+        run: scripts/check-image-refs.sh
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # No clone in this job; gh resolves the repo via GH_REPO instead
+          # of shelling out to git (fatal: not a git repository otherwise).
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --notes "Image: \`ghcr.io/tankdonut/agent-base:$GITHUB_REF_NAME\`" \
+            --generate-notes
