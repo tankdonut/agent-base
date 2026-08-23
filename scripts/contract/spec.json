@@ -1,0 +1,44 @@
+{
+  "specVersion": 1,
+  "agent": {
+    "name": "contract-canary"
+  },
+  "setup": {
+    "auth_choice": "zai-coding-global"
+  },
+  "model": {
+    "fallback": "zai/glm-4.7"
+  },
+  "automations": {
+    "model": "zai/glm-4.7"
+  },
+  "config": [
+    {
+      "path": "tools.profile",
+      "value": "coding",
+      "strict": true
+    }
+  ],
+  "channels": [
+    {
+      "type": "telegram",
+      "use_env": true
+    }
+  ],
+  "mcp_servers": [
+    {
+      "name": "contract-remote",
+      "url": "https://mcp.invalid/mcp",
+      "headers": {
+        "Authorization": "Bearer {env:CONTRACT_REMOTE_TOKEN}"
+      },
+      "timeout": 11
+    },
+    {
+      "name": "contract-local",
+      "command": "/bin/true",
+      "args": ["canary-arg"],
+      "no_probe": true
+    }
+  ]
+}

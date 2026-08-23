@@ -21,11 +21,6 @@
       "description": "Major updates require manual review.",
       "matchUpdateTypes": ["major"],
       "automerge": false
-    },
-    {
-      "description": "OpenClaw base image tags have no release timestamp; exempt from minimumReleaseAge.",
-      "matchDepNames": ["ghcr.io/openclaw/openclaw"],
-      "minimumReleaseAge": null
     }
   ]
 }

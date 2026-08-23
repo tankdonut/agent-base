@@ -36,8 +36,28 @@ jobs:
       - name: Run container test suites
         run: python3 -m unittest discover -s container -v
 
-  image:
+  contract:
     needs: [lint, test]
+    # Real-image CLI drift gate (roadmap N4): unit tests and the shim-based
+    # smoke both validate agent-base's argv against itself — this job boots
+    # the built image against the REAL openclaw CLI. Stage B cross-checks
+    # every emitted flag against `openclaw <cmd> --help`; stage C requires a
+    # clean real boot (exit 0, zero [agent-entry] WARNING) with both canary
+    # MCP servers registered. This is what stops the next --type-remote-class
+    # bug (including via renovate base-image bumps, whose PRs run CI).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build image (build-only; the image job owns publishing)
+        run: docker build --build-arg AGENT_BASE_VERSION=contract
+          -f container/Dockerfile -t ghcr.io/tankdonut/agent-base:contract .
+
+      - name: CLI contract test (real OpenClaw CLI, no shim)
+        run: scripts/contract-test.sh ghcr.io/tankdonut/agent-base:contract
+
+  image:
+    needs: [lint, test, contract]
     # Reusable workflow's build job requests packages: write; without an
     # explicit grant here the token default (packages: read) fails validation.
     permissions:

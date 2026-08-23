@@ -11,6 +11,7 @@
 | Build image (date tag default) | `./make.sh build` |
 | Push image | `AGENT_BASE_VERSION=YYYY.MM.DD ./make.sh push` — refuses implicit tags |
 | Validate a spec (CI gate) | `docker run --rm --env-file .env <image> --validate-spec` |
+| CLI contract (CI + local) | `scripts/contract-test.sh <image>` — real-CLI drift gate |
 
 ## Structure
 
@@ -20,7 +21,9 @@ container/   Image contract: entrypoint.py (boot), spec.py (loader), seed_automa
 docs/        standard-agent.md — the whole agent contract + Freya/Mimir migration guides
 fixtures/    freya-like/, mimir-like/ — boot-tested spec+automations trees; input for
              unit FixtureBoots and smoke; consult, don't copy whole
-scripts/     smoke.sh (harness), shim/openclaw (fake CLI; asserts via invocation log)
+scripts/     smoke.sh (shim harness), contract-test.sh + contract/ (real-CLI drift
+             gate: emitted-flag cross-check vs --help + clean shim-free boot),
+             shim/openclaw (fake CLI; asserts via invocation log)
 templates/   spec.example.json (golden), env.example, compose snippets, workspace skeletons
 ```
 
@@ -41,14 +44,14 @@ Symbols relative to `container/`.
 
 | Symbol | Type | Location | Role |
 | ------ | ---- | -------- | ---- |
-| `main` | fn | entrypoint.py:619 | Phase orchestration; happy path ends in `os.execvp` — int returns only for `--validate-spec` (0/1) and usage (2) |
+| `main` | fn | entrypoint.py:631 | Phase orchestration; happy path ends in `os.execvp` — int returns only for `--validate-spec` (0/1) and usage (2) |
 | `load_agent_spec` | fn | entrypoint.py:114 | Fail-closed load; `AGENT_SPEC_PATH` override |
 | `first_boot_setup` | fn | entrypoint.py:211 | One-time setup; gated on `openclaw.json` absent |
-| `reconcile_config` / `reconcile_mcp` / `reconcile_plugins` | fn | entrypoint.py:247 / :278 / :305 | Idempotent reconcile; warn-never-raise |
-| `authenticate_gh` | fn | entrypoint.py:322 | gh auth from `AGENT_GIT_TOKEN`; every boot, non-fatal |
-| `seed_content` | fn | entrypoint.py:360 | workspace first boot only; skills + docs full replace every boot |
-| `post_startup` | fn | entrypoint.py:560 | Forked child: gateway wait ≤180s, cron seed in-process, memory reindex, doctor |
-| `load_spec` | fn | spec.py:507 | Strict v1 loader; errors carry the JSON path |
+| `reconcile_config` / `reconcile_mcp` / `reconcile_plugins` | fn | entrypoint.py:259 / :290 / :317 | Idempotent reconcile; warn-never-raise |
+| `authenticate_gh` | fn | entrypoint.py:334 | gh auth from `AGENT_GIT_TOKEN`; every boot, non-fatal |
+| `seed_content` | fn | entrypoint.py:372 | workspace first boot only; skills + docs full replace every boot |
+| `post_startup` | fn | entrypoint.py:572 | Forked child: gateway wait ≤180s, cron seed in-process, memory reindex, doctor |
+| `load_spec` | fn | spec.py:527 | Strict v1 loader; errors carry the JSON path |
 | `Spec` / `SpecError` | cls | spec.py | Frozen spec / `ValueError` subtype |
 | `LocalMcpServer` / `RemoteMcpServer` | cls | spec.py:114 / :132 | stdio vs HTTP MCP; exactly one of `command` / `url` |
 | `build_jobs` | fn | seed_automations.py | Parse `automations/*.md` fail-closed |
