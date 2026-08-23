@@ -69,7 +69,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 import seed_automations
-from spec import Spec, SpecError, load_spec, mcp_to_cli_args
+from spec import Spec, SpecError, load_spec, mcp_to_cli_args, required_env_for_auth_choice
 
 SPEC_PATH = Path("/opt/agent/spec.json")
 SEED_BASE = Path("/opt/seed")
@@ -211,22 +211,34 @@ def guard_satisfied(if_env: tuple[str, ...], env: Mapping[str, str]) -> bool:
 def first_boot_setup(spec: Spec) -> None:
     """One-time infrastructure setup; the caller gates this on openclaw.json
     being absent. Invariant: every call here is idempotent-safe to re-run
-    but is only invoked on true first boots."""
+    but is only invoked on true first boots. A failed setup aborts the boot
+    cleanly (exit 1, named env var) — setup leaves no openclaw.json behind,
+    so propagating the exception would crash-loop the container."""
     log(f"First boot — configuring OpenClaw (auth: {spec.auth_choice})")
-    run(
-        "openclaw",
-        "setup",
-        "--non-interactive",
-        "--accept-risk",
-        "--auth-choice",
-        spec.auth_choice,
-        "--skip-channels",
-        "--skip-skills",
-        "--skip-daemon",
-        "--skip-ui",
-        "--skip-health",
-        "--skip-search",
-    )
+    try:
+        run(
+            "openclaw",
+            "setup",
+            "--non-interactive",
+            "--accept-risk",
+            "--auth-choice",
+            spec.auth_choice,
+            "--skip-channels",
+            "--skip-skills",
+            "--skip-daemon",
+            "--skip-ui",
+            "--skip-health",
+            "--skip-search",
+        )
+    except subprocess.CalledProcessError as exc:
+        warn(f"first-boot setup failed (exit {exc.returncode}) — aborting boot")
+        required_env = required_env_for_auth_choice(spec.auth_choice)
+        if required_env is not None:
+            warn(
+                f"auth '{spec.auth_choice}' needs {required_env}: "
+                "verify it holds a valid key, then restart"
+            )
+        raise SystemExit(1) from exc
 
     log(f"Adding {spec.model_fallback} fallback")
     run("openclaw", "models", "fallbacks", "add", spec.model_fallback)

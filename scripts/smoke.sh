@@ -83,6 +83,7 @@ smoke_fixture() { # smoke_fixture FIXTURE EXPECTED_MCP_NAME
     -e "ALPHAVANTAGE_API_KEY=smoke-av-key"
     -e "LUNARCRUSH_API_KEY=smoke-lc-key"
     -e "DATABASE_URL=postgres://localhost/smoke"
+    -e "ZAI_API_KEY=smoke-zai-key"
     -e "AGENT_GIT_TOKEN=smoke-gh-token"
     -e "HOME=/home/node"
     -e "OPENCLAW_SHIM_LOG=/tmp/shim.log"

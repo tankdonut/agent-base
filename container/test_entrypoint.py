@@ -70,6 +70,7 @@ FREYA_ENV = {
     "AC_INFINITY_EMAIL": "grower@example.com",
     "AC_INFINITY_PASSWORD": "ac-secret",
     "AGENT_GIT_TOKEN": "ghp-freya-token",
+    "ZAI_API_KEY": "zai-key",
 }
 
 MIMIR_ENV = {
@@ -77,6 +78,7 @@ MIMIR_ENV = {
     "ALPHAVANTAGE_API_KEY": "av-key",
     "LUNARCRUSH_API_KEY": "lc-key",
     "DATABASE_URL": "postgres://db/trade",
+    "ZAI_API_KEY": "zai-key",
 }
 
 
@@ -153,6 +155,7 @@ class EntrypointTestCase(unittest.TestCase):
             "PATH": os.environ.get("PATH", ""),
             "AGENT_SPEC_PATH": str(self._write_spec(MINIMAL_SPEC)),
             "AGENT_AUTOMATIONS_DIR": str(self.automations),
+            "ZAI_API_KEY": "zai-key",
         }
         env_patcher = mock.patch.dict(os.environ, env, clear=True)
         env_patcher.start()
@@ -432,6 +435,63 @@ class FirstBootSequence(EntrypointTestCase):
         self.assertFalse(self.has_call("openclaw", "models", "fallbacks"))
         self.assertFalse(self.has_call("openclaw", "channels", "add"))
         self.assertFalse(self.has_call("openclaw", "plugins", "install", "@openclaw/llama"))
+
+
+class FirstBootEnvGate(EntrypointTestCase):
+    """A failed first-boot setup must abort cleanly (named env var, exit 1,
+    no traceback) instead of crash-looping on an unhandled exception."""
+
+    def _zai_spec(self) -> entrypoint.Spec:
+        return entrypoint.Spec(
+            agent_name="t-agent",
+            auth_choice="zai-coding-global",
+            model_fallback="zai/glm-4.7",
+            automations_model="zai/glm-4.7",
+        )
+
+    def test_setup_failure_aborts_cleanly_naming_env_var(self) -> None:
+        def failing_setup(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+            if cmd[:2] == ["openclaw", "setup"]:
+                raise subprocess.CalledProcessError(1, cmd)
+            return self._ok(cmd)
+
+        self.handler = failing_setup
+        err = io.StringIO()
+        with self.assertRaises(SystemExit) as ctx, redirect_stderr(err):
+            entrypoint.first_boot_setup(self._zai_spec())
+        self.assertEqual(1, ctx.exception.code)
+        self.assertIn("first-boot setup failed (exit 1)", err.getvalue())
+        self.assertIn("ZAI_API_KEY", err.getvalue())
+        # The value never appears — only the var name (secrets discipline).
+        self.assertNotIn("zai-key", err.getvalue())
+
+    def test_setup_failure_for_non_zai_auth_aborts_without_env_hint(self) -> None:
+        def failing_setup(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+            if cmd[:2] == ["openclaw", "setup"]:
+                raise subprocess.CalledProcessError(2, cmd)
+            return self._ok(cmd)
+
+        self.handler = failing_setup
+        spec = entrypoint.Spec(
+            agent_name="t-agent",
+            auth_choice="manual",
+            model_fallback="zai/glm-4.7",
+            automations_model="zai/glm-4.7",
+        )
+        err = io.StringIO()
+        with self.assertRaises(SystemExit) as ctx, redirect_stderr(err):
+            entrypoint.first_boot_setup(spec)
+        self.assertEqual(1, ctx.exception.code)
+        self.assertIn("first-boot setup failed (exit 2)", err.getvalue())
+        self.assertNotIn("ZAI_API_KEY", err.getvalue())
+
+    def test_boot_without_zai_api_key_aborts_at_load(self) -> None:
+        with mock.patch.dict(os.environ):
+            os.environ.pop("ZAI_API_KEY", None)
+            with self.assertRaises(entrypoint.SpecError) as ctx:
+                self.boot()
+        self.assertIn("ZAI_API_KEY", str(ctx.exception))
+        self.assertIn("setup.auth_choice", str(ctx.exception))
 
 
 class ReconcileConfigPhases(EntrypointTestCase):

@@ -19,7 +19,7 @@ internals only.
 | Phase | Function (entrypoint.py) | Gist |
 | ----- | ------------------------ | ---- |
 | Load | `load_agent_spec` :114 | fail-closed; `AGENT_SPEC_PATH` override |
-| First boot | `first_boot_setup` :211 | only when `openclaw.json` absent; llama-cpp provider install is base behavior, not spec-configurable |
+| First boot | `first_boot_setup` :211 | only when `openclaw.json` absent; llama-cpp provider install is base behavior, not spec-configurable; a failed `setup` aborts the boot cleanly (exit 1, named env var) — `zai-coding-*` auth is load-gated on `ZAI_API_KEY` (see `spec.required_env_for_auth_choice`) |
 | Reconcile | `reconcile_config` :247 → `reconcile_mcp` :278 → `reconcile_plugins` :305 | idempotent; `config_set` shells out only on drift (compares `openclaw.json` directly) |
 | gh auth | `authenticate_gh` :322 | every boot when `features.gh_auth`; non-fatal |
 | Seed | `seed_content` :360 | workspace first boot only; skills + docs full replace every boot; `AGENT_SKIP_SEED=1` skips seeding only |

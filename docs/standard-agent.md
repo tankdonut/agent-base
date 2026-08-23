@@ -108,6 +108,12 @@ double-nests the data dir. The default (`~/.openclaw`, i.e.
 Resolved secret values never reach logs. Reconciliation warnings name the
 config key that failed, never the value that was being set.
 
+One spec-dependent variable is nevertheless load-gated: `ZAI_API_KEY`
+must be set whenever `setup.auth_choice` is `zai-coding-*` — the provider's
+setup consumes it directly (not via `{env:...}` refs), so the loader checks
+its presence itself and aborts with the JSON path (`setup.auth_choice`) and
+the variable name before any container work runs.
+
 ## spec.json reference
 
 Schema v1. Loading is strict and fail-closed: an unknown key at any nesting
@@ -119,7 +125,7 @@ and every error message starts with the JSON path of the offending node
 | --- | --- | --- |
 | `specVersion` | (none) | Must be `1`. Anything else is rejected before any other check. |
 | `agent` | `name` | Required, non-empty. Reaches logs and seed messages. |
-| `setup` | `auth_choice` | Required. Passed to `openclaw setup --auth-choice` on first boot (e.g. `zai-coding-global`). |
+| `setup` | `auth_choice` | Required. Passed to `openclaw setup --auth-choice` on first boot (e.g. `zai-coding-global`). `zai-coding-*` choices require `ZAI_API_KEY` in the environment — the loader fails closed naming the var, and a setup that still fails aborts the boot with a named-var hint (exit 1) instead of crash-looping. |
 | `model` | `fallback` | Required. Registered via `openclaw models fallbacks add` on first boot. |
 | `automations` | `model` | Required. Model for cron agent turns. No default exists by design (see decisions below). |
 | `config` | `path`, `value`, `strict`, `if_env`, `split_csv` | `path` and `value` required; the rest are optional booleans / string lists. Applied in spec order. |

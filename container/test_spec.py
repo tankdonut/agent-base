@@ -56,6 +56,7 @@ BASE_ENV: Mapping[str, str] = {
     "GREETING": "hello",
     "TOKEN": "tok",
     "SECRET": "s3cret",
+    "ZAI_API_KEY": "zai-key",
 }
 
 GOLDEN_ENV: Mapping[str, str] = {
@@ -64,6 +65,7 @@ GOLDEN_ENV: Mapping[str, str] = {
     "AC_INFINITY_EMAIL": "grower@example.com",
     "AC_INFINITY_PASSWORD": "s3cret",
     "SENTIMENT_API_KEY": "sk-sentiment",
+    "ZAI_API_KEY": "zai-key",
 }
 
 
@@ -253,6 +255,38 @@ class RequiredSectionsAndFields(SpecTestCase):
         self.load_expect_error(spec, containing="channels[0].type")
 
 
+class AuthChoiceEnvGate(SpecTestCase):
+    """zai-coding-* auth choices consume ZAI_API_KEY directly at setup time;
+    the loader must fail closed naming the var before any container work."""
+
+    def test_zai_auth_choice_requires_zai_api_key(self) -> None:
+        message = self.load_expect_error(MINIMAL, env={}, containing="ZAI_API_KEY")
+        self.assertIn("setup.auth_choice", message)
+
+    def test_zai_api_key_present_loads(self) -> None:
+        spec = self.load(MINIMAL, env={"ZAI_API_KEY": "zai-key"})
+        self.assertEqual("zai-coding-global", spec.auth_choice)
+
+    def test_zai_coding_cn_variant_also_requires_the_key(self) -> None:
+        variant = copy.deepcopy(MINIMAL)
+        variant["setup"] = {"auth_choice": "zai-coding-cn"}
+        self.load_expect_error(variant, env={}, containing="ZAI_API_KEY")
+
+    def test_non_zai_auth_choice_has_no_env_requirement(self) -> None:
+        variant = copy.deepcopy(MINIMAL)
+        variant["setup"] = {"auth_choice": "manual"}
+        spec = self.load(variant, env={})
+        self.assertEqual("manual", spec.auth_choice)
+
+    def test_template_errors_take_precedence_over_auth_gate(self) -> None:
+        # Locks the fail order: {env:...} resolution fires before the gate,
+        # matching the documented error-precedence of the golden example.
+        message = self.load_expect_error(
+            self.config_spec("{env:MISSING_VAR}"), env={}, containing="MISSING_VAR"
+        )
+        self.assertNotIn("ZAI_API_KEY", message)
+
+
 class TemplateResolution(SpecTestCase):
     def test_env_token_resolved_inline(self) -> None:
         spec = self.load(self.config_spec("Hello {env:GREETING} world"))
@@ -311,7 +345,10 @@ class TemplateResolution(SpecTestCase):
 
     def test_substitution_is_single_pass(self) -> None:
         # A substituted value that itself looks like a token stays literal.
-        spec = self.load(self.config_spec("{env:TEMPLATE_VAR}"), env={"TEMPLATE_VAR": "{data}"})
+        spec = self.load(
+            self.config_spec("{env:TEMPLATE_VAR}"),
+            env={"TEMPLATE_VAR": "{data}", "ZAI_API_KEY": "zai-key"},
+        )
         self.assertEqual("{data}", spec.config_entries[0].resolved_value)
 
     def test_raw_value_preserves_template_tokens(self) -> None:
@@ -351,7 +388,7 @@ class ConfigMarshalling(SpecTestCase):
 
 
 class SplitCsvConfig(SpecTestCase):
-    CSV_ENV: Mapping[str, str] = {"CSV_LIST": " 111 , 222 ,, 333 "}
+    CSV_ENV: Mapping[str, str] = {"CSV_LIST": " 111 , 222 ,, 333 ", "ZAI_API_KEY": "zai-key"}
 
     def test_split_csv_strips_items_and_drops_empties(self) -> None:
         spec = self.load(self.config_spec("{env:CSV_LIST}", split_csv=True), env=self.CSV_ENV)

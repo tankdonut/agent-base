@@ -504,6 +504,20 @@ def _parse_features(root: Mapping[str, JSONValue]) -> Features:
     return Features(gh_auth=_expect_bool(node.get("gh_auth", False), "features.gh_auth"))
 
 
+_ZAI_AUTH_PREFIX = "zai-coding-"
+
+
+def required_env_for_auth_choice(auth_choice: str) -> str | None:
+    """Env var the openclaw setup CLI consumes for this auth choice, if any.
+
+    zai-coding-* choices authenticate against Z.AI (GLM Coding Plan) with
+    ZAI_API_KEY; setup exits 1 without it — after installing its plugin —
+    and leaves no openclaw.json behind, so an ungated boot crash-loops."""
+    if auth_choice.startswith(_ZAI_AUTH_PREFIX):
+        return "ZAI_API_KEY"
+    return None
+
+
 def load_spec(path: Path, env: Mapping[str, str]) -> Spec:
     """Load, validate, and template-resolve a spec.json file.
 
@@ -539,16 +553,36 @@ def load_spec(path: Path, env: Mapping[str, str]) -> Spec:
     automations = _expect_object(_require_key(root, "automations", ""), "automations")
     _reject_unknown_keys(automations, _AUTOMATIONS_KEYS, "automations")
 
+    agent_name = _expect_str(_require_key(agent, "name", "agent"), "agent.name")
+    auth_choice = _expect_str(_require_key(setup, "auth_choice", "setup"), "setup.auth_choice")
+    model_fallback = _expect_str(_require_key(model, "fallback", "model"), "model.fallback")
+    automations_model = _expect_str(
+        _require_key(automations, "model", "automations"), "automations.model"
+    )
+    config_entries = _parse_config_entries(root, env)
+    channels = _parse_channels(root)
+    mcp_servers = _parse_mcp_servers(root, env)
+    plugins = _parse_plugins(root)
+    features = _parse_features(root)
+
+    # Runs after template resolution on purpose: {env:...} errors keep their
+    # documented precedence (locked by AuthChoiceEnvGate).
+    required_env = required_env_for_auth_choice(auth_choice)
+    if required_env is not None and required_env not in env:
+        _fail(
+            "setup.auth_choice",
+            f"auth choice '{auth_choice}' requires environment variable {required_env} "
+            "(set it and restart)",
+        )
+
     return Spec(
-        agent_name=_expect_str(_require_key(agent, "name", "agent"), "agent.name"),
-        auth_choice=_expect_str(_require_key(setup, "auth_choice", "setup"), "setup.auth_choice"),
-        model_fallback=_expect_str(_require_key(model, "fallback", "model"), "model.fallback"),
-        automations_model=_expect_str(
-            _require_key(automations, "model", "automations"), "automations.model"
-        ),
-        config_entries=_parse_config_entries(root, env),
-        channels=_parse_channels(root),
-        mcp_servers=_parse_mcp_servers(root, env),
-        plugins=_parse_plugins(root),
-        features=_parse_features(root),
+        agent_name=agent_name,
+        auth_choice=auth_choice,
+        model_fallback=model_fallback,
+        automations_model=automations_model,
+        config_entries=config_entries,
+        channels=channels,
+        mcp_servers=mcp_servers,
+        plugins=plugins,
+        features=features,
     )
