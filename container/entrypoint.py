@@ -534,11 +534,17 @@ def reindex_memory(
 
 
 def disable_unavailable_skills() -> None:
-    """Turn off skills flagged by `openclaw doctor --lint` as not ready:
-    every skills-readiness finding maps to config_set
-    skills.entries.<name>.enabled=false. Never raises."""
+    """Reconcile skill enablement against `openclaw doctor --lint`.
+
+    Every skills-readiness finding maps to skills.entries.<name>.enabled=
+    false; a skill this reconcile disabled in an earlier boot (tracked in
+    {data}/doctor-disabled-skills) whose finding has cleared is re-enabled.
+    Operator intent is never overridden: enabled=false without the marker
+    (spec config entry, hand-managed openclaw.json) stays off. `doctor
+    --lint` exits 1 iff any finding exists, so stdout is authoritative and
+    the exit code is ignored. Never raises."""
     result = run("openclaw", "doctor", "--lint", check=False, capture=True)
-    if result is None or result.returncode != 0:
+    if result is None:
         return
     try:
         data = json.loads(result.stdout)
@@ -547,6 +553,7 @@ def disable_unavailable_skills() -> None:
 
     prefix = "skills.entries."
     suffix = ".enabled"
+    flagged: set[str] = set()
     for finding in data.get("findings", []):
         if finding.get("checkId") != "core/doctor/skills-readiness":
             continue
@@ -554,7 +561,45 @@ def disable_unavailable_skills() -> None:
         if path.startswith(prefix) and path.endswith(suffix):
             name = path[len(prefix) : -len(suffix)]
             if name:
-                config_set(f"skills.entries.{name}.enabled", "false")
+                flagged.add(name)
+
+    marker = data_dir() / "doctor-disabled-skills"
+    try:
+        previously_disabled = {
+            line for line in marker.read_text(encoding="utf-8").splitlines() if line
+        }
+    except OSError:
+        previously_disabled = set()
+
+    for name in sorted(flagged):
+        if name not in previously_disabled:
+            log(f"disabling unavailable skill '{name}' (doctor skills-readiness)")
+        config_set(f"skills.entries.{name}.enabled", "false")
+
+    # Absent openclaw.json means skills come back enabled-by-default —
+    # stale marker entries drop. Only a present-but-corrupt file (read
+    # fails) conserves the marker.
+    config = read_openclaw_config()
+    can_verify = config is not None or not (data_dir() / "openclaw.json").exists()
+    healed: set[str] = set()
+    stale: set[str] = set()
+    for name in sorted(previously_disabled - flagged):
+        entry = lookup_config_path(config, f"skills.entries.{name}") if config else _MISSING
+        if isinstance(entry, dict) and entry.get("enabled") is False:
+            config_set(f"skills.entries.{name}.enabled", "true")
+            log(f"re-enabling skill '{name}' (skills-readiness finding cleared)")
+            healed.add(name)
+        elif can_verify:
+            stale.add(name)
+
+    remaining = (previously_disabled | flagged) - healed - stale
+    try:
+        if remaining:
+            marker.write_text("\n".join(sorted(remaining)) + "\n", encoding="utf-8")
+        else:
+            marker.unlink(missing_ok=True)
+    except OSError:
+        warn("could not update doctor-disabled-skills marker")
 
 
 def run_seed_automations(model: str) -> int:

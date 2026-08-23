@@ -23,7 +23,7 @@ internals only.
 | Reconcile | `reconcile_config` :247 → `reconcile_mcp` :278 → `reconcile_plugins` :305 | idempotent; `config_set` shells out only on drift (compares `openclaw.json` directly) |
 | gh auth | `authenticate_gh` :322 | every boot when `features.gh_auth`; non-fatal |
 | Seed | `seed_content` :360 | workspace first boot only; skills + docs full replace every boot; `AGENT_SKIP_SEED=1` skips seeding only |
-| Post-startup | `post_startup` :560 | forked child: gateway wait ≤180s, cron seed in-process, memory reindex (3 tries / 10s backoff; degraded success is retryable), doctor-disable skills |
+| Post-startup | `post_startup` :617 | forked child: gateway wait ≤180s, cron seed in-process, memory reindex (3 tries / 10s backoff; degraded success is retryable), doctor skills reconcile (`disable_unavailable_skills` :536 — disable flagged, re-enable healed via `{data}/doctor-disabled-skills` marker; stdout is authoritative because doctor exits 1 iff findings exist) |
 | CI gate | `validate_spec` :605 | dry parse of spec + automations; zero mutation |
 
 ## Conventions

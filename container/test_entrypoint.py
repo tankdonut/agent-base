@@ -181,7 +181,12 @@ class EntrypointTestCase(unittest.TestCase):
 
     @staticmethod
     def _ok(cmd: list[str]) -> subprocess.CompletedProcess[str]:
-        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        stdout = '{"findings":[]}' if cmd[:2] == ["openclaw", "doctor"] else ""
+        return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
+
+    def _write_doctor_marker(self, content: str) -> None:
+        self.data.mkdir(parents=True, exist_ok=True)
+        (self.data / "doctor-disabled-skills").write_text(content, encoding="utf-8")
 
     def _capture_run(
         self, cmd: list[str] | tuple[str, ...], **kwargs: object
@@ -1102,6 +1107,95 @@ class PostStartupFlow(EntrypointTestCase):
             ],
             self.calls_with("openclaw", "config", "set"),
         )
+
+    def test_doctor_findings_with_nonzero_exit_still_disable(self) -> None:
+        # doctor --lint exits 1 iff any finding exists (verified against the
+        # pinned image) — the old returncode guard made this the dead-code
+        # path: findings were present exactly when the parse was skipped.
+        findings = {
+            "findings": [
+                {
+                    "checkId": "core/doctor/skills-readiness",
+                    "path": "skills.entries.propose-doc-edit.enabled",
+                }
+            ]
+        }
+
+        def doctor(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+            if cmd[:2] == ["openclaw", "doctor"]:
+                return subprocess.CompletedProcess(cmd, 1, stdout=json.dumps(findings), stderr="")
+            return self._ok(cmd)
+
+        self.handler = doctor
+        self.run_post_startup()
+        self.assertEqual(
+            [
+                [
+                    "openclaw",
+                    "config",
+                    "set",
+                    "skills.entries.propose-doc-edit.enabled",
+                    "false",
+                ]
+            ],
+            self.calls_with("openclaw", "config", "set"),
+        )
+
+    def test_healed_skill_is_reenabled(self) -> None:
+        # A skill the doctor disabled in an earlier boot (marker present)
+        # whose finding has cleared goes back on — the old code was a
+        # one-way ratchet.
+        self.write_openclaw_config(
+            json.dumps({"skills": {"entries": {"old-skill": {"enabled": False}}}})
+        )
+        self._write_doctor_marker("old-skill\n")
+
+        self.run_post_startup()
+        self.assertEqual(
+            [
+                [
+                    "openclaw",
+                    "config",
+                    "set",
+                    "skills.entries.old-skill.enabled",
+                    "true",
+                ]
+            ],
+            self.calls_with("openclaw", "config", "set"),
+        )
+        self.assertFalse((self.data / "doctor-disabled-skills").exists())
+
+    def test_operator_disabled_skill_is_never_reenabled(self) -> None:
+        # enabled=false WITHOUT the doctor marker is operator intent
+        # (spec config entry or hand-managed openclaw.json) — the doctor
+        # reconcile only undoes its own actions.
+        self.write_openclaw_config(
+            json.dumps({"skills": {"entries": {"operator-skill": {"enabled": False}}}})
+        )
+
+        self.run_post_startup()
+        self.assertEqual([], self.calls_with("openclaw", "config", "set"))
+        self.assertFalse((self.data / "doctor-disabled-skills").exists())
+
+    def test_stale_marker_entry_without_config_is_dropped(self) -> None:
+        self._write_doctor_marker("ghost-skill\n")
+
+        self.run_post_startup()
+        self.assertEqual([], self.calls_with("openclaw", "config", "set"))
+        self.assertFalse((self.data / "doctor-disabled-skills").exists())
+
+    def test_unparseable_doctor_output_is_inert_and_keeps_the_marker(self) -> None:
+        self._write_doctor_marker("old-skill\n")
+
+        def doctor(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+            if cmd[:2] == ["openclaw", "doctor"]:
+                return subprocess.CompletedProcess(cmd, 1, stdout="not json", stderr="")
+            return self._ok(cmd)
+
+        self.handler = doctor
+        self.run_post_startup()
+        self.assertEqual([], self.calls_with("openclaw", "config", "set"))
+        self.assertTrue((self.data / "doctor-disabled-skills").exists())
 
     def test_config_validation_and_lint_are_warn_only(self) -> None:
         def failing(cmd: list[str]) -> subprocess.CompletedProcess[str]:
