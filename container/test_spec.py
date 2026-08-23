@@ -484,6 +484,20 @@ class McpServerValidation(SpecTestCase):
                 spec["mcp_servers"] = [{"name": "x", "command": "c", "timeout": bad}]
                 self.load_expect_error(spec, containing="mcp_servers[0].timeout")
 
+    def test_remote_timeout_must_be_an_integer(self) -> None:
+        for bad in ("30", True, 1.5):
+            with self.subTest(bad=bad):
+                spec = copy.deepcopy(MINIMAL)
+                spec["mcp_servers"] = [{"name": "x", "url": "https://x", "timeout": bad}]
+                self.load_expect_error(spec, containing="mcp_servers[0].timeout")
+
+    def test_remote_timeout_accepted(self) -> None:
+        spec = copy.deepcopy(MINIMAL)
+        spec["mcp_servers"] = [{"name": "x", "url": "https://x", "timeout": 9}]
+        server = self.load(spec).mcp_servers[0]
+        self.assertIsInstance(server, RemoteMcpServer)
+        self.assertEqual(9, server.timeout)
+
     def test_templating_applies_to_local_server_strings(self) -> None:
         spec = copy.deepcopy(MINIMAL)
         spec["mcp_servers"] = [
@@ -548,6 +562,8 @@ class McpCliArgs(unittest.TestCase):
         self.assertEqual(["--command", "run", "--no-probe"], mcp_to_cli_args(server))
 
     def test_remote_args_exact_with_header(self) -> None:
+        # Verified against the real CLI at the pinned base image tag
+        # (2026.7.1-2): no --type option exists, --header takes KEY=VALUE.
         server = RemoteMcpServer(
             name="sentiment",
             url="https://mcp.example.com/s",
@@ -555,21 +571,26 @@ class McpCliArgs(unittest.TestCase):
         )
         self.assertEqual(
             [
-                "--type",
-                "remote",
                 "--url",
                 "https://mcp.example.com/s",
                 "--header",
-                "Authorization: Bearer sk-x",
+                "Authorization=Bearer sk-x",
                 "--no-probe",
             ],
             mcp_to_cli_args(server),
         )
 
-    def test_remote_defaults_emit_type_url_no_probe_only(self) -> None:
+    def test_remote_defaults_emit_url_no_probe_only(self) -> None:
         server = RemoteMcpServer(name="bare", url="https://mcp.example.com")
         self.assertEqual(
-            ["--type", "remote", "--url", "https://mcp.example.com", "--no-probe"],
+            ["--url", "https://mcp.example.com", "--no-probe"],
+            mcp_to_cli_args(server),
+        )
+
+    def test_remote_timeout_is_emitted_in_seconds(self) -> None:
+        server = RemoteMcpServer(name="slow", url="https://mcp.example.com", timeout=11)
+        self.assertEqual(
+            ["--url", "https://mcp.example.com", "--no-probe", "--timeout", "11"],
             mcp_to_cli_args(server),
         )
 

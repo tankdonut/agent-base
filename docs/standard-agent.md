@@ -182,7 +182,7 @@ Local (stdio) servers run a command; remote (HTTP) servers point at a URL.
 Both reconcile idempotently: the entrypoint lists registered servers and
 adds only the missing. `no_probe` defaults to `true` (skip the startup
 probe); set `false` when you want registration to verify connectivity.
-`timeout` (local only, seconds) caps the startup probe. `if_env` skips the
+`timeout` (seconds, local and remote) caps the startup probe. `if_env` skips the
 server when a listed variable is absent, which is the standard way to make
 an optional API-keyed server conditional.
 

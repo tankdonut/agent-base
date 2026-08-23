@@ -130,17 +130,18 @@ class LocalMcpServer:
 
 @dataclass(frozen=True, slots=True)
 class RemoteMcpServer:
-    """An HTTP MCP server (``openclaw mcp add NAME --type remote --url ...``).
+    """An HTTP MCP server (``openclaw mcp add NAME --url ...``).
 
     Invariants: url and header values are template-resolved at load time
     ({env:...} for API keys is the intended use); headers preserve insertion
-    order.
+    order; timeout is seconds (CLI contract, verified at 2026.7.1-2).
     """
 
     name: str
     url: str
     headers: dict[str, str] = field(default_factory=dict)
     no_probe: bool = True
+    timeout: int | None = None
     if_env: tuple[str, ...] = ()
 
 
@@ -203,12 +204,14 @@ def mcp_to_cli_args(server: McpServer) -> list[str]:
             if timeout is not None:
                 flags.extend(("--timeout", str(timeout)))
             return flags
-        case RemoteMcpServer(url=url, headers=headers, no_probe=no_probe):
-            flags = ["--type", "remote", "--url", url]
+        case RemoteMcpServer(url=url, headers=headers, no_probe=no_probe, timeout=timeout):
+            flags = ["--url", url]
             for key, value in headers.items():
-                flags.extend(("--header", f"{key}: {value}"))
+                flags.extend(("--header", f"{key}={value}"))
             if no_probe:
                 flags.append("--no-probe")
+            if timeout is not None:
+                flags.extend(("--timeout", str(timeout)))
             return flags
         case unreachable:
             assert_never(unreachable)
@@ -440,6 +443,9 @@ def _parse_mcp_servers(root: Mapping[str, JSONValue], env: Mapping[str, str]) ->
                         ).items()
                     },
                     no_probe=no_probe,
+                    timeout=None
+                    if node.get("timeout", None) is None
+                    else _expect_int(node.get("timeout"), _join(base, "timeout")),
                     if_env=if_env,
                 )
             )
