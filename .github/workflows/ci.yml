@@ -3,7 +3,8 @@ name: CI
 on:
   push:
     branches: [main]
-    # v-less date tags (YYYY.MM.DD) — tag name is AGENT_BASE_VERSION verbatim,
+    # v-less date tags (YYYY.MM.DD, or YYYY.MM.DD.N for a same-day
+    # follow-up release) — tag name is AGENT_BASE_VERSION verbatim,
     # matching the pinned-image convention in docs/standard-agent.md.
     tags: ["20*"]
   pull_request:
@@ -96,19 +97,50 @@ jobs:
     permissions:
       contents: write
     steps:
+      # Full history: the release notes diff the two most recent version
+      # tags, and the digest query needs the published manifest.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
 
       - name: Verify tracked image refs exist in GHCR
         run: scripts/check-image-refs.sh
 
+      - name: Build release notes (changes + digest)
+        run: |
+          TAG="$GITHUB_REF_NAME"
+          PREV=$(git tag -l '20*' | sort -V | awk -v t="$TAG" '$0==t{print p} {p=$0}')
+          TOKEN=$(curl -sf "https://ghcr.io/token?scope=repository:tankdonut/agent-base:pull&service=ghcr.io" |
+            sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
+          DIGEST=$(curl -sI -H "Authorization: Bearer $TOKEN" \
+            -H "Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json" \
+            "https://ghcr.io/v2/tankdonut/agent-base/manifests/$TAG" |
+            tr -d '\r' | sed -n 's/^docker-content-digest:[[:space:]]*//Ip')
+          {
+            echo "Image: \`ghcr.io/tankdonut/agent-base:$TAG\`"
+            if [ -n "$DIGEST" ]; then
+              echo
+              echo "Digest \`$DIGEST\` — pin: \`ghcr.io/tankdonut/agent-base:$TAG@$DIGEST\`"
+            fi
+            echo
+            echo "### Changes"
+            echo
+            if [ -n "$PREV" ]; then
+              git log --format='- %s' "$PREV..$TAG"
+            else
+              git log --format='- %s' "$TAG"
+            fi
+          } > release-notes.md
+          cat release-notes.md
+
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-          # No clone in this job; gh resolves the repo via GH_REPO instead
-          # of shelling out to git (fatal: not a git repository otherwise).
+          # No clone needed for gh; the repo comes from GH_REPO (gh would
+          # otherwise shell out to git and fail without a remote).
           GH_REPO: ${{ github.repository }}
         run: |
           gh release create "$GITHUB_REF_NAME" \
             --title "$GITHUB_REF_NAME" \
-            --notes "Image: \`ghcr.io/tankdonut/agent-base:$GITHUB_REF_NAME\`" \
+            --notes-file release-notes.md \
             --generate-notes

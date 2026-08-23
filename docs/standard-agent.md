@@ -375,6 +375,12 @@ behaviour should change only when a human bumps the pin. Pin the exact tag
 in every project `FROM` and bump it deliberately; date tags make the diff
 reviewable and a bad bump reversible.
 
+Published tags are immutable. A second release on the same day appends a
+run suffix — `2026.08.23.1`, then `.2` — rather than replacing the
+morning tag; each suffix gets its own image and GitHub release. The
+release-time refs gate (`scripts/check-image-refs.sh`) validates both
+shapes, so a doc referencing an unpublished suffix fails the release.
+
 ## CI pattern
 
 Downstream projects compose CI from `tankdonut/github-actions` rather than

@@ -60,7 +60,7 @@ case $target in
   push)
     # Pushing the implicit date tag would race a CI build of the same day;
     # require an explicit version instead.
-    version=${AGENT_BASE_VERSION:?set AGENT_BASE_VERSION=YYYY.MM.DD to push}
+    version=${AGENT_BASE_VERSION:?set AGENT_BASE_VERSION=YYYY.MM.DD[.N] to push}
     eng=$(engine)
     "$eng" push "$IMAGE:$version"
     ;;

@@ -9,7 +9,7 @@
 | Lint (ruff, ruff-format, hadolint, markdownlint) | `./make.sh lint` |
 | Image smoke (local only; podman or docker) | `./make.sh smoke` |
 | Build image (date tag default) | `./make.sh build` |
-| Push image | `AGENT_BASE_VERSION=YYYY.MM.DD ./make.sh push` — refuses implicit tags |
+| Push image | `AGENT_BASE_VERSION=YYYY.MM.DD[.N] ./make.sh push` — refuses implicit tags; same-day follow-up releases use the `.N` run suffix |
 | Validate a spec (CI gate) | `docker run --rm --env-file .env <image> --validate-spec` |
 | CLI contract (CI + local) | `scripts/contract-test.sh <image>` — real-CLI drift gate |
 
