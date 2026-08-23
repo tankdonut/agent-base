@@ -44,14 +44,14 @@ Symbols relative to `container/`.
 
 | Symbol | Type | Location | Role |
 | ------ | ---- | -------- | ---- |
-| `main` | fn | entrypoint.py:862 | Phase orchestration; happy path ends in `os.execvp` — int returns only for `--validate-spec` (0/1) and usage (2) |
-| `backup_before_upgrade` | fn | entrypoint.py:792 | Verified backup on `AGENT_BASE_VERSION` delta (warm volume); failure aborts — data safety beats availability for migrations |
+| `main` | fn | entrypoint.py:958 | Phase orchestration; happy path ends in `os.execvp` — int returns only for `--validate-spec` (0/1) and usage (2) |
+| `backup_before_upgrade` | fn | entrypoint.py:888 | Verified backup on `AGENT_BASE_VERSION` delta (warm volume); failure aborts — data safety beats availability for migrations |
 | `load_agent_spec` | fn | entrypoint.py:125 | Fail-closed load; `AGENT_SPEC_PATH` override |
 | `first_boot_setup` | fn | entrypoint.py:222 | One-time setup; gated on `openclaw.json` absent; snapshots base plugin installs to `{data}/agent-managed-plugins` |
 | `reconcile_config` / `reconcile_mcp` / `reconcile_plugins` | fn | entrypoint.py:302 / :333 / :402 | Idempotent reconcile; warn-never-raise; MCP removal + plugin orphan report are ownership-marked (`{data}/agent-managed-mcp`) |
 | `authenticate_gh` | fn | entrypoint.py:464 | gh auth from `AGENT_GIT_TOKEN`; every boot, non-fatal |
 | `seed_content` | fn | entrypoint.py:502 | workspace first boot only; skills + docs full replace every boot |
-| `post_startup` | fn | entrypoint.py:747 | Forked child: gateway wait ≤180s, cron seed in-process, memory reindex, doctor skills reconcile |
+| `post_startup` | fn | entrypoint.py:780 | Forked child: gateway wait ≤180s, cron seed in-process, memory reindex, doctor skills reconcile, diagnostics (doctor/security reports to `{data}/logs`, boot summary `{data}/status.json`) |
 | `load_spec` | fn | spec.py:527 | Strict v1 loader; errors carry the JSON path |
 | `Spec` / `SpecError` | cls | spec.py | Frozen spec / `ValueError` subtype |
 | `LocalMcpServer` / `RemoteMcpServer` | cls | spec.py:114 / :132 | stdio vs HTTP MCP; exactly one of `command` / `url` |

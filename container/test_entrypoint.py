@@ -1054,13 +1054,13 @@ class PostStartupFlow(EntrypointTestCase):
             i for i, c in enumerate(self.calls) if c[:2] == ["openclaw", "memory"] and "index" in c
         )
         validate_idx = self.index_of("openclaw", "config", "validate")
-        # disable_unavailable_skills runs its own doctor --lint BEFORE the
-        # final checks, so compare against the last doctor occurrence.
+        # One shared doctor run feeds the skills reconcile and the lint
+        # summary — it precedes the final config validate now.
         doctor_idx = max(i for i, c in enumerate(self.calls) if c[:2] == ["openclaw", "doctor"])
         self.assertLess(health_idx, status_idx)
         self.assertLess(status_idx, index_idx)
-        self.assertLess(index_idx, validate_idx)
-        self.assertLess(validate_idx, doctor_idx)
+        self.assertLess(index_idx, doctor_idx)
+        self.assertLess(doctor_idx, validate_idx)
 
     def test_seed_automations_invoked_in_process_with_spec_model(self) -> None:
         self.run_post_startup()
@@ -1592,6 +1592,107 @@ class ToolsDenyDefault(EntrypointTestCase):
         self.capture(lambda: entrypoint.post_startup(spec, os.environ))
         self.assertEqual(1, len(self.automation_argv))
         self.assertNotIn("--default-tools", self.automation_argv[0])
+
+
+class PostStartupDiagnostics(PostStartupFlow):
+    """X7: post_startup surfaces doctor counts, persists reports when
+    findings exist, runs a warn-only security audit, and writes a boot
+    status file ({data}/status.json) with the warning count. Doctor runs
+    ONCE per boot — the skills reconcile and the lint warn share it."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        entrypoint._boot_warnings.clear()
+
+    def _doctor(
+        self, findings: list[dict[str, str]]
+    ) -> Callable[[list[str]], subprocess.CompletedProcess[str]]:
+        def handler(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+            if cmd[:2] == ["openclaw", "doctor"]:
+                payload = {
+                    "ok": not findings,
+                    "checksRun": 24,
+                    "checksSkipped": 27,
+                    "findings": findings,
+                }
+                code = 1 if findings else 0
+                return subprocess.CompletedProcess(cmd, code, stdout=json.dumps(payload), stderr="")
+            if cmd[:2] == ["openclaw", "security"]:
+                return subprocess.CompletedProcess(cmd, 0, stdout="[]", stderr="")
+            if cmd[:3] == ["openclaw", "memory", "status"]:
+                clean_memory = (
+                    '[{"status": {"files": 0, "dirty": false, '
+                    '"custom": {"indexIdentity": {"status": "valid"}}}}]'
+                )
+                return subprocess.CompletedProcess(cmd, 0, stdout=clean_memory, stderr="")
+            return self._ok(cmd)
+
+        return handler
+
+    def test_doctor_findings_surfaced_and_report_persisted(self) -> None:
+        findings = [
+            {"checkId": "core/doctor/gateway-auth", "severity": "warning", "path": "gateway.auth"}
+        ]
+        self.handler = self._doctor(findings)
+        self.run_post_startup()
+        report = self.data / "logs" / "doctor-report.json"
+        self.assertTrue(report.exists())
+        persisted = json.loads(report.read_text(encoding="utf-8"))
+        self.assertEqual("core/doctor/gateway-auth", persisted["findings"][0]["checkId"])
+
+    def test_clean_doctor_leaves_no_report(self) -> None:
+        self.handler = self._doctor([])
+        self.run_post_startup()
+        self.assertFalse((self.data / "logs" / "doctor-report.json").exists())
+
+    def test_doctor_runs_once_per_boot(self) -> None:
+        self.handler = self._doctor([])
+        self.run_post_startup()
+        self.assertEqual(1, len(self.calls_with("openclaw", "doctor")))
+
+    def test_security_findings_persisted(self) -> None:
+        def handler(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+            if cmd[:2] == ["openclaw", "security"]:
+                payload = [{"checkId": "gateway.trusted_proxies_missing", "severity": "warn"}]
+                return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(payload), stderr="")
+            return self._doctor([])(cmd)
+
+        self.handler = handler
+        self.run_post_startup()
+        report = self.data / "logs" / "security-report.json"
+        self.assertTrue(report.exists())
+        self.assertEqual(
+            "gateway.trusted_proxies_missing",
+            json.loads(report.read_text(encoding="utf-8"))["findings"][0]["checkId"],
+        )
+
+    def test_status_file_counts_warnings(self) -> None:
+        def noisy(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+            if cmd[:3] == ["openclaw", "config", "validate"]:
+                return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")
+            return self._doctor([])(cmd)
+
+        self.handler = noisy
+        self.run_post_startup()
+        status = json.loads((self.data / "status.json").read_text(encoding="utf-8"))
+        self.assertGreaterEqual(status["warnings"], 1)
+        self.assertIn("imageVersion", status)
+
+    def test_clean_boot_status_has_zero_warnings(self) -> None:
+        self.handler = self._doctor([])
+        self.run_post_startup()
+        status = json.loads((self.data / "status.json").read_text(encoding="utf-8"))
+        self.assertEqual(0, status["warnings"])
+
+    def test_unparseable_security_output_is_inert(self) -> None:
+        def handler(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+            if cmd[:2] == ["openclaw", "security"]:
+                return subprocess.CompletedProcess(cmd, 0, stdout="not json", stderr="")
+            return self._doctor([])(cmd)
+
+        self.handler = handler
+        self.run_post_startup()
+        self.assertFalse((self.data / "logs" / "security-report.json").exists())
 
 
 class MainFlow(EntrypointTestCase):

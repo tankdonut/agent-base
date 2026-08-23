@@ -66,6 +66,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from pathlib import Path
 
 import seed_automations
@@ -83,7 +84,11 @@ def log(msg: str) -> None:
     print(f"[agent-entry] {msg}", flush=True)
 
 
+_boot_warnings: list[str] = []
+
+
 def warn(msg: str) -> None:
+    _boot_warnings.append(msg)
     print(f"[agent-entry] WARNING: {msg}", file=sys.stderr, flush=True)
 
 
@@ -677,7 +682,15 @@ def reindex_memory(
     )
 
 
-def disable_unavailable_skills() -> None:
+def _parse_doctor_stdout(result: subprocess.CompletedProcess[str]) -> dict | None:
+    try:
+        data = json.loads(result.stdout)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def disable_unavailable_skills(data: dict | None = None) -> None:
     """Reconcile skill enablement against `openclaw doctor --lint`.
 
     Every skills-readiness finding maps to skills.entries.<name>.enabled=
@@ -686,14 +699,16 @@ def disable_unavailable_skills() -> None:
     Operator intent is never overridden: enabled=false without the marker
     (spec config entry, hand-managed openclaw.json) stays off. `doctor
     --lint` exits 1 iff any finding exists, so stdout is authoritative and
-    the exit code is ignored. Never raises."""
-    result = run("openclaw", "doctor", "--lint", check=False, capture=True)
-    if result is None:
-        return
-    try:
-        data = json.loads(result.stdout)
-    except (json.JSONDecodeError, ValueError):
-        return
+    the exit code is ignored. Never raises. Pass the parsed doctor output
+    to share a single doctor run with the post-startup diagnostics; the
+    skills reconcile itself runs doctor only when not given one."""
+    if data is None:
+        result = run("openclaw", "doctor", "--lint", check=False, capture=True)
+        if result is None:
+            return
+        data = _parse_doctor_stdout(result)
+        if data is None:
+            return
 
     prefix = "skills.entries."
     suffix = ".enabled"
@@ -796,15 +811,78 @@ def post_startup(spec: Spec, env: Mapping[str, str]) -> None:
     else:
         log("memory reindex: skipped (AGENT_MEMORY_REINDEX=0)")
 
-    disable_unavailable_skills()
+    doctor_result = run("openclaw", "doctor", "--lint", check=False, capture=True)
+    doctor_data = _parse_doctor_stdout(doctor_result) if doctor_result is not None else None
+    disable_unavailable_skills(doctor_data)
+    _surface_doctor(doctor_result, doctor_data)
 
     result = run("openclaw", "config", "validate", check=False, capture=True)
     if result is not None and result.returncode != 0:
         warn("config validation found issues")
 
-    result = run("openclaw", "doctor", "--lint", check=False, capture=True)
+    _run_security_audit()
+    _write_boot_status()
+
+
+def _surface_doctor(result: subprocess.CompletedProcess[str] | None, data: dict | None) -> None:
+    """Log the doctor summary and persist the full report when findings
+    exist ({data}/logs/doctor-report.json). Clean boots leave no file."""
     if result is not None and result.returncode != 0:
         warn("doctor lint found issues")
+    if data is None:
+        return
+    findings = data.get("findings")
+    if not isinstance(findings, list) or not findings:
+        return
+    log(f"doctor: {len(findings)} finding(s), {data.get('checksRun', '?')} checks run")
+    _persist_report("doctor-report.json", data)
+
+
+def _run_security_audit() -> None:
+    """Warn-only `openclaw security audit` — a cheap post-boot check for
+    common foot-guns. Findings are logged and persisted
+    ({data}/logs/security-report.json); never gates anything."""
+    result = run("openclaw", "security", "audit", "--json", check=False, capture=True, timeout=120)
+    if result is None or result.returncode != 0:
+        return
+    try:
+        data = json.loads(result.stdout)
+    except (json.JSONDecodeError, ValueError):
+        return
+    if isinstance(data, list):
+        findings = data
+    elif isinstance(data, dict) and isinstance(data.get("findings"), list):
+        findings = data["findings"]
+    else:
+        return
+    if findings:
+        log(f"security audit: {len(findings)} finding(s)")
+        _persist_report("security-report.json", {"findings": findings})
+
+
+def _persist_report(name: str, data: dict) -> None:
+    try:
+        reports = data_dir() / "logs"
+        reports.mkdir(parents=True, exist_ok=True)
+        (reports / name).write_text(json.dumps(data), encoding="utf-8")
+    except OSError:
+        warn(f"could not persist {name}")
+
+
+def _write_boot_status() -> None:
+    """Best-effort boot summary at {data}/status.json: image version and
+    the boot's warning count (a number only — warning text never touches
+    disk). Written at the end of a completed post-startup."""
+    try:
+        status = {
+            "imageVersion": os.environ.get("AGENT_BASE_VERSION", ""),
+            "warnings": len(_boot_warnings),
+            "bootCompletedAt": datetime.now(UTC).isoformat(),
+        }
+        data_dir().mkdir(parents=True, exist_ok=True)
+        (data_dir() / "status.json").write_text(json.dumps(status), encoding="utf-8")
+    except OSError:
+        pass
 
 
 def backup_before_upgrade(env: Mapping[str, str]) -> None:

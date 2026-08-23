@@ -76,6 +76,14 @@ LABEL org.opencontainers.image.title="agent-base" \
 # Entry logs must stream (docker logs --follow) before the gateway is up.
 ENV PYTHONUNBUFFERED=1
 
+# Container-supervisor contract: service lifecycle belongs to the
+# supervisor (restart policy), never to in-container self-repair.
+# SERVICE_REPAIR_POLICY=external — doctor never attempts service
+# operations; NO_AUTO_UPDATE=1 — `openclaw update` refuses (a self-update
+# would write to the ephemeral container layer and vanish on redeploy).
+ENV OPENCLAW_SERVICE_REPAIR_POLICY=external \
+    OPENCLAW_NO_AUTO_UPDATE=1
+
 # Upgrade-backup destination (the CLI refuses output inside {data}).
 # Consumers mount a named volume here to keep archives across containers.
 RUN mkdir /backups && chown 1000:1000 /backups

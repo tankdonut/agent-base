@@ -77,6 +77,7 @@ PATHS=(
   "memory status"
   "memory index"
   "doctor"
+  "security audit"
   "cron list"
   "cron add"
   "cron edit"

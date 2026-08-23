@@ -24,7 +24,7 @@ internals only.
 | Reconcile | `reconcile_config` :302 → `reconcile_mcp` :333 → `reconcile_plugins` :402 | idempotent; `config_set` shells out only on drift (compares `openclaw.json` directly); MCP removal is ownership-marked (`{data}/agent-managed-mcp`; if_env-skipped entries count as still spec'd); plugin orphan report is warn-only and disabled without the plugins marker |
 | gh auth | `authenticate_gh` :464 | every boot when `features.gh_auth`; non-fatal |
 | Seed | `seed_content` :502 | workspace first boot only; skills + docs full replace every boot; `AGENT_SKIP_SEED=1` skips seeding only |
-| Post-startup | `post_startup` :747 | forked child: gateway wait ≤180s, cron seed in-process, memory reindex (3 tries / 10s backoff; degraded success is retryable), doctor skills reconcile (`disable_unavailable_skills` — disable flagged, re-enable healed via `{data}/doctor-disabled-skills` marker; stdout is authoritative because doctor exits 1 iff findings exist) |
+| Post-startup | `post_startup` :780 | forked child: gateway wait ≤180s, cron seed in-process, memory reindex (3 tries / 10s backoff; degraded success is retryable), doctor skills reconcile (`disable_unavailable_skills` — disable flagged, re-enable healed via `{data}/doctor-disabled-skills` marker; stdout is authoritative because doctor exits 1 iff findings exist; ONE shared doctor run feeds the diagnostics too), security audit + report persistence (`{data}/logs/{doctor,security}-report.json` on findings; warn-only, never gates), boot summary `{data}/status.json` (image version + warning count — text never reaches disk) |
 | CI gate | `validate_spec` :848 | dry parse of spec + automations; zero mutation |
 
 ## Conventions

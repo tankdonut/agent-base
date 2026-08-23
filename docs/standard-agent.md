@@ -102,6 +102,15 @@ split with copy-paste entries.
 | `AGENT_BASE_VERSION` | baked `ENV` | Image version (from the build ARG; also the OCI label). Read-only signal for the upgrade-backup phase — a delta against `{data}/last-image-version` triggers a verified backup before migration. |
 | `AGENT_BACKUP_DIR` | `/backups` | Destination for the upgrade backup (the CLI refuses output inside `{data}`). Mount a named volume at `/backups` to keep archives across containers. |
 
+The base also bakes two OpenClaw runtime vars into the image (`ENV`):
+`OPENCLAW_SERVICE_REPAIR_POLICY=external` (doctor never attempts service
+lifecycle operations — the container supervisor owns them) and
+`OPENCLAW_NO_AUTO_UPDATE=1` (`openclaw update` refuses: a self-update
+would write to the ephemeral layer and vanish on redeploy; upgrades are
+image bumps). `OPENCLAW_SUPERVISOR_MODE=external` is a stricter variant
+(fuses restart handoff to the supervisor) that the base does not set —
+its contract needs design before adoption.
+
 ## Upgrades
 
 Bumping a consumer's base image tag is the upgrade path; the base makes
@@ -325,6 +334,14 @@ wrapper entrypoint.
      re-enable skills this reconcile disabled earlier once their finding
      clears (tracked in `{data}/doctor-disabled-skills`; skills the
      operator disabled by other means are never touched).
+   - Diagnostics (warn-only, never gates): the shared doctor run's
+     summary is logged (`doctor: N finding(s)`), the full report
+     persists to `{data}/logs/doctor-report.json` when findings exist,
+     `openclaw security audit --json` runs and persists
+     `{data}/logs/security-report.json` the same way, and a boot summary
+     (`{data}/status.json`: image version, warning count, completion
+     time) closes post-startup. Warning text never reaches disk — the
+     status file carries counts only.
    - `openclaw config validate` and `openclaw doctor --lint`, warn-only:
      findings surface in logs, the gateway keeps running.
 
