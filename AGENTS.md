@@ -65,6 +65,7 @@ Symbols relative to `container/`.
 - Secrets flow only through `{env:VAR}` spec refs and env vars; resolved values must never reach logs — warnings name keys/env vars, never values (locked by SecretsCanary tests).
 - `container/` files are the image contract; renaming/moving any of them changes downstream projects' Dockerfiles — update `docs/standard-agent.md` in the same commit. Modules import each other top-level (no package, no `__init__.py`); the Dockerfile COPYs exactly the three modules flat to `/opt/agent`.
 - Reconcile failures warn and never raise (gateway availability > config completeness); loader failures abort the boot.
+- Seeded automations run with a bounded tool allow-list (`seed_automations.DEFAULT_JOB_TOOLS` — fs/runtime/web/memory + `bundle-mcp`; recursion/spawn/browser excluded, OWASP ASI06). Per-job `tools:` header or spec `automations.default_tools` overrides; `*` = unrestricted. The base also sets `tools.deny` (cron, subagents, sessions_spawn, nodes) unless any spec `tools.*` config entry exists.
 - Formatter is `ruff-format` (not black) via pre-commit, alongside ruff, hadolint (`container/Dockerfile` only), markdownlint (`fixtures/**` ignored).
 - CI composes reusable actions from `tankdonut/github-actions` (`pre-commit`, `setup-python-uv`, `build-and-publish-image.yaml`); do not hand-roll equivalents.
 - Images publish under date tags only (`YYYY.MM.DD`); no `latest` exists; push requires explicit `AGENT_BASE_VERSION`.
