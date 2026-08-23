@@ -87,11 +87,57 @@ jobs:
       login-runtime: docker
       setup-python: false
 
+  attest:
+    # Supply chain (X5): SLSA build-provenance attestation pushed to the
+    # registry + SPDX SBOM handed to the release as an asset. The caller
+    # attests (not the reusable workflow) so the signer is this repo —
+    # verification needs no --signer-repo. Tag pushes only.
+    needs: [image]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      attestations: write
+      packages: write
+      contents: read
+    steps:
+      - name: Resolve published digest
+        id: digest
+        run: |
+          TOKEN=$(curl -sf "https://ghcr.io/token?scope=repository:tankdonut/agent-base:pull&service=ghcr.io" \
+            | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
+          DIGEST=$(curl -sI \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json, application/vnd.docker.distribution.manifest.list.v2+json" \
+            "https://ghcr.io/v2/tankdonut/agent-base/manifests/$GITHUB_REF_NAME" \
+            | tr -d '\r' | sed -n 's/^docker-content-digest:[[:space:]]*//Ip' | head -1)
+          if [ -z "$DIGEST" ]; then
+            echo "::error::no digest for $GITHUB_REF_NAME in ghcr.io (image job failed?)"
+            exit 1
+          fi
+          echo "digest=$DIGEST" >>"$GITHUB_OUTPUT"
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ghcr.io/tankdonut/agent-base
+          subject-digest: ${{ steps.digest.outputs.digest }}
+          push-to-registry: true
+
+      - name: Generate SBOM (SPDX)
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          image: ghcr.io/tankdonut/agent-base:${{ github.ref_name }}
+          format: spdx-json
+          output-file: sbom.spdx.json
+          upload-artifact: true
+          artifact-name: sbom-spdx
+
   release:
     # Chained after the image job — a release can no longer exist while the
     # image 404s (the standalone release.yml raced the image publish on tag
     # pushes; both fired with no ordering). Tag pushes only.
-    needs: [image]
+    needs: [image, attest]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     permissions:
@@ -131,8 +177,17 @@ jobs:
             else
               git log --format="- %s ([%h]($BASE_URL/commit/%H))" "$TAG"
             fi
+            if [ -n "$DIGEST" ]; then
+              echo
+              echo "Verify provenance: \`gh attestation verify oci://ghcr.io/tankdonut/agent-base:$TAG@$DIGEST -R $GITHUB_REPOSITORY\`"
+            fi
           } > release-notes.md
           cat release-notes.md
+
+      - name: Fetch SBOM artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sbom-spdx
 
       - name: Create GitHub release
         env:
@@ -145,3 +200,4 @@ jobs:
             --title "$GITHUB_REF_NAME" \
             --notes-file release-notes.md \
             --generate-notes
+          gh release upload "$GITHUB_REF_NAME" sbom.spdx.json

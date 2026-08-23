@@ -40,6 +40,15 @@ services:
       # First boot runs setup + reconcile + seed before the gateway exec;
       # upgrade boots add a verified backup. Match the image HEALTHCHECK.
       start_period: 300s
+    # Recommended hardening baseline (see docs/standard-agent.md
+    # "Deployment hardening"): the named volumes already cover every
+    # writable path the base needs.
+    # security_opt:
+    #   - no-new-privileges:true
+    # cap_drop: [ALL]
+    # read_only: true
+    # tmpfs:
+    #   - /tmp
     # Uncomment when the agent talks to a compose-internal service:
     # depends_on:
     #   mcp:

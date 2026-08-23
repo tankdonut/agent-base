@@ -425,6 +425,45 @@ morning tag; each suffix gets its own image and GitHub release. The
 release-time refs gate (`scripts/check-image-refs.sh`) validates both
 shapes, so a doc referencing an unpublished suffix fails the release.
 
+## Supply chain
+
+Every tag release ships with a SLSA build-provenance attestation (pushed
+to GHCR by CI) and an SPDX SBOM (attached to the GitHub release). Verify
+a base image before you build on it:
+
+```sh
+gh attestation verify oci://ghcr.io/tankdonut/agent-base:<tag> \
+  -R tankdonut/agent-base
+```
+
+Consumers that want bit-exact reproducibility can pin by digest instead
+of tag — every release's notes carry the digest and a copy-paste pin
+line. For automated updates, Renovate's `dockerfile` manager with
+`pinDigests: true` rewrites `FROM …:<tag>@sha256:…` and opens digest-bump
+PRs on new releases.
+
+### Deployment hardening (compose)
+
+These are deployment-layer choices (compose/systemd), not image features;
+the block below is the recommended baseline for home-server deploys:
+
+```yaml
+services:
+  agent:
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    # read_only plus tmpfs keeps the container filesystem immutable;
+    # named volumes already cover every writable path the base needs
+    # ({data}, /backups).
+    read_only: true
+    tmpfs:
+      - /tmp
+```
+
+Add egress filtering at the network layer when the agent's outbound
+surface is known (allowlist the provider/registry hosts).
+
 ## CI pattern
 
 Downstream projects compose CI from `tankdonut/github-actions` rather than
