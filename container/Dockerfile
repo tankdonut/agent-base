@@ -14,7 +14,7 @@
 FROM ghcr.io/openclaw/openclaw:2026.7.1-2
 
 # Image version (OCI label + io.agent.base.version); date-tag default.
-ARG AGENT_BASE_VERSION=2026.08.22
+ARG AGENT_BASE_VERSION=2026.08.23
 
 # The base image runs as the non-root `node` user (uid/gid 1000); root is
 # needed only for apt and /opt writes. Numeric IDs need no /etc/passwd
