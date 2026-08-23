@@ -744,6 +744,17 @@ class ReconcilePluginsMatrix(EntrypointTestCase):
             self.assertIn("--force", call)
         self.assertEqual([], self.calls_with("openclaw", "plugins", "list"))
 
+    def test_local_plugin_install_failure_warns(self) -> None:
+        def failing(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+            if cmd[:3] == ["openclaw", "plugins", "install"]:
+                return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="boom")
+            return self._ok(cmd)
+
+        self.handler = failing
+        spec = self.load_spec_with(self.LOCAL_SPEC)
+        _out, err = self.capture(lambda: entrypoint.reconcile_plugins(spec))
+        self.assertIn("plugin install failed: approval-gate", err)
+
 
 class AuthenticateGhMatrix(EntrypointTestCase):
     def test_missing_token_warns_and_never_spawns(self) -> None:

@@ -84,6 +84,11 @@ DURATION_UNITS_MS: dict[str, float] = {
     "w": 604800000,
 }
 
+CRON_NAME = r"(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|mon|tue|wed|thu|fri|sat|sun)"
+CRON_PART_RE = re.compile(
+    rf"(?:\*|\d{{1,4}}|{CRON_NAME})(?:-(?:\d{{1,4}}|{CRON_NAME}))?(?:/\d{{1,4}})?"
+)
+
 
 class AutomationSpecError(ValueError):
     """A markdown automation spec failed strict validation."""
@@ -174,6 +179,18 @@ def _load_spec(path: Path) -> JobSpec:
     schedule_value = header["every" if has_every else "cron"]
     if not schedule_value:
         raise AutomationSpecError(f"{path.name}: schedule value is empty")
+    if has_every:
+        duration_ms = _parse_duration_ms(schedule_value)
+        if duration_ms is None or duration_ms <= 0:
+            raise AutomationSpecError(
+                f"{path.name}: invalid 'every' duration {schedule_value!r} "
+                "(expected e.g. 15m, 1h30m, 0.25h, or bare milliseconds)"
+            )
+    elif not _valid_cron_expression(schedule_value):
+        raise AutomationSpecError(
+            f"{path.name}: invalid 'cron' expression {schedule_value!r} "
+            "(expected 5 fields: minute hour day-of-month month day-of-week)"
+        )
 
     deliver = header.get("deliver", "")
     if deliver not in DELIVER_MODES:
@@ -221,11 +238,25 @@ def build_jobs(directory: Path | None = None) -> list[JobSpec]:
 
 
 def openclaw(args: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["openclaw", *args],
-        capture_output=True,
-        text=True,
-    )
+    """Spawn the openclaw CLI with a hard timeout.
+
+    The reconciler runs in the forked post-startup child, where a hung CLI
+    would hang the child forever. 60s covers every cron subcommand with
+    wide margin (memory index, the slow one, is the entrypoint's own call
+    with its own 600s budget). A timeout returns a synthetic failure
+    (exit 124, stderr names the timeout) so existing returncode paths warn
+    uniformly instead of raising out of the child."""
+    try:
+        return subprocess.run(
+            ["openclaw", *args],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(
+            ["openclaw", *args], 124, stdout="", stderr="openclaw timed out after 60s"
+        )
 
 
 def list_cron_jobs() -> list[dict] | None:
@@ -254,6 +285,21 @@ def delivery_flags(spec: JobSpec) -> list[str]:
     if spec.topic:
         flags.extend(["--thread-id", spec.topic])
     return flags
+
+
+def _valid_cron_expression(value: str) -> bool:
+    """Shape check for a 5-field vixie-cron expression: fields of
+    comma-separated parts, each `*`, a number or 3-letter name, optionally
+    a range and/or step. Field VALUE ranges are the CLI's business — a
+    value it rejects fails `cron add` loudly (warn), not silently."""
+    fields = value.split()
+    if len(fields) != 5:
+        return False
+    for field in fields:
+        parts = field.split(",")
+        if not parts or not all(CRON_PART_RE.fullmatch(part) for part in parts):
+            return False
+    return True
 
 
 def _parse_duration_ms(value: str) -> int | None:

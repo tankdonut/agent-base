@@ -40,6 +40,7 @@ import contextlib
 import importlib
 import io
 import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -335,6 +336,76 @@ class EnvContract(unittest.TestCase):
         finally:
             importlib.reload(seed_automations)
         self.assertEqual(seed_automations.CHAT, original)
+
+
+class ScheduleValidation(TempSpecDir):
+    """Fail-closed schedule syntax: an invalid every-duration or cron
+    expression used to parse fine, then never match stored state — firing
+    `cron edit` on every boot forever."""
+
+    def test_invalid_every_durations_rejected(self) -> None:
+        for bad in ("15x", "1h30", "1.5", "0", "0s", "-5m", "m", "1.5.5m"):
+            with self.subTest(every=bad):
+                self.write("test-job.md", VALID_SPEC.replace("every: 15m", f"every: {bad}"))
+                with self.assertRaises(seed_automations.AutomationSpecError) as ctx:
+                    self.load()
+                self.assertIn("every", str(ctx.exception))
+
+    def test_valid_every_durations_accepted(self) -> None:
+        for good in ("15m", "1h30m", "0.25h", "500", "1w", "0.5d"):
+            with self.subTest(every=good):
+                self.write("test-job.md", VALID_SPEC.replace("every: 15m", f"every: {good}"))
+                specs = self.load()
+                self.assertEqual(good, specs[0].schedule_value)
+
+    def test_invalid_cron_expressions_rejected(self) -> None:
+        for bad in (
+            "* * * *",  # 4 fields
+            "* * * * * *",  # 6 fields
+            "x * * * *",  # non-field token
+            "*/ * * * *",  # step without value
+            "61- * * * *",  # malformed range
+            "* * * * 61x",  # trailing garbage
+            "mon * * *",  # name + wrong arity
+        ):
+            with self.subTest(cron=bad):
+                self.write("test-job.md", VALID_SPEC.replace("every: 15m", f"cron: {bad}"))
+                with self.assertRaises(seed_automations.AutomationSpecError) as ctx:
+                    self.load()
+                self.assertIn("cron", str(ctx.exception))
+
+    def test_valid_cron_expressions_accepted(self) -> None:
+        for good in ("2 9 * * *", "*/5 * * * *", "0 9 * * mon-fri", "30 4 1,15 * *"):
+            with self.subTest(cron=good):
+                self.write("test-job.md", VALID_SPEC.replace("every: 15m", f"cron: {good}"))
+                specs = self.load()
+                self.assertEqual("--cron", specs[0].schedule_flag)
+                self.assertEqual(good, specs[0].schedule_value)
+
+
+class CliTimeout(unittest.TestCase):
+    """Every openclaw() spawn carries a timeout — the reconciler runs in
+    the forked post-startup child, where a hung CLI hangs it forever."""
+
+    def test_openclaw_passes_timeout(self) -> None:
+        captured: dict[str, object] = {}
+
+        def fake_run(cmd: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+            captured.update(kwargs)
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        with mock.patch.object(seed_automations.subprocess, "run", side_effect=fake_run):
+            seed_automations.openclaw(["cron", "list", "--json"])
+        self.assertGreaterEqual(int(captured.get("timeout", 0)), 60)
+
+    def test_timeout_returns_synthetic_failure_not_exception(self) -> None:
+        def hanging(cmd: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+            raise subprocess.TimeoutExpired(cmd, 60)
+
+        with mock.patch.object(seed_automations.subprocess, "run", side_effect=hanging):
+            result = seed_automations.openclaw(["cron", "list", "--json"])
+        self.assertEqual(124, result.returncode)
+        self.assertIn("timed out", result.stderr)
 
 
 class DurationParsing(unittest.TestCase):

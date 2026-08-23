@@ -321,7 +321,9 @@ def reconcile_plugins(spec: Spec) -> None:
     for plugin in spec.plugins:
         if plugin.source is not None:
             log(f"Reconciling local plugin '{plugin.name}'")
-            run("openclaw", "plugins", "install", plugin.source, "--force", check=False)
+            result = run("openclaw", "plugins", "install", plugin.source, "--force", check=False)
+            if result is not None and result.returncode != 0:
+                warn(f"plugin install failed: {plugin.name}")
         elif not plugin_exists(plugin.name):
             log(f"Installing plugin '{plugin.name}'")
             result = run("openclaw", "plugins", "install", plugin.name, check=False)

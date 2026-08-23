@@ -251,13 +251,19 @@ wrapper entrypoint.
      timeout skips the rest, non-fatal).
    - Cron seeding: `seed_automations.main(["--model", <automations.model>])`
      in-process. Fail-closed (a bad or missing spec aborts before any
-     mutation) and drift-healing (see decisions below).
+     mutation — invalid `every:` durations or `cron:` expressions are
+     load errors, not silent drift) and drift-healing (see decisions
+     below). Every CLI spawn carries a 60s timeout, so a hung cron call
+     cannot hang the forked child.
    - Memory reindex (unless `AGENT_MEMORY_REINDEX=0`): clear stale
      reindex locks, check status, then full rebuild, incremental pass, or
      skip. Three attempts with 10s backoff; a degraded success
      (`chunks_vec not updated` on stderr, vectors skipped) counts as
      retryable because it is the memory-search-offline case.
-   - Disable skills flagged by `openclaw doctor --lint` as not ready.
+   - Disable skills flagged by `openclaw doctor --lint` as not ready, and
+     re-enable skills this reconcile disabled earlier once their finding
+     clears (tracked in `{data}/doctor-disabled-skills`; skills the
+     operator disabled by other means are never touched).
    - `openclaw config validate` and `openclaw doctor --lint`, warn-only:
      findings surface in logs, the gateway keeps running.
 
