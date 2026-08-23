@@ -16,6 +16,10 @@ set -euo pipefail
 REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$REPO_ROOT"
 
+# Log artifacts land in ./logs (gitignored) — never loose in the repo root.
+LOGDIR="$REPO_ROOT/logs"
+mkdir -p "$LOGDIR"
+
 IMAGE=${AGENT_BASE_IMAGE:-${1:-agent-base:smoke}}
 ENGINE=$(command -v podman >/dev/null 2>&1 && echo podman || echo docker)
 
@@ -63,8 +67,8 @@ first_line() { grep -n -- "$1" "$LOG" | head -n 1 | cut -d: -f1; }
 
 smoke_fixture() { # smoke_fixture FIXTURE EXPECTED_MCP_NAME
   local f=$1 mcp=$2
-  local validate_log=".smoke-$f.validate.log" boot_log=".smoke-$f.boot.log"
-  LOG=".smoke-$f.shim.log"
+  local validate_log="$LOGDIR/smoke-$f.validate.log" boot_log="$LOGDIR/smoke-$f.boot.log"
+  LOG="$LOGDIR/smoke-$f.shim.log"
   echo "[smoke] fixture: $f"
 
   # Env every spec template can resolve ({env:...} refs resolve at load
@@ -139,6 +143,7 @@ smoke_fixture() { # smoke_fixture FIXTURE EXPECTED_MCP_NAME
   assert_present "'mcp' 'add' '$mcp'" "reconcile_mcp registered '$mcp'"
   assert_present "'cron' 'list'" "post_startup seeded cron jobs (cron list)"
   assert_present "'--tools'" "seeded cron jobs carry a bounded tool allow-list"
+  assert_present "'--failure-alert'" "seeded cron jobs alert on failed/skipped runs"
   assert_present "'memory' 'status'" "memory ladder checked index status"
   assert_present "'health'" "post_startup waited for gateway health"
   # The shim reports a CLEAN memory index (files=0, dirty=false, identity
@@ -163,24 +168,36 @@ smoke_fixture() { # smoke_fixture FIXTURE EXPECTED_MCP_NAME
 }
 
 echo "[smoke] building $IMAGE (podman/docker build -f container/Dockerfile .)"
-"$ENGINE" build --build-arg AGENT_BASE_VERSION=smoke -f container/Dockerfile -t "$IMAGE" .
+PODMAN_FORMAT_FLAG=""
+if [ "$ENGINE" = podman ]; then
+  # OCI format drops the HEALTHCHECK; keep it in the smoke artifact so the
+  # inspect assertion below is meaningful.
+  PODMAN_FORMAT_FLAG="--format docker"
+fi
+"$ENGINE" build $PODMAN_FORMAT_FLAG --build-arg AGENT_BASE_VERSION=smoke -f container/Dockerfile -t "$IMAGE" .
 
 # --- image contract: gh CLI present for the gh-auth phase ---
 # --entrypoint bypasses tini + the boot entrypoint; gh --version exits 0
 # only when the binary is installed and runnable.
-if "$ENGINE" run --rm --entrypoint gh "$IMAGE" --version >.smoke-gh.log 2>&1; then
+if "$ENGINE" run --rm --entrypoint gh "$IMAGE" --version >"$LOGDIR/smoke-gh.log" 2>&1; then
   pass "gh CLI present in image"
 else
-  fail "gh CLI missing from image:" && sed 's/^/    /' .smoke-gh.log >&2
+  fail "gh CLI missing from image"
+fi
+
+if "$ENGINE" inspect --type image "$IMAGE" --format '{{.Config.Healthcheck.Test}}' 2>/dev/null | grep -q "healthz"; then
+  pass "image carries HEALTHCHECK (/healthz)"
+else
+  fail "image HEALTHCHECK missing (was the build OCI-format?)"
 fi
 
 smoke_fixture freya-like ac-infinity
 smoke_fixture mimir-like trade-agent
 
 if [ "$FAILURES" -eq 0 ]; then
-  rm -f .smoke-*.log
+  rm -f "$LOGDIR"/smoke-*.log
   echo "[smoke] PASS (both fixtures green)"
 else
-  echo "[smoke] FAIL: $FAILURES assertion(s); logs kept as .smoke-*.log" >&2
+  echo "[smoke] FAIL: $FAILURES assertion(s); logs kept in $LOGDIR/smoke-*.log" >&2
   exit 1
 fi

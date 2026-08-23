@@ -37,7 +37,9 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 60s
+      # First boot runs setup + reconcile + seed before the gateway exec;
+      # upgrade boots add a verified backup. Match the image HEALTHCHECK.
+      start_period: 300s
     # Uncomment when the agent talks to a compose-internal service:
     # depends_on:
     #   mcp:

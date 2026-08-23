@@ -4,7 +4,10 @@
 # Records every invocation — cwd plus each arg, single-quoted, space-joined,
 # one line per call — to $OPENCLAW_SHIM_LOG, and emulates just enough of the
 # real CLI to push container/entrypoint.py through a full boot:
-#   - list-style commands return empty JSON (so every add path fires)
+#   - list-style commands return empty JSON, except `cron list --json`,
+#     which reports jobs previously created by `cron add --name X` in this
+#     run (state file beside the log) — that is what the failure-alert
+#     attach path re-lists for (so every add path fires)
 #   - `health` succeeds immediately (wait_for_gateway returns at once)
 #   - `memory status --json` reports a CLEAN index (files=0, not dirty,
 #     identity valid) — the entrypoint then takes the clean fast path and
@@ -18,6 +21,7 @@
 set -u
 
 log_file=${OPENCLAW_SHIM_LOG:-/tmp/openclaw-shim.log}
+jobs_file=${log_file%.log}.jobs.json
 
 line="cwd=$PWD"
 for arg in "$@"; do
@@ -47,9 +51,35 @@ case $cmd in
     fi
     ;;
   cron)
-    if [ "$sub $opt" = "list --json" ]; then
-      printf '%s\n' '{"jobs":[]}'
-    fi
+    case $sub in
+      add)
+        # Record the job so the post-add re-list (failure-alert attach)
+        # finds it, exactly like the real CLI's persisted store.
+        scan_prev=""
+        name=""
+        for arg in "$@"; do
+          if [ "$scan_prev" = "--name" ]; then name=$arg; break; fi
+          scan_prev=$arg
+        done
+        if [ -n "$name" ]; then
+          [ -s "$jobs_file" ] && names=$(cat "$jobs_file") || names='[]'
+          if [ "$names" = "[]" ]; then
+            printf '%s' "[{\"id\": \"job-$name\", \"name\": \"$name\"}]" >"$jobs_file"
+          else
+            printf '%s' "$names" | sed "s/]/, {\"id\": \"job-$name\", \"name\": \"$name\"}]/" >"$jobs_file"
+          fi
+        fi
+        ;;
+      list)
+        if [ "$opt" = "--json" ]; then
+          if [ -s "$jobs_file" ]; then
+            printf '%s\n' "{\"jobs\": $(cat "$jobs_file")}"
+          else
+            printf '%s\n' '{"jobs":[]}'
+          fi
+        fi
+        ;;
+    esac
     ;;
   memory)
     if [ "$sub" = "status" ]; then

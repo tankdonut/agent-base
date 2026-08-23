@@ -2,6 +2,9 @@
 __pycache__/
 *.py[cod]
 
+# smoke-test log artifacts (scripts/smoke.sh)
+logs/
+
 # oh-my-openagent working state
 .omo/
 

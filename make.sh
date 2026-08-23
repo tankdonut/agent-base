@@ -53,7 +53,13 @@ case $target in
     version=${AGENT_BASE_VERSION:-$(date +%Y.%m.%d)}
     eng=$(engine)
     echo "[make] building $IMAGE:$version with $eng"
-    "$eng" build -f container/Dockerfile \
+    format_flag=""
+    if [ "$eng" = podman ]; then
+      # podman defaults to OCI, which cannot carry the Dockerfile
+      # HEALTHCHECK into the artifact.
+      format_flag="--format docker"
+    fi
+    "$eng" build $format_flag -f container/Dockerfile \
       -t "$IMAGE:$version" \
       --build-arg AGENT_BASE_VERSION="$version" .
     ;;

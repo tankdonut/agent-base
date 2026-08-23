@@ -402,6 +402,72 @@ class JobToolsPolicy(TempSpecDir):
         self.assertEqual("web_search", argv[argv.index("--tools") + 1])
 
 
+class FailureAlerts(unittest.TestCase):
+    """X3: seeded jobs alert on failed/skipped runs when a chat target
+    exists. `cron add` has no alert flags at the pinned tag — alerts attach
+    via `cron edit` right after creation, and alert drift (like any other
+    field) heals with one edit."""
+
+    def setUp(self) -> None:
+        self.job = stored_job({"kind": "every", "everyMs": 900000})
+        oc_patcher = mock.patch.object(seed_automations, "openclaw")
+        self.oc = oc_patcher.start()
+        self.oc.return_value = CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        self.addCleanup(oc_patcher.stop)
+        list_patcher = mock.patch.object(
+            seed_automations, "list_cron_jobs", return_value=[self.job]
+        )
+        list_patcher.start()
+        self.addCleanup(list_patcher.stop)
+
+    def test_flags_empty_without_chat(self) -> None:
+        with mock.patch.object(seed_automations, "CHAT", ""):
+            self.assertEqual([], seed_automations.failure_alert_flags())
+
+    def test_flags_route_alerts_to_chat(self) -> None:
+        with mock.patch.object(seed_automations, "CHAT", "-100"):
+            self.assertEqual(
+                [
+                    "--failure-alert",
+                    "--failure-alert-channel",
+                    "telegram",
+                    "--failure-alert-to",
+                    "-100",
+                    "--failure-alert-include-skipped",
+                ],
+                seed_automations.failure_alert_flags(),
+            )
+
+    def test_new_job_gets_alerts_attached_via_edit(self) -> None:
+        with mock.patch.object(seed_automations, "CHAT", "-100"):
+            seed_automations.reconcile(make_spec(), [], "m")
+        add_call = self.oc.call_args_list[0][0][0]
+        edit_call = self.oc.call_args_list[1][0][0]
+        self.assertEqual(["cron", "add"], add_call[:2])
+        self.assertEqual(["cron", "edit", "job-1"], edit_call[:3])
+        self.assertIn("--failure-alert", edit_call)
+        self.assertIn("-100", edit_call)
+
+    def test_matching_job_without_alerts_is_drift_and_edited(self) -> None:
+        job = stored_job({"kind": "every", "everyMs": 900000})
+        with mock.patch.object(seed_automations, "CHAT", "-100"):
+            self.assertFalse(seed_automations._job_is_current(job, make_spec()))
+
+    def test_matching_job_with_alerts_is_current(self) -> None:
+        job = stored_job(
+            {"kind": "every", "everyMs": 900000},
+            delivery={"to": "-100"},
+            failureAlert={"enabled": True, "channel": "telegram", "to": "-100"},
+        )
+        with mock.patch.object(seed_automations, "CHAT", "-100"):
+            self.assertTrue(seed_automations._job_is_current(job, make_spec()))
+
+    def test_alerts_ignored_when_chat_unset(self) -> None:
+        job = stored_job({"kind": "every", "everyMs": 900000})
+        with mock.patch.object(seed_automations, "CHAT", ""):
+            self.assertTrue(seed_automations._job_is_current(job, make_spec()))
+
+
 class ScheduleValidation(TempSpecDir):
     """Fail-closed schedule syntax: an invalid every-duration or cron
     expression used to parse fine, then never match stored state — firing
@@ -714,7 +780,8 @@ class ReconcileContract(unittest.TestCase):
         spec = make_spec(topic="42")
         with mock.patch.object(seed_automations, "CHAT", "-100"):
             seed_automations.reconcile(spec, [], "zai/test-model")
-        self.oc.assert_called_once_with(
+        self.assertEqual(2, self.oc.call_count)
+        self.oc.assert_any_call(
             [
                 "cron",
                 "add",
@@ -741,6 +808,7 @@ class ReconcileContract(unittest.TestCase):
                 "42",
             ]
         )
+        self.oc.assert_any_call(["cron", "list", "--json"])
 
     def test_create_without_chat_omits_delivery_flags(self) -> None:
         seed_automations.reconcile(make_spec(deliver="no-deliver"), [], "m")
@@ -815,6 +883,12 @@ class ReconcileContract(unittest.TestCase):
                 "telegram",
                 "--to",
                 "-999",
+                "--failure-alert",
+                "--failure-alert-channel",
+                "telegram",
+                "--failure-alert-to",
+                "-999",
+                "--failure-alert-include-skipped",
             ]
         )
 
@@ -841,6 +915,12 @@ class ReconcileContract(unittest.TestCase):
                 "-100",
                 "--thread-id",
                 "42",
+                "--failure-alert",
+                "--failure-alert-channel",
+                "telegram",
+                "--failure-alert-to",
+                "-100",
+                "--failure-alert-include-skipped",
             ]
         )
 
@@ -855,6 +935,7 @@ class ReconcileContract(unittest.TestCase):
             {"kind": "every", "everyMs": 900000},
             id="job-keep",
             delivery={"to": "-100"},
+            failureAlert={"enabled": True, "channel": "telegram", "to": "-100"},
         )
         with mock.patch.object(seed_automations, "CHAT", "-100"):
             seed_automations.reconcile(spec, [stray, keeper], "m")
@@ -871,6 +952,7 @@ class ReconcileContract(unittest.TestCase):
             {"kind": "every", "everyMs": 900000},
             id="job-keep",
             delivery={"to": "-100"},
+            failureAlert={"enabled": True, "channel": "telegram", "to": "-100"},
         )
         self.oc.return_value = CompletedProcess(args=[], returncode=1, stdout="", stderr="boom")
         with mock.patch.object(seed_automations, "CHAT", "-100"):

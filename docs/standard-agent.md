@@ -311,7 +311,11 @@ wrapper entrypoint.
      reaching the cron tool could self-replicate jobs). Override per job
      with a `tools:` header, or globally with
      `automations.default_tools` in the spec (`["*"]` restores
-     unrestricted).
+     unrestricted). When `TELEGRAM_CHAT_ID` is set, seeded jobs also
+     carry **failure alerts** routed to that chat (`--failure-alert`
+     with include-skipped, attached via `cron edit` — `cron add` has no
+     alert flags at the pinned base tag); alert drift heals like any
+     other job field.
    - Memory reindex (unless `AGENT_MEMORY_REINDEX=0`): clear stale
      reindex locks, check status, then full rebuild, incremental pass, or
      skip. Three attempts with 10s backoff; a degraded success

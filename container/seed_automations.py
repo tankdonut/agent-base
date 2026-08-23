@@ -444,7 +444,17 @@ def _job_is_current(job: dict, spec: JobSpec) -> bool:
         and chat_match
         and _schedule_is_current(job, spec)
         and _tools_are_current(job, spec)
+        and _failure_alerts_are_current(job)
     )
+
+
+def _failure_alerts_are_current(job: dict) -> bool:
+    """Alert config converges to: enabled + routed to CHAT (ignored
+    entirely when no chat is configured — jobs run without delivery)."""
+    if CHAT == "":
+        return True
+    alert = job.get("failureAlert")
+    return isinstance(alert, dict) and alert.get("enabled") is True and str(alert.get("to")) == CHAT
 
 
 def _tools_are_current(job: dict, spec: JobSpec) -> bool:
@@ -454,6 +464,23 @@ def _tools_are_current(job: dict, spec: JobSpec) -> bool:
     if not isinstance(stored, list):
         return False
     return sorted(str(t) for t in stored) == sorted(spec.tools)
+
+
+def failure_alert_flags() -> list[str]:
+    """Failure/skip alerts for seeded jobs, routed to the delivery chat.
+    Empty when no chat is configured (nowhere to send). `cron add` has no
+    alert flags at the pinned base tag — the create path attaches them
+    via `cron edit` immediately after."""
+    if not CHAT:
+        return []
+    return [
+        "--failure-alert",
+        "--failure-alert-channel",
+        "telegram",
+        "--failure-alert-to",
+        CHAT,
+        "--failure-alert-include-skipped",
+    ]
 
 
 def cron_add_argv(
@@ -487,7 +514,8 @@ def cron_add_argv(
 
 
 def cron_edit_argv(spec: JobSpec, job_id: str, flags: list[str]) -> list[str]:
-    """Argv for `openclaw cron edit` (message, schedule, delivery, tools)."""
+    """Argv for `openclaw cron edit` (message, schedule, delivery, tools,
+    failure-alert config)."""
     argv = [
         "cron",
         "edit",
@@ -500,6 +528,7 @@ def cron_edit_argv(spec: JobSpec, job_id: str, flags: list[str]) -> list[str]:
     if spec.tools != ("*",):
         argv.extend(("--tools", ",".join(spec.tools)))
     argv.extend(flags)
+    argv.extend(failure_alert_flags())
     return argv
 
 
@@ -549,6 +578,24 @@ def reconcile(
             print(
                 f"[seed-automations] WARNING: cron add failed: {spec.name}: {result.stderr.strip()}"
             )
+            return
+        alert_flags = failure_alert_flags()
+        if alert_flags:
+            fresh = list_cron_jobs()
+            created = next(
+                (j for j in fresh or [] if isinstance(j, dict) and j.get("name") == spec.name),
+                None,
+            )
+            if created is not None and created.get("id"):
+                print(f"[seed-automations] attaching failure alerts to '{spec.name}'")
+                result = openclaw(
+                    ["cron", "edit", str(created["id"]), "--message", spec.prompt, *alert_flags]
+                )
+                if result.returncode != 0:
+                    print(
+                        f"[seed-automations] WARNING: alert attach failed: "
+                        f"{spec.name}: {result.stderr.strip()}"
+                    )
         return
 
     job = matches[0]

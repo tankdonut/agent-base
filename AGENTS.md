@@ -35,7 +35,7 @@ templates/   spec.example.json (golden), env.example, compose snippets, workspac
 | Spec schema change | `container/spec.py` + `templates/spec.example.json` + `docs/standard-agent.md` (same commit) |
 | Cron reconcile behavior | `container/seed_automations.py` |
 | Env var contract (base vs project) | `templates/env.example`, `docs/standard-agent.md#environment-contract` |
-| Smoke failure | `.smoke-*.log` (kept on failure, deleted on success) + `scripts/smoke.sh` |
+| Smoke failure | `logs/smoke-*.log` (kept on failure, deleted on success) + `scripts/smoke.sh` |
 | Migration guides | `docs/standard-agent.md#migrations` |
 
 ## Code Map
@@ -89,7 +89,7 @@ Symbols relative to `container/`.
 
 ## Notes
 
-- Smoke is local-only (not in CI); logs are `.smoke-*.log` — kept on failure, removed on success.
+- Smoke is local-only (not in CI); logs are `logs/smoke-*.log` (gitignored) — kept on failure, removed on success.
 - `scripts/smoke.sh` embeds a Python RUNNER mirroring `main()` minus fork/execvp — update both when phases change.
 - Project one-offs go in wrapper entrypoints that import the phases — never hooks in the base (docs "Escape hatch: wrapper entrypoints").
 - Local `container/__pycache__` (cpython-313/314) and the `.codegraph` symlink are machine-local, untracked artifacts.

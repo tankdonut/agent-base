@@ -87,6 +87,15 @@ USER 1000:1000
 # OpenClaw gateway WebSocket + HTTP port (health, API, agent sessions).
 EXPOSE 18789
 
+# Gateway liveness via the no-auth /healthz probe on 18789 (python3 is
+# guaranteed in this image). start-period covers the entrypoint phases
+# before execvp (first boot: setup + reconcile + seed; upgrade boots add
+# a verified backup). Requires docker image format — OCI manifests
+# cannot carry a healthcheck (podman builds pass --format docker in
+# make.sh/smoke.sh for exactly this reason).
+HEALTHCHECK --interval=30s --timeout=10s --start-period=300s --retries=3 \
+  CMD ["python3", "-c", "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:18789/healthz', timeout=5).status < 500 else 1)"]
+
 # tini as PID 1 (signal forwarding + zombie reaping, e.g. the forked
 # post-startup child), entrypoint reconciles then execs CMD.
 ENTRYPOINT ["tini", "--", "python3", "/opt/agent/entrypoint.py"]
