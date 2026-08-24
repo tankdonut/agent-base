@@ -16,7 +16,7 @@ FROM ghcr.io/openclaw/openclaw:2026.7.1-2
 # Image version (OCI label + io.agent.base.version); date-tag default.
 # Promoted to ENV so the entrypoint's upgrade-backup phase can detect
 # image-version deltas at runtime ({data}/last-image-version marker).
-ARG AGENT_BASE_VERSION=2026.08.23.1
+ARG AGENT_BASE_VERSION=2026.08.24.1
 ENV AGENT_BASE_VERSION=${AGENT_BASE_VERSION}
 
 # The base image runs as the non-root `node` user (uid/gid 1000); root is

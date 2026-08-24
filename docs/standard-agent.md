@@ -36,7 +36,7 @@ carries the entrypoint chain (tini → `entrypoint.py` → the container CMD,
 it and adds only content:
 
 ```dockerfile
-FROM ghcr.io/tankdonut/agent-base:2026.08.23.1
+FROM ghcr.io/tankdonut/agent-base:2026.08.24.1
 
 # The declarative boot contract (container/spec.py loads it fail-closed).
 COPY --chown=node:node spec.json /opt/agent/spec.json
@@ -417,7 +417,7 @@ works the same way, since each phase is a plain function over `(spec, env)`.
 ## Image versioning
 
 Images publish to `ghcr.io/tankdonut/agent-base` under date tags
-(`YYYY.MM.DD`, e.g. `ghcr.io/tankdonut/agent-base:2026.08.23.1`). There is no
+(`YYYY.MM.DD`, e.g. `ghcr.io/tankdonut/agent-base:2026.08.24.1`). There is no
 floating `latest`: agent containers are long-running and their boot
 behaviour should change only when a human bumps the pin. Pin the exact tag
 in every project `FROM` and bump it deliberately; date tags make the diff
@@ -509,7 +509,7 @@ catches schema, templating, and automation errors in seconds.
 ## Migrations
 
 Each guide below is the exact cutover for that project onto
-`ghcr.io/tankdonut/agent-base:2026.08.23.1`. Both keep their existing named
+`ghcr.io/tankdonut/agent-base:2026.08.24.1`. Both keep their existing named
 volumes: the base swap changes the image and entrypoint only, never volume
 data.
 
@@ -539,7 +539,7 @@ script, the approvals plugin, and its content. Build context stays the
 repo root:
 
 ```dockerfile
-FROM ghcr.io/tankdonut/agent-base:2026.08.23.1
+FROM ghcr.io/tankdonut/agent-base:2026.08.24.1
 
 # hadolint ignore=DL3002
 USER root
@@ -777,7 +777,7 @@ so unset it once and the first standard boot re-adds it with `{data}` paths:
 
 ```sh
 podman run --rm -v freya-data:/home/node/.openclaw \
-  --entrypoint openclaw ghcr.io/tankdonut/agent-base:2026.08.23.1 \
+  --entrypoint openclaw ghcr.io/tankdonut/agent-base:2026.08.24.1 \
   mcp unset grow-docs
 ```
 
@@ -794,7 +794,7 @@ podman run --rm \
   -v ./freya/automations:/opt/agent/automations:ro \
   --env-file freya/.env \
   --entrypoint python3 \
-  ghcr.io/tankdonut/agent-base:2026.08.23.1 \
+  ghcr.io/tankdonut/agent-base:2026.08.24.1 \
   /opt/agent/entrypoint.py --validate-spec
 ```
 
@@ -841,7 +841,7 @@ The base carries python3, tini, the entrypoint chain, and the `node` user;
 Mimir adds only content. Build context stays the repo root:
 
 ```dockerfile
-FROM ghcr.io/tankdonut/agent-base:2026.08.23.1
+FROM ghcr.io/tankdonut/agent-base:2026.08.24.1
 
 COPY --chown=node:node agent/spec.json     /opt/agent/spec.json
 COPY --chown=node:node agent/automations/  /opt/agent/automations/
@@ -976,7 +976,7 @@ podman run --rm \
   -v ./agent/automations:/opt/agent/automations:ro \
   --env-file secrets/agent.env \
   --entrypoint python3 \
-  ghcr.io/tankdonut/agent-base:2026.08.23.1 \
+  ghcr.io/tankdonut/agent-base:2026.08.24.1 \
   /opt/agent/entrypoint.py --validate-spec
 ```
 
