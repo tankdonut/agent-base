@@ -145,7 +145,7 @@ jobs:
               "https://ghcr.io/v2/tankdonut/agent-base/manifests/$digest" | jq -r .config.digest)
             curl -sf -H "Authorization: Bearer $token" \
               "https://ghcr.io/v2/tankdonut/agent-base/blobs/$config" \
-              | jq -e '.healthcheck.Test[0] == "CMD"' >/dev/null \
+              | jq -e '.config.Healthcheck.Test[0] == "CMD"' >/dev/null \
               || { echo "::error::$arch manifest lost the HEALTHCHECK"; exit 1; }
             echo "$arch: HEALTHCHECK present"
           done
