@@ -94,6 +94,7 @@ split with copy-paste entries.
 | `AGENT_SPEC_PATH` | `/opt/agent/spec.json` | Override the spec location (tests, fixtures, wrapper entrypoints). |
 | `AGENT_MANAGE_CONFIG` | `1` | `0` skips config/MCP/plugin reconciliation for operators who manage `openclaw.json` manually. |
 | `AGENT_SKIP_SEED` | `0` | `1` skips content seeding only. Reconciliation still runs; dev overlays bind-mount the content instead. |
+| `AGENT_SYNC` | `0` | `1` for one boot forces a workspace re-seed on an existing volume: seeded persona files are overwritten with image content while agent-written files outside the seed set (journal, memories) survive — the named alternative to deleting the volume. |
 | `AGENT_MEMORY_REINDEX` | `1` | `0` skips the post-startup memory reindex. |
 | `AGENT_GIT_TOKEN` | unset | gh token, used only when `features.gh_auth` is true. Never logged. |
 | `AGENT_AUTOMATIONS_DIR` | `/opt/agent/automations` | Override the automations directory. |

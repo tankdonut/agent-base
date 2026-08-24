@@ -853,6 +853,26 @@ class SeedContentSemantics(EntrypointTestCase):
         self.assertEqual("# evolved by agent\n", evolved.read_text("utf-8"))
         self.assertTrue((self.data / "workspace" / "journal" / "entry.md").is_file())
 
+    def test_agent_sync_forces_workspace_reseed(self) -> None:
+        # AGENT_SYNC=1: the named reset — seeded persona files are
+        # overwritten with image content on an existing volume, while
+        # agent-written files outside the seed set (journal, memories)
+        # survive.
+        self.make_seeds()
+        self.seed()
+        evolved = self.data / "workspace" / "AGENTS.md"
+        evolved.write_text("# evolved by agent\n", encoding="utf-8")
+        (self.data / "workspace" / "journal" / "entry.md").write_text("j\n", encoding="utf-8")
+        out, _err = self.seed({"AGENT_SYNC": "1"})
+        self.assertEqual("# seed\n", evolved.read_text("utf-8"))
+        self.assertTrue((self.data / "workspace" / "journal" / "entry.md").is_file())
+        self.assertIn("AGENT_SYNC=1 — re-seeding workspace", out)
+
+    def test_agent_sync_on_fresh_volume_behaves_like_first_boot(self) -> None:
+        self.make_seeds()
+        _out, _err = self.seed({"AGENT_SYNC": "1"})
+        self.assertEqual("# seed\n", (self.data / "workspace" / "AGENTS.md").read_text("utf-8"))
+
     def test_skills_replaced_every_boot(self) -> None:
         self.make_seeds()
         self.seed()

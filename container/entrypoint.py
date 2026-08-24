@@ -643,8 +643,14 @@ def seed_content(spec: Spec, env: Mapping[str, str]) -> None:
 
     workspace = data_dir() / "workspace"
     workspace_src = SEED_BASE / "workspace"
-    if not workspace.exists() and workspace_src.is_dir():
-        shutil.copytree(workspace_src, workspace)
+    if workspace_src.is_dir():
+        if not workspace.exists():
+            shutil.copytree(workspace_src, workspace)
+        elif env.get("AGENT_SYNC", "0") == "1":
+            log("AGENT_SYNC=1 — re-seeding workspace (seeded files overwritten)")
+            shutil.copytree(workspace_src, workspace, dirs_exist_ok=True)
+        else:
+            workspace.mkdir(parents=True, exist_ok=True)
     else:
         workspace.mkdir(parents=True, exist_ok=True)
 
