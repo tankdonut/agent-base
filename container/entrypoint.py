@@ -87,8 +87,13 @@ SEED_BASE = Path("/opt/seed")
 os.environ.pop("OPENCLAW_HOME", None)
 
 
+def _timestamp() -> str:
+    """OpenClaw log-line timestamp: ISO-8601, millisecond precision, UTC."""
+    return datetime.now(UTC).isoformat(timespec="milliseconds")
+
+
 def log(msg: str) -> None:
-    print(f"[agent-entry] {msg}", flush=True)
+    print(f"{_timestamp()} [agent-entry] [info] {msg}", flush=True)
 
 
 _boot_warnings: list[str] = []
@@ -96,7 +101,7 @@ _boot_warnings: list[str] = []
 
 def warn(msg: str) -> None:
     _boot_warnings.append(msg)
-    print(f"[agent-entry] WARNING: {msg}", file=sys.stderr, flush=True)
+    print(f"{_timestamp()} [agent-entry] [warn] {msg}", file=sys.stderr, flush=True)
 
 
 def run(
@@ -991,7 +996,11 @@ def validate_spec(env: Mapping[str, str]) -> int:
         load_agent_spec(env)
         seed_automations.build_jobs()
     except (SpecError, seed_automations.AutomationSpecError, OSError) as exc:
-        print(f"[agent-entry] spec validation failed: {exc}", file=sys.stderr, flush=True)
+        print(
+            f"{_timestamp()} [agent-entry] [error] spec validation failed: {exc}",
+            file=sys.stderr,
+            flush=True,
+        )
         return 1
     log("spec validation passed")
     return 0

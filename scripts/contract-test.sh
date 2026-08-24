@@ -8,7 +8,7 @@
 #   B) cross-check every captured flag against `openclaw <cmd> --help`
 #      run with the real CLI (flag drift fails here)
 #   C) boot the image with NO shim and the real CLI: full first boot +
-#      reconcile must exit 0 with zero [agent-entry] WARNING lines, and
+#      reconcile must exit 0 with zero [agent-entry] [warn] lines, and
 #      `mcp list --json` must contain both canary servers
 # Usage: scripts/contract-test.sh [IMAGE]   (default: builds nothing,
 # expects the image tag given or ghcr.io/tankdonut/agent-base:contract)
@@ -139,10 +139,10 @@ if timeout 420 "$ENGINE" run --rm \
 else
   fail "stage C real boot failed:"$'\n'"$(sed 's/^/    /' "$WORK/stage-c.log")"
 fi
-if grep -q '\[agent-entry\] WARNING' "$WORK/stage-c.log"; then
-  fail "stage C: boot log carries WARNING lines:"$'\n'"$(grep '\[agent-entry\] WARNING' "$WORK/stage-c.log" | sed 's/^/    /')"
+if grep -q '\[agent-entry\] \[warn\]' "$WORK/stage-c.log"; then
+  fail "stage C: boot log carries [warn] lines:"$'\n'"$(grep '\[agent-entry\] \[warn\]' "$WORK/stage-c.log" | sed 's/^/    /')"
 fi
-pass "stage C: zero WARNING lines in boot log"
+pass "stage C: zero [warn] lines in boot log"
 
 mcp_list=$(timeout 60 "$ENGINE" run --rm --entrypoint openclaw \
   -v "$VOLUME:/home/node/.openclaw" "${CANARY_ENV[@]}" "$IMAGE" mcp list --json 2>&1) \
