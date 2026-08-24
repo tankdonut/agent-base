@@ -67,7 +67,7 @@ Symbols relative to `container/`.
 - Reconcile failures warn and never raise (gateway availability > config completeness); loader failures abort the boot.
 - Seeded automations run with a bounded tool allow-list (`seed_automations.DEFAULT_JOB_TOOLS` — fs/runtime/web/memory + `bundle-mcp`; recursion/spawn/browser excluded, OWASP ASI06). Per-job `tools:` header or spec `automations.default_tools` overrides; `*` = unrestricted. The base also sets `tools.deny` (cron, subagents, sessions_spawn, nodes) unless any spec `tools.*` config entry exists.
 - Formatter is `ruff-format` (not black) via pre-commit, alongside ruff, hadolint (`container/Dockerfile` only), markdownlint (`fixtures/**` ignored).
-- CI composes reusable actions from `tankdonut/github-actions` (`pre-commit`, `setup-python-uv`, `build-and-publish-image.yaml`); do not hand-roll equivalents.
+- CI composes reusable actions from `tankdonut/github-actions` (`pre-commit`, `setup-python-uv`, `ghcr-login`); do not hand-roll equivalents. Exception: the multi-arch image jobs are native per-arch runners + `imagetools` merge — `build-and-publish-image.yaml` hardcodes `ubuntu-latest` and cannot express per-arch builds (and a single multi-platform buildx push drops the HEALTHCHECK via the OCI exporter).
 - Images publish under date tags only (`YYYY.MM.DD`); no `latest` exists; push requires explicit `AGENT_BASE_VERSION`.
 
 ## Anti-Patterns

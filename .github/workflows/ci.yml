@@ -62,30 +62,93 @@ jobs:
           CONTRACT_ENGINE: docker
         run: scripts/contract-test.sh ghcr.io/tankdonut/agent-base:contract
 
-  image:
+  # Multi-arch image (L1): native per-arch builds keep the docker media
+  # type (a single buildx multi-platform push exports OCI and silently
+  # drops the Dockerfile HEALTHCHECK — the trap X3 documented), then
+  # imagetools assembles the index. This replaces the reusable
+  # build-and-publish call: the shared workflow hardcodes ubuntu-latest
+  # and cannot express per-arch runners; the ghcr-login composite action
+  # is still composed below.
+  image-amd64:
     needs: [lint, test, contract]
-    # Reusable workflow's build job requests packages: write; without an
-    # explicit grant here the token default (packages: read) fails validation.
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
-    # SHA-pinned (the trailing comment tracks the mutable ref renovate
-    # maintains — tj-actions CVE-2025-30066 class protection).
-    uses: tankdonut/github-actions/.github/workflows/build-and-publish-image.yaml@77a3164f27e2dfb209949dda22e6d5f4b3ac7fc6 # main
-    with:
-      image-name: agent-base
-      build-command: ./make.sh build
-      # Publish only from tag pushes; branch pushes, PRs, and dispatch are
-      # build-only. make.sh push refuses to run without AGENT_BASE_VERSION,
-      # which extra-env supplies on tag pushes (tag == version). format()
-      # requires .NET-style doubled braces for literal { and } — single braces
-      # fail the whole call at evaluation and the image job never starts.
-      push-command: ${{ startsWith(github.ref, 'refs/tags/') && './make.sh push' || '' }}
-      extra-env: ${{ startsWith(github.ref, 'refs/tags/') && format('{{"AGENT_BASE_VERSION":"{0}"}}', github.ref_name) || '{}' }}
-      # make.sh auto-detects podman then docker; GH runners ship docker only.
-      install-podman: false
-      login-runtime: docker
-      setup-python: false
+    env:
+      IMAGE: ghcr.io/tankdonut/agent-base
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: tankdonut/github-actions/actions/ghcr-login@246ecbe1d54fe84165f0b9f7d8aae44a0e5fa373 # v1
+        with:
+          runtime: docker
+          registry: ghcr.io
+      - name: Build (and push arch tag on releases)
+        run: |
+          docker build --platform linux/amd64 -f container/Dockerfile \
+            --build-arg AGENT_BASE_VERSION="${GITHUB_REF_NAME:-dev}" \
+            -t "$IMAGE:${GITHUB_REF_NAME}-amd64" .
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then docker push "$IMAGE:${GITHUB_REF_NAME}-amd64"; fi
+
+  image-arm64:
+    needs: [lint, test, contract]
+    # Free native arm64 runners are available to public repos.
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/tankdonut/agent-base
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: tankdonut/github-actions/actions/ghcr-login@246ecbe1d54fe84165f0b9f7d8aae44a0e5fa373 # v1
+        with:
+          runtime: docker
+          registry: ghcr.io
+      - name: Build (and push arch tag on releases)
+        run: |
+          docker build --platform linux/arm64 -f container/Dockerfile \
+            --build-arg AGENT_BASE_VERSION="${GITHUB_REF_NAME:-dev}" \
+            -t "$IMAGE:${GITHUB_REF_NAME}-arm64" .
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then docker push "$IMAGE:${GITHUB_REF_NAME}-arm64"; fi
+
+  image:
+    # Manifest merge: assembles the multi-arch index from the per-arch
+    # tags. Digest-level result is what attest signs and consumers pull.
+    needs: [image-amd64, image-arm64]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: tankdonut/github-actions/actions/ghcr-login@246ecbe1d54fe84165f0b9f7d8aae44a0e5fa373 # v1
+        with:
+          runtime: docker
+          registry: ghcr.io
+      - name: Assemble multi-arch manifest
+        run: |
+          docker buildx imagetools create -t ghcr.io/tankdonut/agent-base:"$GITHUB_REF_NAME" \
+            ghcr.io/tankdonut/agent-base:"$GITHUB_REF_NAME-amd64" \
+            ghcr.io/tankdonut/agent-base:"$GITHUB_REF_NAME-arm64"
+      - name: Verify merged manifest carries the HEALTHCHECK
+        run: |
+          token=$(curl -sf "https://ghcr.io/token?scope=repository:tankdonut/agent-base:pull&service=ghcr.io" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
+          index=$(curl -sf -H "Authorization: Bearer $token" \
+            -H "Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json" \
+            "https://ghcr.io/v2/tankdonut/agent-base/manifests/$GITHUB_REF_NAME")
+          echo "$index" | jq -e '.manifests | length == 2' >/dev/null
+          for arch in amd64 arm64; do
+            digest=$(echo "$index" | jq -r ".manifests[] | select(.platform.architecture == \"$arch\") | .digest")
+            config=$(curl -sf -H "Authorization: Bearer $token" \
+              -H "Accept: application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json" \
+              "https://ghcr.io/v2/tankdonut/agent-base/manifests/$digest" | jq -r .config.digest)
+            curl -sf -H "Authorization: Bearer $token" \
+              "https://ghcr.io/v2/tankdonut/agent-base/blobs/$config" \
+              | jq -e '.healthcheck.Test[0] == "CMD"' >/dev/null \
+              || { echo "::error::$arch manifest lost the HEALTHCHECK"; exit 1; }
+            echo "$arch: HEALTHCHECK present"
+          done
 
   attest:
     # Supply chain (X5): SLSA build-provenance attestation pushed to the

@@ -478,7 +478,9 @@ works the same way, since each phase is a plain function over `(spec, env)`.
 ## Image versioning
 
 Images publish to `ghcr.io/tankdonut/agent-base` under date tags
-(`YYYY.MM.DD`, e.g. `ghcr.io/tankdonut/agent-base:2026.08.24.1`). There is no
+(`YYYY.MM.DD`, e.g. `ghcr.io/tankdonut/agent-base:2026.08.23.1`) as
+multi-arch manifests (linux/amd64 and linux/arm64, built on native
+runners). There is no
 floating `latest`: agent containers are long-running and their boot
 behaviour should change only when a human bumps the pin. Pin the exact tag
 in every project `FROM` and bump it deliberately; date tags make the diff
