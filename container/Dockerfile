@@ -52,6 +52,20 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends gh \
     && rm -rf /var/lib/apt/lists/*
 
+# --- Optional consumer Python tools (L5) ---
+# Opt-in pip passthrough for registry packages; the base itself stays
+# stdlib-only (that invariant is untouched — unset means no pip layer).
+# Local-source tools still use the consumer recipe (COPY + pip install
+# /path), which the passthrough cannot express.
+# hadolint ignore=DL3008,DL3013,DL3042
+ARG OPENCLAW_IMAGE_PIP=""
+RUN if [ -n "$OPENCLAW_IMAGE_PIP" ]; then \
+        apt-get update \
+        && apt-get install -y --no-install-recommends python3-pip \
+        && rm -rf /var/lib/apt/lists/* \
+        && pip3 install --break-system-packages --no-cache-dir $OPENCLAW_IMAGE_PIP; \
+    fi
+
 # --- Agent modules (the image contract; paths are load-bearing) ---
 # entrypoint.py imports seed_automations and spec as top-level modules —
 # all three must sit in the same directory (/opt/agent).

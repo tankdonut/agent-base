@@ -379,6 +379,65 @@ bump.
 | Cron reconcile heals drift | Stored schedule shapes are compared precisely; anything legacy or foreign is treated as drift and healed with exactly one idempotent `cron edit`. A missing or broken spec aborts the whole run rather than pruning live jobs. |
 | Automations are image-baked, never host-mounted | Writable cron prompt files would let the agent rewrite its own schedules. |
 
+## Runaway and budget controls
+
+Scheduled agents can loop (retry storms, self-reinforcing prompts), and
+an unattended loop burns provider credits until a human notices. The
+control surface today, strongest first:
+
+1. **Provider-side billing caps** — the real backstop. Set a hard monthly
+   cap (and alert thresholds) on the provider account so the worst case
+   is a paused key, not a bill.
+2. **Bounded tool allow-lists** (in this base): seeded jobs run without
+   exec-free-for-all tooling by default, and recursion/spawn tools are
+   denied — a loop cannot self-replicate jobs or spawn fan-outs.
+3. **Failure alerts** (in this base): every failed or skipped seeded run
+   alerts the chat, so a retry storm is visible within one interval.
+4. **`--light-context`** exists on `openclaw cron add` at the pinned tag
+   for cheaper turns; pass it per job via a wrapper if needed.
+
+What does NOT exist yet: per-automation dollar/iteration caps enforced
+by the runtime. OpenClaw has no budget surface at the pinned tag and no
+upstream tracking issue for one (checked 2026-08); this section is the
+interim documentation, to be replaced when upstream ships a knob the
+spec can surface.
+
+## Python tools (optional)
+
+The base image is stdlib-only Python by contract — no pip layer ships by
+default. Consumers that need Python tools have two paths:
+
+**Registry packages (build-arg passthrough):** build with
+`--build-arg OPENCLAW_IMAGE_PIP="<pkg>[==<ver>] ..."`. The base installs
+`python3-pip` and the packages in a single layer only when the arg is
+set (mirrors the OpenClaw official image's build-arg of the same name).
+The entrypoint's own modules stay stdlib-only regardless.
+
+```dockerfile
+FROM ghcr.io/tankdonut/agent-base:2026.08.24.1
+ARG OPENCLAW_IMAGE_PIP="textual==0.89.1 rich"
+```
+
+**Local-source tools (consumer recipe):** COPY the source and pip-install
+it in your Dockerfile — the passthrough cannot express a path. This is
+the grow-agent pattern:
+
+```dockerfile
+# hadolint ignore=DL3002
+USER 0:0
+# hadolint ignore=DL3008
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends python3-pip \
+    && rm -rf /var/lib/apt/lists/*
+COPY tools/my-tool /tmp/my-tool
+RUN pip3 install --break-system-packages --no-cache-dir /tmp/my-tool \
+    && rm -rf /tmp/my-tool
+USER 1000:1000
+```
+
+Prefer the build-arg when the tool is on a registry; keep the recipe for
+vendored/local sources.
+
 ## Escape hatch: wrapper entrypoints
 
 Projects with one-off needs do not get hooks or plugin loading in the base.
