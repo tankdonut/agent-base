@@ -58,7 +58,28 @@ import re
 import subprocess
 import sys
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
+
+# --- logging (OpenClaw line format: ts [tag] [level] message) ---
+
+
+def _timestamp() -> str:
+    """OpenClaw log-line timestamp: ISO-8601, millisecond precision, UTC."""
+    return datetime.now(UTC).isoformat(timespec="milliseconds")
+
+
+def log(msg: str) -> None:
+    print(f"{_timestamp()} [seed-automations] [info] {msg}", flush=True)
+
+
+def warn(msg: str) -> None:
+    print(f"{_timestamp()} [seed-automations] [warn] {msg}", flush=True)
+
+
+def error(msg: str) -> None:
+    print(f"{_timestamp()} [seed-automations] [error] {msg}", file=sys.stderr, flush=True)
+
 
 CHAT = os.environ.get("TELEGRAM_CHAT_ID", "")
 
@@ -559,25 +580,17 @@ def reconcile(
                 continue
             result = openclaw(["cron", "delete", job_id])
             if result.returncode == 0:
-                print(f"[seed-automations] pruned duplicate '{spec.name}' job: {job_id}")
+                log(f"pruned duplicate '{spec.name}' job: {job_id}")
             else:
-                print(
-                    f"[seed-automations] WARNING: failed to delete "
-                    f"duplicate '{spec.name}' job: {job_id}"
-                )
+                warn(f"failed to delete duplicate '{spec.name}' job: {job_id}")
         matches = [keeper]
 
     if not matches:
         flags = delivery_flags(spec)
-        print(
-            f"[seed-automations] creating '{spec.name}' "
-            f"({spec.schedule_flag} {spec.schedule_value})"
-        )
+        log(f"creating '{spec.name}' ({spec.schedule_flag} {spec.schedule_value})")
         result = openclaw(cron_add_argv(spec, model, flags, default_tools))
         if result.returncode != 0:
-            print(
-                f"[seed-automations] WARNING: cron add failed: {spec.name}: {result.stderr.strip()}"
-            )
+            warn(f"cron add failed: {spec.name}: {result.stderr.strip()}")
             return
         alert_flags = failure_alert_flags()
         if alert_flags:
@@ -587,28 +600,25 @@ def reconcile(
                 None,
             )
             if created is not None and created.get("id"):
-                print(f"[seed-automations] attaching failure alerts to '{spec.name}'")
+                log(f"attaching failure alerts to '{spec.name}'")
                 result = openclaw(
                     ["cron", "edit", str(created["id"]), "--message", spec.prompt, *alert_flags]
                 )
                 if result.returncode != 0:
-                    print(
-                        f"[seed-automations] WARNING: alert attach failed: "
-                        f"{spec.name}: {result.stderr.strip()}"
-                    )
+                    warn(f"alert attach failed: {spec.name}: {result.stderr.strip()}")
         return
 
     job = matches[0]
     if _job_is_current(job, spec):
-        print(f"[seed-automations] '{spec.name}' already current — skipping")
+        log(f"'{spec.name}' already current — skipping")
         return
 
     job_id = job.get("id", "")
-    print(f"[seed-automations] updating '{spec.name}'")
+    log(f"updating '{spec.name}'")
     flags = delivery_flags(spec)
     result = openclaw(cron_edit_argv(spec, job_id, flags))
     if result.returncode != 0:
-        print(f"[seed-automations] WARNING: cron edit failed: {spec.name}: {result.stderr.strip()}")
+        warn(f"cron edit failed: {spec.name}: {result.stderr.strip()}")
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -632,18 +642,15 @@ def main(argv: list[str] | None = None) -> None:
         model = resolve_model(args.model)
         specs = build_jobs()
     except (AutomationSpecError, ModelResolutionError) as exc:
-        print(f"[seed-automations] ERROR: {exc}", file=sys.stderr)
-        print(
-            "[seed-automations] aborting — no jobs created, edited, or pruned",
-            file=sys.stderr,
-        )
+        error(str(exc))
+        error("aborting — no jobs created, edited, or pruned")
         sys.exit(1)
 
     default_tools: tuple[str, ...] | None = None
     if args.default_tools:
         tokens = [token.strip() for token in args.default_tools.split(",")]
         if any(token == "" for token in tokens):
-            print("[seed-automations] ERROR: --default-tools has empty entries", file=sys.stderr)
+            error("--default-tools has empty entries")
             sys.exit(1)
         default_tools = tuple(tokens)
 
@@ -652,21 +659,15 @@ def main(argv: list[str] | None = None) -> None:
     # N CLI spawns to observe the same state.
     jobs = list_cron_jobs()
     if jobs is None:
-        print(
-            "[seed-automations] ERROR: cannot parse cron list — aborting to prevent duplicates",
-            file=sys.stderr,
-        )
+        error("cannot parse cron list — aborting to prevent duplicates")
         sys.exit(1)
 
     for spec in specs:
         try:
             reconcile(spec, jobs, model, default_tools)
         except Exception as exc:
-            print(
-                f"[seed-automations] ERROR reconciling '{spec.name}': {exc}",
-                file=sys.stderr,
-            )
-    print("[seed-automations] done.")
+            error(f"reconciling '{spec.name}': {exc}")
+    log("done.")
 
 
 if __name__ == "__main__":
