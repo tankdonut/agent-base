@@ -409,11 +409,15 @@ def reconcile_mcp(spec: Spec, env: Mapping[str, str]) -> None:
             continue
         if mcp_exists(server.name):
             log(f"MCP server '{server.name}' already registered — skipping")
-            continue
-        log(f"Registering MCP server '{server.name}'")
-        result = run("openclaw", "mcp", "add", server.name, *mcp_to_cli_args(server), check=False)
-        if result is not None and result.returncode != 0:
-            warn(f"mcp add failed: {server.name}")
+        else:
+            log(f"Registering MCP server '{server.name}'")
+            result = run(
+                "openclaw", "mcp", "add", server.name, *mcp_to_cli_args(server), check=False
+            )
+            if result is not None and result.returncode != 0:
+                warn(f"mcp add failed: {server.name}")
+        for key, value in server.passthrough_config.items():
+            config_set(f"mcp.servers.{server.name}.{key}", json.dumps(value), "--strict-json")
 
     _reconcile_managed_mcp(spec)
 

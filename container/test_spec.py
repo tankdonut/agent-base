@@ -336,6 +336,107 @@ class PluginPruneFeature(SpecTestCase):
         self.assertTrue(spec.features.plugin_prune)
 
 
+class ConfigPresets(SpecTestCase):
+    """presets: named config-entry groups spliced into config in place via
+    {"include": "<name>"} — the ~10 duplicated baseline entries across
+    consumers collapse to one name. Fail-closed: unknown name, nesting,
+    and malformed shapes are load errors."""
+
+    def _with_presets(self, presets: object, config: list[object]) -> dict[str, object]:
+        variant = copy.deepcopy(MINIMAL)
+        variant["presets"] = presets
+        variant["config"] = config
+        return variant
+
+    def test_include_splices_entries_in_place(self) -> None:
+        spec = self.load(
+            self._with_presets(
+                {
+                    "telegram-baseline": [
+                        {"path": "channels.telegram.dmPolicy", "value": "allowlist"},
+                        {"path": "agents.defaults.heartbeat.target", "value": "telegram"},
+                    ]
+                },
+                [
+                    {"include": "telegram-baseline"},
+                    {"path": "z.last", "value": "1"},
+                ],
+            ),
+            env={"ZAI_API_KEY": "zai-key"},
+        )
+        self.assertEqual(
+            [
+                "channels.telegram.dmPolicy",
+                "agents.defaults.heartbeat.target",
+                "z.last",
+            ],
+            [e.path for e in spec.config_entries],
+        )
+
+    def test_unknown_include_fails_closed(self) -> None:
+        variant = self._with_presets(
+            {"known": [{"path": "a.b", "value": 1}]},
+            [{"include": "nope"}],
+        )
+        message = self.load_expect_error(variant, env={"ZAI_API_KEY": "zai-key"}, containing="nope")
+        self.assertIn("preset", message)
+
+    def test_include_inside_preset_fails_closed(self) -> None:
+        variant = self._with_presets(
+            {"outer": [{"include": "inner"}], "inner": [{"path": "a.b", "value": 1}]},
+            [{"include": "outer"}],
+        )
+        self.load_expect_error(variant, env={"ZAI_API_KEY": "zai-key"}, containing="nest")
+
+    def test_include_with_extra_keys_fails_closed(self) -> None:
+        variant = self._with_presets(
+            {"p": [{"path": "a.b", "value": 1}]},
+            [{"include": "p", "path": "x.y", "value": 2}],
+        )
+        self.load_expect_error(variant, env={"ZAI_API_KEY": "zai-key"}, containing="include")
+
+    def test_preset_entries_get_full_treatment(self) -> None:
+        # Templating, if_env deferral, split_csv — identical to inline
+        # entries once spliced.
+        spec = self.load(
+            self._with_presets(
+                {
+                    "p": [
+                        {
+                            "path": "channels.telegram.allowFrom",
+                            "value": "{env:TELEGRAM_ALLOWED_USERS}",
+                            "split_csv": True,
+                        },
+                        {
+                            "path": "agents.defaults.heartbeat.to",
+                            "value": "{env:TELEGRAM_CHAT_ID}",
+                            "if_env": ["TELEGRAM_CHAT_ID"],
+                        },
+                    ]
+                },
+                [{"include": "p"}],
+            ),
+            env={"ZAI_API_KEY": "zai-key", "TELEGRAM_ALLOWED_USERS": "1, 2"},
+        )
+        self.assertEqual('["1", "2"]', spec.config_entries[0].cli_value)
+        self.assertEqual("{env:TELEGRAM_CHAT_ID}", spec.config_entries[1].resolved_value)
+
+    def test_bad_preset_name_rejected(self) -> None:
+        variant = self._with_presets(
+            {"bad name!": [{"path": "a.b", "value": 1}]},
+            [],
+        )
+        self.load_expect_error(variant, env={"ZAI_API_KEY": "zai-key"}, containing="bad name")
+
+    def test_preset_non_list_rejected(self) -> None:
+        variant = self._with_presets({"p": {"path": "a.b"}}, [])
+        self.load_expect_error(variant, env={"ZAI_API_KEY": "zai-key"}, containing="p")
+
+    def test_presets_key_absent_is_fine(self) -> None:
+        spec = self.load(MINIMAL, env={"ZAI_API_KEY": "zai-key"})
+        self.assertEqual(0, len(spec.config_entries))
+
+
 class PathTemplating(SpecTestCase):
     """Config paths accept {env:...} tokens (chat IDs stop being baked
     into git). Resolution mirrors values: fail-closed when unguarded,
@@ -442,6 +543,85 @@ class OptionalSecrets(SpecTestCase):
         server = spec.mcp_servers[0]
         self.assertIsInstance(server, RemoteMcpServer)
         self.assertEqual("Bearer sk-1", server.headers["Authorization"])
+
+
+class McpPassThrough(SpecTestCase):
+    """mcp_servers[].config: arbitrary per-server knobs (requestTimeoutMs,
+    toolFilter, oauth.identity, ...) applied as mcp.servers.<name>.<key>
+    via config set --strict-json after registration — the escape hatch for
+    knobs the frozen v1 entry shape doesn't name. Keys are the runtime's
+    schema's business: an invalid key fails the (warn-only) config set
+    visibly rather than at load."""
+
+    def test_config_object_accepted_and_templated(self) -> None:
+        variant = copy.deepcopy(MINIMAL)
+        variant["mcp_servers"] = [
+            {
+                "name": "slow",
+                "url": "https://mcp.example.com/s",
+                "config": {
+                    "requestTimeoutMs": 45000,
+                    "transport": "streamable-http",
+                    "oauth.identity": "shared",
+                },
+            }
+        ]
+        spec = self.load(variant, env={"ZAI_API_KEY": "zai-key"})
+        self.assertEqual(
+            {"requestTimeoutMs": 45000, "transport": "streamable-http", "oauth.identity": "shared"},
+            spec.mcp_servers[0].passthrough_config,
+        )
+
+    def test_config_string_value_templated(self) -> None:
+        variant = copy.deepcopy(MINIMAL)
+        variant["mcp_servers"] = [
+            {
+                "name": "authed",
+                "url": "https://mcp.example.com/s",
+                "config": {"oauth.token": "{env:MCP_OAUTH_TOKEN}"},
+            }
+        ]
+        spec = self.load(variant, env={"ZAI_API_KEY": "zai-key", "MCP_OAUTH_TOKEN": "tok-1"})
+        self.assertEqual({"oauth.token": "tok-1"}, spec.mcp_servers[0].passthrough_config)
+
+    def test_config_non_object_rejected(self) -> None:
+        variant = copy.deepcopy(MINIMAL)
+        variant["mcp_servers"] = [{"name": "x", "url": "https://x", "config": [1, 2]}]
+        self.load_expect_error(variant, env={"ZAI_API_KEY": "zai-key"}, containing="config")
+
+    def test_config_bad_key_shape_rejected(self) -> None:
+        variant = copy.deepcopy(MINIMAL)
+        variant["mcp_servers"] = [{"name": "x", "url": "https://x", "config": {"": 1}}]
+        self.load_expect_error(variant, env={"ZAI_API_KEY": "zai-key"}, containing="config")
+
+    def test_unguarded_config_var_missing_fails_closed(self) -> None:
+        variant = copy.deepcopy(MINIMAL)
+        variant["mcp_servers"] = [
+            {
+                "name": "authed",
+                "url": "https://mcp.example.com/s",
+                "config": {"oauth.token": "{env:MCP_REQUIRED_TOKEN}"},
+            }
+        ]
+        self.load_expect_error(
+            variant, env={"ZAI_API_KEY": "zai-key"}, containing="MCP_REQUIRED_TOKEN"
+        )
+
+    def test_guarded_config_var_missing_defers(self) -> None:
+        variant = copy.deepcopy(MINIMAL)
+        variant["mcp_servers"] = [
+            {
+                "name": "authed",
+                "url": "https://mcp.example.com/s",
+                "config": {"oauth.token": "{env:MCP_OPTIONAL_TOKEN}"},
+                "if_env": ["MCP_OPTIONAL_TOKEN"],
+            }
+        ]
+        spec = self.load(variant, env={"ZAI_API_KEY": "zai-key"})
+        self.assertEqual(
+            {"oauth.token": "{env:MCP_OPTIONAL_TOKEN}"},
+            spec.mcp_servers[0].passthrough_config,
+        )
 
 
 class TemplateResolution(SpecTestCase):

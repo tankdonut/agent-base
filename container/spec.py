@@ -126,6 +126,7 @@ class LocalMcpServer:
     no_probe: bool = True
     timeout: int | None = None
     if_env: tuple[str, ...] = ()
+    passthrough_config: dict[str, JSONValue] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,6 +144,7 @@ class RemoteMcpServer:
     no_probe: bool = True
     timeout: int | None = None
     if_env: tuple[str, ...] = ()
+    passthrough_config: dict[str, JSONValue] = field(default_factory=dict)
 
 
 McpServer: TypeAlias = LocalMcpServer | RemoteMcpServer
@@ -358,6 +360,7 @@ _TOP_LEVEL_KEYS = frozenset(
         "setup",
         "model",
         "config",
+        "presets",
         "channels",
         "mcp_servers",
         "plugins",
@@ -369,21 +372,74 @@ _AGENT_KEYS = frozenset({"name"})
 _SETUP_KEYS = frozenset({"auth_choice"})
 _MODEL_KEYS = frozenset({"fallback"})
 _CONFIG_ENTRY_KEYS = frozenset({"path", "value", "strict", "if_env", "split_csv"})
+_INCLUDE_ONLY_KEYS = frozenset({"include"})
+_PRESET_NAME_RE = re.compile(r"[a-z0-9][a-z0-9_-]*")
+_CONFIG_KEY_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
 _CHANNEL_KEYS = frozenset({"type", "use_env"})
 _MCP_ENTRY_KEYS = frozenset(
-    {"name", "command", "url", "args", "env", "headers", "no_probe", "timeout", "if_env"}
+    {"name", "command", "url", "args", "env", "headers", "no_probe", "timeout", "if_env", "config"}
 )
 _PLUGIN_KEYS = frozenset({"name", "source"})
 _FEATURES_KEYS = frozenset({"gh_auth", "gateway_auth", "plugin_prune"})
 _AUTOMATIONS_KEYS = frozenset({"model", "default_tools"})
 
 
+def _parse_presets(root: Mapping[str, JSONValue]) -> dict[str, list[JSONValue]]:
+    """Validate the presets table: name → list of config-entry objects.
+    Names are lowercase identifier-ish (the include key references them);
+    entries are validated as config entries at splice time (a preset may
+    only contain plain entries — nesting via include is rejected there)."""
+    node = _expect_object(root.get("presets", {}), "presets")
+    table: dict[str, list[JSONValue]] = {}
+    for name, raw in node.items():
+        if _PRESET_NAME_RE.fullmatch(name) is None:
+            _fail("presets", f"invalid preset name {name!r} (lowercase letters, digits, - _)")
+        entries = _expect_list(raw, f"presets.{name}")
+        for index, entry in enumerate(entries):
+            base = f"presets.{name}[{index}]"
+            entry_obj = _expect_object(entry, base)
+            if "include" in entry_obj:
+                _fail(base, "presets cannot nest (no 'include' inside a preset)")
+            _reject_unknown_keys(entry_obj, _CONFIG_ENTRY_KEYS, base)
+        table[name] = entries
+    return table
+
+
+def _expand_config_includes(
+    raw_config: list[JSONValue], presets: dict[str, list[JSONValue]]
+) -> list[tuple[str, JSONValue]]:
+    """Splice {"include": "<name>"} items in place. Nesting (an include
+    inside a preset) and unknown names fail closed."""
+    expanded: list[tuple[str, JSONValue]] = []
+    for index, raw in enumerate(raw_config):
+        node = _expect_object(raw, f"config[{index}]")
+        if "include" not in node:
+            expanded.append((f"config[{index}]", raw))
+            continue
+        _reject_unknown_keys(node, _INCLUDE_ONLY_KEYS, f"config[{index}]")
+        name = node["include"]
+        if not isinstance(name, str):
+            _fail(f"config[{index}].include", "must be a preset name (string)")
+        if name not in presets:
+            _fail(f"config[{index}].include", f"unknown preset {name!r}")
+        for entry_index, entry in enumerate(presets[name]):
+            entry_node = _expect_object(entry, f"preset {name}[{entry_index}]")
+            if "include" in entry_node:
+                _fail(
+                    f"preset {name}[{entry_index}]",
+                    "presets cannot nest (no 'include' inside a preset)",
+                )
+            expanded.append((f"presets.{name}[{entry_index}]", entry))
+    return expanded
+
+
 def _parse_config_entries(
     root: Mapping[str, JSONValue], env: Mapping[str, str]
 ) -> list[ConfigEntry]:
+    presets = _parse_presets(root)
+    raw_entries = _expand_config_includes(_expect_list(root.get("config", []), "config"), presets)
     entries: list[ConfigEntry] = []
-    for index, raw in enumerate(_expect_list(root.get("config", []), "config")):
-        base = f"config[{index}]"
+    for base, raw in raw_entries:
         node = _expect_object(raw, base)
         _reject_unknown_keys(node, _CONFIG_ENTRY_KEYS, base)
         strict = _expect_bool(node.get("strict", False), _join(base, "strict"))
@@ -456,6 +512,16 @@ def _parse_mcp_servers(root: Mapping[str, JSONValue], env: Mapping[str, str]) ->
         if_env = tuple(_expect_str_list(node.get("if_env", []), _join(base, "if_env")))
         lookup = _env_for(if_env, env)
         no_probe = _expect_bool(node.get("no_probe", True), _join(base, "no_probe"))
+        passthrough_config: dict[str, JSONValue] = {}
+        if "config" in node:
+            raw_config = _expect_object(node["config"], _join(base, "config"))
+            for key, raw_value in raw_config.items():
+                if _CONFIG_KEY_RE.fullmatch(key) is None:
+                    _fail(
+                        _join(base, "config"),
+                        f"invalid config key {key!r} (dotted path or identifier)",
+                    )
+                passthrough_config[key] = _resolve_value(raw_value, lookup, _join(base, "config"))
         has_command = "command" in node
         has_url = "url" in node
         if has_command and has_url:
@@ -487,6 +553,7 @@ def _parse_mcp_servers(root: Mapping[str, JSONValue], env: Mapping[str, str]) ->
                     if node.get("timeout", None) is None
                     else _expect_int(node.get("timeout"), _join(base, "timeout")),
                     if_env=if_env,
+                    passthrough_config=passthrough_config,
                 )
             )
         else:
@@ -516,6 +583,7 @@ def _parse_mcp_servers(root: Mapping[str, JSONValue], env: Mapping[str, str]) ->
                     if timeout_raw is None
                     else _expect_int(timeout_raw, _join(base, "timeout")),
                     if_env=if_env,
+                    passthrough_config=passthrough_config,
                 )
             )
     return servers

@@ -1559,6 +1559,50 @@ class PluginOrphanReport(EntrypointTestCase):
         )
 
 
+class McpPassThroughApply(EntrypointTestCase):
+    """L2: per-server config knobs are applied via config set
+    mcp.servers.<name>.<key> --strict-json after registration, every boot
+    (config_set compares current value — knob drift heals); guarded
+    servers with unsatisfied guards apply nothing."""
+
+    SPEC: dict[str, object] = {
+        **copy.deepcopy(MINIMAL_SPEC),
+        "mcp_servers": [
+            {
+                "name": "slow",
+                "url": "https://mcp.example.com/s",
+                "config": {"requestTimeoutMs": 45000, "transport": "streamable-http"},
+            },
+            {
+                "name": "opt",
+                "url": "https://mcp.example.com/o",
+                "config": {"oauth.token": "{env:OPT_TOKEN}"},
+                "if_env": ["OPT_TOKEN"],
+            },
+        ],
+    }
+
+    def test_knobs_applied_as_config_sets(self) -> None:
+        spec = self.load_spec_with(self.SPEC, {"OPT_TOKEN": "tok-1"})
+        env = dict(os.environ)
+        env["OPT_TOKEN"] = "tok-1"
+        self.capture(lambda: entrypoint.reconcile_mcp(spec, env))
+        sets = self.calls_with("openclaw", "config", "set")
+        by_path = {c[3]: c[4] for c in sets if c[3].startswith("mcp.servers.")}
+        self.assertEqual("45000", by_path.get("mcp.servers.slow.requestTimeoutMs"))
+        self.assertEqual('"streamable-http"', by_path.get("mcp.servers.slow.transport"))
+        self.assertEqual('"tok-1"', by_path.get("mcp.servers.opt.oauth.token"))
+        for call in sets:
+            if call[3].startswith("mcp.servers."):
+                self.assertIn("--strict-json", call)
+
+    def test_guard_unsatisfied_applies_no_knobs(self) -> None:
+        spec = self.load_spec_with(self.SPEC)
+        self.capture(lambda: entrypoint.reconcile_mcp(spec, os.environ))
+        paths = [c[3] for c in self.calls_with("openclaw", "config", "set")]
+        self.assertEqual([], [p for p in paths if p.startswith("mcp.servers.opt.")])
+
+
 class FeaturesGatewayAuth(EntrypointTestCase):
     """X6: features.gateway_auth replaces the gateway-auth + secrets-provider
     pair both consumers hand-rolled. The base emits the pair (guarded on
