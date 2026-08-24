@@ -1739,6 +1739,139 @@ class PostStartupDiagnostics(PostStartupFlow):
         self.assertFalse((self.data / "logs" / "security-report.json").exists())
 
 
+class PluginPrune(EntrypointTestCase):
+    """L6: de-specified plugins the base installed are uninstalled — only
+    under features.plugin_prune, only ones on the spec-plugins marker
+    ({data}/agent-managed-spec-plugins); operator installs are never
+    touched. The marker converges to the spec's plugin list regardless."""
+
+    SPEC: dict[str, object] = {
+        **copy.deepcopy(MINIMAL_SPEC),
+        "plugins": [{"name": "approvals"}],
+    }
+    SPEC_PRUNE: dict[str, object] = {
+        **copy.deepcopy(MINIMAL_SPEC),
+        "plugins": [{"name": "approvals"}],
+        "features": {"plugin_prune": True},
+    }
+
+    def _marker(self) -> Path:
+        return self.data / "agent-managed-spec-plugins"
+
+    def _write_marker(self, names: list[str]) -> None:
+        self.data.mkdir(parents=True, exist_ok=True)
+        self._marker().write_text(json.dumps(names), encoding="utf-8")
+
+    def _listing(
+        self, installed: list[dict[str, object]]
+    ) -> Callable[[list[str]], subprocess.CompletedProcess[str]]:
+        def handler(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+            if cmd[:3] == ["openclaw", "plugins", "list"]:
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout=json.dumps({"plugins": installed}), stderr=""
+                )
+            return self._ok(cmd)
+
+        return handler
+
+    def test_prune_uninstalls_despecified_managed_plugin(self) -> None:
+        self._write_marker(["approvals", "old-plugin"])
+        self.handler = self._listing(
+            [
+                {"id": "approvals", "origin": "registry"},
+                {"id": "old-plugin", "origin": "registry"},
+            ]
+        )
+        spec = self.load_spec_with(self.SPEC_PRUNE)
+        _out, _err = self.capture(lambda: entrypoint.reconcile_plugins(spec))
+        self.assertEqual(
+            [["openclaw", "plugins", "uninstall", "old-plugin"]],
+            self.calls_with("openclaw", "plugins", "uninstall"),
+        )
+        self.assertEqual(["approvals"], json.loads(self._marker().read_text(encoding="utf-8")))
+
+    def test_prune_off_never_uninstalls_and_marker_stays(self) -> None:
+        # Marker is maintained only while the flag is on — a stale entry
+        # survives so ENABLING the flag later catches up and removes it.
+        self._write_marker(["approvals", "old-plugin"])
+        self.handler = self._listing(
+            [
+                {"id": "approvals", "origin": "registry"},
+                {"id": "old-plugin", "origin": "registry"},
+            ]
+        )
+        spec = self.load_spec_with(self.SPEC)
+        self.capture(lambda: entrypoint.reconcile_plugins(spec))
+        self.assertEqual([], self.calls_with("openclaw", "plugins", "uninstall"))
+        self.assertEqual(
+            ["approvals", "old-plugin"],
+            json.loads(self._marker().read_text(encoding="utf-8")),
+        )
+
+    def test_operator_install_never_uninstalled_even_with_prune(self) -> None:
+        self._write_marker(["approvals"])
+        self.handler = self._listing(
+            [
+                {"id": "approvals", "origin": "registry"},
+                {"id": "operator-plugin", "origin": "registry"},
+            ]
+        )
+        spec = self.load_spec_with(self.SPEC_PRUNE)
+        self.capture(lambda: entrypoint.reconcile_plugins(spec))
+        self.assertEqual([], self.calls_with("openclaw", "plugins", "uninstall"))
+
+    def test_failed_uninstall_warns_and_keeps_marker_entry(self) -> None:
+        self._write_marker(["approvals", "old-plugin"])
+
+        def failing(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+            if cmd[:3] == ["openclaw", "plugins", "uninstall"]:
+                return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="locked")
+            if cmd[:3] == ["openclaw", "plugins", "list"]:
+                return subprocess.CompletedProcess(
+                    cmd,
+                    0,
+                    stdout=json.dumps(
+                        {
+                            "plugins": [
+                                {"id": "approvals", "origin": "registry"},
+                                {"id": "old-plugin", "origin": "registry"},
+                            ]
+                        }
+                    ),
+                    stderr="",
+                )
+            return self._ok(cmd)
+
+        self.handler = failing
+        spec = self.load_spec_with(self.SPEC_PRUNE)
+        _out, err = self.capture(lambda: entrypoint.reconcile_plugins(spec))
+        self.assertIn("plugin uninstall failed: old-plugin", err)
+        self.assertEqual(
+            ["approvals", "old-plugin"],
+            json.loads(self._marker().read_text(encoding="utf-8")),
+        )
+
+    def test_already_gone_plugin_dropped_silently(self) -> None:
+        self._write_marker(["approvals", "ghost"])
+        self.handler = self._listing([{"id": "approvals", "origin": "registry"}])
+        spec = self.load_spec_with(self.SPEC_PRUNE)
+        self.capture(lambda: entrypoint.reconcile_plugins(spec))
+        self.assertEqual([], self.calls_with("openclaw", "plugins", "uninstall"))
+        self.assertEqual(["approvals"], json.loads(self._marker().read_text(encoding="utf-8")))
+
+    def test_bundled_plugin_in_marker_skipped(self) -> None:
+        self._write_marker(["approvals", "active-memory"])
+        self.handler = self._listing(
+            [
+                {"id": "approvals", "origin": "registry"},
+                {"id": "active-memory", "origin": "bundled"},
+            ]
+        )
+        spec = self.load_spec_with(self.SPEC_PRUNE)
+        self.capture(lambda: entrypoint.reconcile_plugins(spec))
+        self.assertEqual([], self.calls_with("openclaw", "plugins", "uninstall"))
+
+
 class MainFlow(EntrypointTestCase):
     def test_full_boot_orders_phases_and_hands_off_via_execvp(self) -> None:
         result = self.boot()

@@ -59,6 +59,7 @@ RUN apt-get update \
 # /path), which the passthrough cannot express.
 # hadolint ignore=DL3008,DL3013,DL3042
 ARG OPENCLAW_IMAGE_PIP=""
+# hadolint ignore=DL3008,DL3013,DL3042
 RUN if [ -n "$OPENCLAW_IMAGE_PIP" ]; then \
         apt-get update \
         && apt-get install -y --no-install-recommends python3-pip \

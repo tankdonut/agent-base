@@ -183,7 +183,7 @@ and every error message starts with the JSON path of the offending node
 | `channels` | `type`, `use_env` | `type` required. `use_env` (default `true`) feeds the channel credentials from the environment. |
 | `mcp_servers` | `name`, `command` or `url`, `args`, `env`, `headers`, `no_probe`, `timeout`, `if_env` | Exactly one of `command` (local stdio) and `url` (remote HTTP); specifying both or neither is an error. |
 | `plugins` | `name`, `source` | `source` absent means install `name` from the registry; present means a local plugin directory and must be an absolute path. |
-| `features` | `gh_auth`, `gateway_auth` | Both default `false`. `gh_auth`: see Quick start. `gateway_auth`: the base installs the gateway-token auth pair (`secrets.providers.default` + `gateway.auth.token` from `OPENCLAW_GATEWAY_TOKEN`) — replaces the hand-rolled entries; the pair is skipped when the token is absent. |
+| `features` | `gh_auth`, `gateway_auth`, `plugin_prune` | All default `false`. `gh_auth`: see Quick start. `gateway_auth`: the base installs the gateway-token auth pair (`secrets.providers.default` + `gateway.auth.token` from `OPENCLAW_GATEWAY_TOKEN`) — replaces the hand-rolled entries; the pair is skipped when the token is absent. `plugin_prune`: de-specified plugins the base installed are uninstalled on the next boot (ownership: `{data}/agent-managed-spec-plugins`; operator installs never touched; enabling the flag later catches up on everything recorded while it was on). |
 
 ### Templating
 

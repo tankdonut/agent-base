@@ -486,6 +486,69 @@ def reconcile_plugins(spec: Spec) -> None:
             log(f"Plugin '{plugin.name}' already installed — skipping")
 
     _report_orphan_plugins(spec)
+    if spec.features.plugin_prune:
+        _prune_despecified_plugins(spec)
+
+
+def _installed_plugin_ids() -> set[str] | None:
+    """Non-bundled plugin ids from `plugins list --json`, or None when the
+    listing is unavailable/unparseable."""
+    result = run("openclaw", "plugins", "list", "--json", check=False, capture=True)
+    if result is None or result.returncode != 0:
+        return None
+    try:
+        data = json.loads(result.stdout)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    installed = data.get("plugins") if isinstance(data, dict) else None
+    if not isinstance(installed, list):
+        return None
+    ids: set[str] = set()
+    for entry in installed:
+        if not isinstance(entry, dict):
+            continue
+        plugin_id = entry.get("id")
+        if isinstance(plugin_id, str) and entry.get("origin") != "bundled":
+            ids.add(plugin_id)
+    return ids
+
+
+def _prune_despecified_plugins(spec: Spec) -> None:
+    """features.plugin_prune: uninstall plugins the base installed from an
+    earlier spec that the current spec dropped (ownership:
+    {data}/agent-managed-spec-plugins). Operator installs are never
+    touched; failed uninstalls warn and retry next boot. The marker
+    converges to the spec's plugin list on every reconcile — pruning
+    ownership accrues while the feature is enabled."""
+    marker = data_dir() / "agent-managed-spec-plugins"
+    try:
+        managed_raw = json.loads(marker.read_text(encoding="utf-8"))
+        managed = (
+            [n for n in managed_raw if isinstance(n, str)] if isinstance(managed_raw, list) else []
+        )
+    except (OSError, json.JSONDecodeError):
+        managed = []
+
+    spec_names = [plugin.name for plugin in spec.plugins]
+    installed = _installed_plugin_ids()
+    still_managed = [name for name in managed if name in spec_names]
+    if installed is not None:
+        for name in managed:
+            if name in spec_names or name not in installed:
+                continue
+            result = run("openclaw", "plugins", "uninstall", name, check=False)
+            if result is not None and result.returncode == 0:
+                log(f"Removed plugin '{name}' (no longer in spec)")
+                continue
+            warn(f"plugin uninstall failed: {name} (will retry next boot)")
+            still_managed.append(name)
+
+    converged = spec_names + [name for name in still_managed if name not in spec_names]
+    try:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(json.dumps(converged), encoding="utf-8")
+    except OSError:
+        warn("could not update agent-managed-spec-plugins marker")
 
 
 def _report_orphan_plugins(spec: Spec) -> None:

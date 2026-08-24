@@ -320,6 +320,22 @@ class AutomationsDefaultTools(SpecTestCase):
                 )
 
 
+class PluginPruneFeature(SpecTestCase):
+    """features.plugin_prune (default false): opt-in removal of de-specified
+    plugins the base itself installed (ownership via
+    {data}/agent-managed-spec-plugins)."""
+
+    def test_absent_defaults_false(self) -> None:
+        spec = self.load(MINIMAL, env={"ZAI_API_KEY": "zai-key"})
+        self.assertFalse(spec.features.plugin_prune)
+
+    def test_true_accepted(self) -> None:
+        variant = copy.deepcopy(MINIMAL)
+        variant["features"] = {"gh_auth": False, "plugin_prune": True}
+        spec = self.load(variant, env={"ZAI_API_KEY": "zai-key"})
+        self.assertTrue(spec.features.plugin_prune)
+
+
 class PathTemplating(SpecTestCase):
     """Config paths accept {env:...} tokens (chat IDs stop being baked
     into git). Resolution mirrors values: fail-closed when unguarded,
