@@ -143,7 +143,7 @@ jobs:
             config=$(curl -sf -H "Authorization: Bearer $token" \
               -H "Accept: application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json" \
               "https://ghcr.io/v2/tankdonut/agent-base/manifests/$digest" | jq -r .config.digest)
-            curl -sf -H "Authorization: Bearer $token" \
+            curl -sfL -H "Authorization: Bearer $token" \
               "https://ghcr.io/v2/tankdonut/agent-base/blobs/$config" \
               | jq -e '.config.Healthcheck.Test[0] == "CMD"' >/dev/null \
               || { echo "::error::$arch manifest lost the HEALTHCHECK"; exit 1; }
