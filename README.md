@@ -1,15 +1,14 @@
-# agent-base — Standard OpenClaw Agent Base Image
+# agent-base
 
-Shared agent implementation and container (`agent-base`) distilled from Freya
-(grow-agent) and Mimir (trade-agent). Projects extend the base image with a
-thin Dockerfile + a declarative `spec.json`; all boot logic lives here.
+Shared agent implementation and container (`agent-base`). Projects extend
+the base image with a thin Dockerfile + a declarative `spec.json`; all boot
+logic lives here.
 
 ## Status
 
 Active. The full agent-base contract (spec schema, env vars, seed
 lifecycle, boot sequence, extension checklist) lives in
-[`docs/standard-agent.md`](docs/standard-agent.md). Migration guides for
-Freya and Mimir land there as those projects move onto the image.
+[`docs/standard-agent.md`](docs/standard-agent.md).
 
 ## Layout
 
