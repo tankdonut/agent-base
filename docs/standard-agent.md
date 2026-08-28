@@ -99,6 +99,7 @@ split with copy-paste entries.
 | `AGENT_GIT_TOKEN` | unset | gh token, used only when `features.gh_auth` is true. Never logged. |
 | `AGENT_AUTOMATIONS_DIR` | `/opt/agent/automations` | Override the automations directory. |
 | `AUTOMATION_MODEL` | unset | Cron model fallback when `--model` is not passed. The entrypoint always passes `spec.automations.model`, so this matters only for manual `seed_automations.py` runs. |
+| `TELEGRAM_CHAT_ID` | unset | Chat ID for cron delivery (base-standardized). Unset means jobs run without Telegram delivery. |
 | `automations.default_tools` (spec) | built-in list | Default tool allow-list for seeded jobs without their own `tools:` header; `["*"]` restores unrestricted. |
 | `AGENT_BASE_VERSION` | baked `ENV` | Image version (from the build ARG; also the OCI label). Read-only signal for the upgrade-backup phase — a delta against `{data}/last-image-version` triggers a verified backup before migration. |
 | `AGENT_BACKUP_DIR` | `/backups` | Destination for the upgrade backup (the CLI refuses output inside `{data}`). Mount a named volume at `/backups` to keep archives across containers. |
@@ -128,11 +129,16 @@ it safe in two ways:
    migration), and the un-updated marker makes the next boot retry.
    Backups are only as durable as their destination — mount a named
    volume at `/backups` so archives survive container replacement.
-2. **Ownership-marked MCP removal.** Servers the base registered are
-   tracked in `{data}/agent-managed-mcp`. A server that leaves the spec
-   is unset (`openclaw mcp unset`) with a log line; servers the operator
+2. **Opt-in MCP removal + orphan report.** Servers the base registered
+   are tracked in `{data}/agent-managed-mcp`. With
+   `features.mcp_prune: true`, a server that leaves the spec is unset
+   (`openclaw mcp unset`) with a log line — servers the operator
    registered by hand are never touched, and a spec server merely
    skipped by `if_env` this boot is still spec'd — never removed.
+   `mcp_prune` is default-off because the marker lives in agent-writable
+   `{data}`; without it, drift surfaces as a per-boot warning
+   (`MCP server '<name>' registered but not in spec`) for anything
+   registered that no spec entry accounts for.
 
 ### Upgrade runbook
 
@@ -150,7 +156,6 @@ it safe in two ways:
 6. Rollback if anything is wrong: `down`, restore the backup archive per
    `openclaw backup` docs, revert the tag, `up`. The version marker
    rides the volume, so a rollback re-runs its own backup first.
-| `TELEGRAM_CHAT_ID` | unset | Chat ID for cron delivery (base-standardized). Unset means jobs run without Telegram delivery. |
 
 Do not set `OPENCLAW_HOME`. The entrypoint pops it at import: OpenClaw
 treats it as a home directory and appends `.openclaw/` inside it, which
@@ -185,7 +190,7 @@ and every error message starts with the JSON path of the offending node
 | `channels` | `type`, `use_env` | `type` required. `use_env` (default `true`) feeds the channel credentials from the environment. |
 | `mcp_servers` | `name`, `command` or `url`, `args`, `env`, `headers`, `no_probe`, `timeout`, `if_env`, `config` | Exactly one of `command` (local stdio) and `url` (remote HTTP); specifying both or neither is an error. `config` is the per-server escape hatch: an object of arbitrary knobs (`requestTimeoutMs`, `toolFilter`, `oauth.identity`, …) applied every boot as `mcp.servers.<name>.<key>` via `config set --strict-json` — values templated, guard deferral applies. Key validity is the operator's responsibility: the runtime does not reject unknown `mcp.servers.*` keys at the pinned tag (verified), so a typo'd knob lands silently inert. |
 | `plugins` | `name`, `source` | `source` absent means install `name` from the registry; present means a local plugin directory and must be an absolute path. |
-| `features` | `gh_auth`, `gateway_auth`, `plugin_prune` | All default `false`. `gh_auth`: see Quick start. `gateway_auth`: the base installs the gateway-token auth pair (`secrets.providers.default` + `gateway.auth.token` from `OPENCLAW_GATEWAY_TOKEN`) — replaces the hand-rolled entries; the pair is skipped when the token is absent. `plugin_prune`: de-specified plugins the base installed are uninstalled on the next boot (ownership: `{data}/agent-managed-spec-plugins`; operator installs never touched; enabling the flag later catches up on everything recorded while it was on). |
+| `features` | `gh_auth`, `gateway_auth`, `plugin_prune`, `mcp_prune` | All default `false`. `gh_auth`: see Quick start. `gateway_auth`: the base installs the gateway-token auth pair (`secrets.providers.default` + `gateway.auth.token` from `OPENCLAW_GATEWAY_TOKEN`) — replaces the hand-rolled entries; when the token is absent the pair is skipped with a warning naming the env var. `plugin_prune`: de-specified plugins the base installed are uninstalled on the next boot (ownership: `{data}/agent-managed-spec-plugins`; operator installs never touched; enabling the flag later catches up on everything recorded while it was on). `mcp_prune`: the same contract for MCP servers (ownership: `{data}/agent-managed-mcp`); default-off because that marker is agent-writable — without the flag, de-specified or foreign servers surface as per-boot orphan warnings instead of being unset. |
 
 ### Templating
 
@@ -242,10 +247,14 @@ probe); set `false` when you want registration to verify connectivity.
 `timeout` (seconds, local and remote) caps the startup probe. `if_env` skips the
 server when a listed variable is absent, which is the standard way to make
 an optional API-keyed server conditional. Removing an entry from the spec
-removes its registration on the next boot — but only servers the base
-itself registered (tracked in `{data}/agent-managed-mcp`); operator-added
-servers are never pruned, and `if_env`-skipped entries count as still
-spec'd.
+removes its registration on the next boot under `features.mcp_prune` — but
+only servers the base itself registered (tracked in
+`{data}/agent-managed-mcp`); operator-added servers are never pruned,
+`if_env`-skipped entries count as still spec'd, and anything registered
+that no spec entry accounts for warns once per boot. `command` values
+resolve `{data}` templates, but keep executable surfaces out of `{data}`
+(plugin sources and MCP commands) — that tree is agent-writable, and the
+loader cannot know your mount layout.
 
 ### Worked examples
 
@@ -294,7 +303,7 @@ wrapper entrypoint.
    before a single side effect.
 1b. **Upgrade backup** (`backup_before_upgrade`): when `AGENT_BASE_VERSION`
    changed since the last boot on a warm volume, run
-   `openclaw backup create --verify` into `{data}/backups` before any
+   `openclaw backup create --verify` into `/backups` before any
    mutation; failure aborts (see [Upgrades](#upgrades)). Fresh volumes
    just record the version; dev boots without the env var skip.
 2. **First boot** (`first_boot_setup`, only when `{data}/openclaw.json` is
@@ -530,6 +539,11 @@ services:
 
 Add egress filtering at the network layer when the agent's outbound
 surface is known (allowlist the provider/registry hosts).
+
+`templates/compose.prod.agent.yml` is the complete production compose file
+built on this baseline, and `docs/deployment.md` is the full deployment
+playbook: host prep, TLS proxy, updates/rollback, backups, watchdogs, and
+per-platform (Render/Fly/AWS/Raspberry Pi) notes.
 
 ## CI pattern
 

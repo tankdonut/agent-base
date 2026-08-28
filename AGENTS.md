@@ -48,7 +48,7 @@ Symbols relative to `container/`.
 | `backup_before_upgrade` | fn | entrypoint.py:888 | Verified backup on `AGENT_BASE_VERSION` delta (warm volume); failure aborts — data safety beats availability for migrations |
 | `load_agent_spec` | fn | entrypoint.py:125 | Fail-closed load; `AGENT_SPEC_PATH` override |
 | `first_boot_setup` | fn | entrypoint.py:222 | One-time setup; gated on `openclaw.json` absent; snapshots base plugin installs to `{data}/agent-managed-plugins` |
-| `reconcile_config` / `reconcile_mcp` / `reconcile_plugins` | fn | entrypoint.py:302 / :333 / :402 | Idempotent reconcile; warn-never-raise; MCP removal + plugin orphan report are ownership-marked (`{data}/agent-managed-mcp`) |
+| `reconcile_config` / `reconcile_mcp` / `reconcile_plugins` | fn | entrypoint.py:302 / :333 / :402 | Idempotent reconcile; warn-never-raise; MCP removal gated on `features.mcp_prune`, plugin prune on `features.plugin_prune` (ownership markers under `{data}`); MCP + plugin orphan reports are warn-only |
 | `authenticate_gh` | fn | entrypoint.py:464 | gh auth from `AGENT_GIT_TOKEN`; every boot, non-fatal |
 | `seed_content` | fn | entrypoint.py:502 | workspace first boot only; skills + docs full replace every boot |
 | `post_startup` | fn | entrypoint.py:780 | Forked child: gateway wait ≤180s, cron seed in-process, memory reindex, doctor skills reconcile, diagnostics (doctor/security reports to `{data}/logs`, boot summary `{data}/status.json`) |
@@ -65,7 +65,7 @@ Symbols relative to `container/`.
 - Secrets flow only through `{env:VAR}` spec refs and env vars; resolved values must never reach logs — warnings name keys/env vars, never values (locked by SecretsCanary tests).
 - `container/` files are the image contract; renaming/moving any of them changes downstream projects' Dockerfiles — update `docs/standard-agent.md` in the same commit. Modules import each other top-level (no package, no `__init__.py`); the Dockerfile COPYs exactly the three modules flat to `/opt/agent`.
 - Reconcile failures warn and never raise (gateway availability > config completeness); loader failures abort the boot.
-- Seeded automations run with a bounded tool allow-list (`seed_automations.DEFAULT_JOB_TOOLS` — fs/runtime/web/memory + `bundle-mcp`; recursion/spawn/browser excluded, OWASP ASI06). Per-job `tools:` header or spec `automations.default_tools` overrides; `*` = unrestricted. The base also sets `tools.deny` (cron, subagents, sessions_spawn, nodes) unless any spec `tools.*` config entry exists.
+- Seeded automations run with a bounded tool allow-list (`seed_automations.DEFAULT_JOB_TOOLS` — fs/runtime/web/memory + `bundle-mcp`; recursion/spawn/browser excluded, OWASP ASI06). Per-job `tools:` header or spec `automations.default_tools` overrides; `*` = unrestricted. The base also sets `tools.deny` (cron, subagents, sessions_spawn, nodes) unless any env-active spec `tools.*` config entry exists (an `if_env` guard that never fires configures nothing).
 - Formatter is `ruff-format` (not black) via pre-commit, alongside ruff, hadolint (`container/Dockerfile` only), markdownlint (`fixtures/**` ignored).
 - CI composes reusable actions from `tankdonut/github-actions` (`pre-commit`, `setup-python-uv`, `ghcr-login`); do not hand-roll equivalents. Exception: the multi-arch image jobs are native per-arch runners + `imagetools` merge — `build-and-publish-image.yaml` hardcodes `ubuntu-latest` and cannot express per-arch builds (and a single multi-platform buildx push drops the HEALTHCHECK via the OCI exporter).
 - Images publish under date tags only (`YYYY.MM.DD`); no `latest` exists; push requires explicit `AGENT_BASE_VERSION`.
@@ -99,6 +99,8 @@ Symbols relative to `container/`.
 | Need | File |
 | ----- | ----- |
 | Agent contract + project extension guide | `docs/standard-agent.md` |
+| Deployment guide (host prep, proxy, platforms) | `docs/deployment.md` |
+| Production compose template | `templates/compose.prod.agent.yml` |
 | Migration guides (Freya, Mimir) | `docs/standard-agent.md#migrations` |
 | Spec schema golden example | `templates/spec.example.json` |
 | Env contract (base vs project vars) | `templates/env.example` |
