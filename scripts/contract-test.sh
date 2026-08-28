@@ -62,7 +62,7 @@ fi
 
 # --- Stage B: every emitted flag must appear in real `--help` output ---
 # Subcommand paths agent-base invokes (longest-prefix match against the
-# shim log). `gateway` is the execvp target, not a CLI call — excluded.
+# shim log). `gateway` is the supervised CMD, not a CLI call — excluded.
 PATHS=(
   "setup"
   "models fallbacks add"

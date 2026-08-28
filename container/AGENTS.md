@@ -24,7 +24,8 @@ internals only.
 | Reconcile | `reconcile_config` :302 → `reconcile_mcp` :333 → `reconcile_plugins` :402 | idempotent; `config_set` shells out only on drift (compares `openclaw.json` directly); MCP removal is gated on `features.mcp_prune` (ownership-marked via `{data}/agent-managed-mcp`; if_env-skipped entries count as still spec'd); MCP orphan report is warn-only; plugin orphan report is warn-only and disabled without the plugins marker |
 | gh auth | `authenticate_gh` :464 | every boot when `features.gh_auth`; non-fatal |
 | Seed | `seed_content` :502 | workspace first boot only; skills + docs full replace every boot; `AGENT_SKIP_SEED=1` skips seeding only |
-| Post-startup | `post_startup` :780 | forked child: gateway wait ≤180s, cron seed in-process, memory reindex (3 tries / 10s backoff; degraded success is retryable), doctor skills reconcile (`disable_unavailable_skills` — disable flagged, re-enable healed via `{data}/doctor-disabled-skills` marker; stdout is authoritative because doctor exits 1 iff findings exist; ONE shared doctor run feeds the diagnostics too), security audit + report persistence (`{data}/logs/{doctor,security}-report.json` on findings; warn-only, never gates), boot summary `{data}/status.json` (image version + warning count — text never reaches disk) |
+| Post-startup | `post_startup` :1016 | forked child: gateway wait ≤180s, cron seed in-process, memory reindex (3 tries / 10s backoff; degraded success is retryable), doctor skills reconcile (`disable_unavailable_skills` — disable flagged, re-enable healed via `{data}/doctor-disabled-skills` marker; stdout is authoritative because doctor exits 1 iff findings exist; ONE shared doctor run feeds the diagnostics too), security audit + report persistence (`{data}/logs/{doctor,security}-report.json` on findings; warn-only, never gates), boot summary `{data}/status.json` (image version + warning count — text never reaches disk) |
+| Supervise | `supervise` :1350 | parent phase: CMD spawns via `Popen(start_new_session=True)` in its own process group; first SIGTERM/SIGINT forwards to the CMD pid only, the drain waits for the group to empty (killpg probe — orphans re-parent to tini) up to `AGENT_SHUTDOWN_GRACE`, then group SIGKILL; a second signal force-kills at once; an unprompted CMD exit kills the group (exec-era teardown semantics, restart stays prompt); returns the CMD's exit code (128+N when signaled) |
 | CI gate | `validate_spec` :848 | dry parse of spec + automations; zero mutation |
 
 ## Conventions
@@ -43,4 +44,4 @@ internals only.
 - Splitting a module or adding a fourth file (`spec.py:26-28` forbids it).
 - Logging values that may carry secrets — keys/env names only; SecretsCanary tests lock this.
 - Caching `data_dir()` or the `openclaw.json` snapshot across reconcile.
-- Expecting `main()` to return normally — the happy path ends in `os.execvp`.
+- Expecting the drain to see `setsid`-escaped descendants — only the CMD's process-group members are drained; signaling the whole group on the first TERM (automations must outlive the gateway's signal).

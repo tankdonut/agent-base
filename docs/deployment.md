@@ -27,7 +27,7 @@ Fixed facts the rest of this document assumes (from the image contract):
 | Backup volume | `/backups` (override: `AGENT_BACKUP_DIR`; the CLI refuses output inside `{data}`) |
 | Gateway | listens on 18789 (container); bearer-token auth; WebSocket traffic |
 | Health | `/healthz` HTTP probe; HEALTHCHECK 30s/10s/3 retries, 300s start period |
-| Lifecycle | PID 1 is tini → entrypoint → `openclaw gateway`; `restart: unless-stopped` owns restarts |
+| Lifecycle | PID 1 is tini → entrypoint, which supervises `openclaw gateway`: on stop, in-flight automations drain up to `AGENT_SHUTDOWN_GRACE` (600s default) before exit; `restart: unless-stopped` owns restarts |
 | Upgrades | image tag bumps only; every version delta auto-runs a verified backup into `/backups` **before** mutating a warm volume, and a failed backup aborts the boot on purpose |
 
 ## Host prep (Ubuntu)
@@ -84,6 +84,7 @@ not a snippet. The directives it locks in, and why:
 | both named volumes (`{data}` **and** `/backups`) | without the `/backups` volume, upgrade archives vanish with the container — the entrypoint still writes them, they just die on redeploy |
 | `127.0.0.1:${AGENT_GATEWAY_PORT:-18789}:18789` publish | remote exposure only ever happens through your TLS proxy |
 | healthcheck re-declared in compose | matches the image HEALTHCHECK explicitly; matters on platforms that ignore image metadata (ECS) and for `--wait` deployments |
+| `stop_grace_period: 11m` | exceeds `AGENT_SHUTDOWN_GRACE` (600s default), so the engine's stop-timeout `SIGKILL` never cuts an automation drain short (docs/standard-agent.md "Graceful shutdown") |
 | `security_opt: [no-new-privileges:true]`, `cap_drop: [ALL]`, `read_only: true`, tmpfs `/tmp` | named volumes already cover every writable path the base needs, so the root filesystem can be immutable and the capability set empty |
 | `deploy.resources.limits` (cpus/memory/pids) | honored by compose v2 outside swarm; OOM kill exits tini, which trips `restart: unless-stopped`; keep the sum of all services' limits below host RAM |
 | `logging: json-file` + rotation | keeps `docker logs --follow` working while bounding disk use |

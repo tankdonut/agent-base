@@ -20,6 +20,11 @@ services:
       context: .
       dockerfile: Dockerfile
     restart: unless-stopped
+    # Graceful shutdown: the engine must not SIGKILL PID 1 mid-drain, so
+    # the stop timeout stays above AGENT_SHUTDOWN_GRACE (600s default —
+    # the entrypoint force-kills the gateway group itself at the grace
+    # limit; a second stop signal also force-kills immediately).
+    stop_grace_period: 11m
     env_file:
       - .env
     # Dedicated network with nothing else on it: sibling containers must not
@@ -46,8 +51,9 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      # First boot runs setup + reconcile + seed before the gateway exec;
-      # upgrade boots add a verified backup. Match the image HEALTHCHECK.
+      # First boot runs setup + reconcile + seed before the gateway
+      # starts; upgrade boots add a verified backup. Match the image
+      # HEALTHCHECK.
       start_period: 300s
     # Hardening baseline (docs/standard-agent.md "Deployment hardening").
     security_opt:

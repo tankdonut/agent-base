@@ -31,9 +31,10 @@ than copying them whole).
 ## Quick start
 
 A project image is a FROM line and five COPY lines. The base image already
-carries the entrypoint chain (tini → `entrypoint.py` → the container CMD,
-`openclaw gateway`) and the Python runtime; your Dockerfile inherits all of
-it and adds only content:
+carries the entrypoint chain (tini → `entrypoint.py`, which spawns and
+supervises the container CMD, `openclaw gateway` — see
+[Graceful shutdown](#graceful-shutdown)) and the Python runtime; your
+Dockerfile inherits all of it and adds only content:
 
 ```dockerfile
 FROM ghcr.io/tankdonut/agent-base:2026.08.24.1
@@ -103,6 +104,7 @@ split with copy-paste entries.
 | `automations.default_tools` (spec) | built-in list | Default tool allow-list for seeded jobs without their own `tools:` header; `["*"]` restores unrestricted. |
 | `AGENT_BASE_VERSION` | baked `ENV` | Image version (from the build ARG; also the OCI label). Read-only signal for the upgrade-backup phase — a delta against `{data}/last-image-version` triggers a verified backup before migration. |
 | `AGENT_BACKUP_DIR` | `/backups` | Destination for the upgrade backup (the CLI refuses output inside `{data}`). Mount a named volume at `/backups` to keep archives across containers. |
+| `AGENT_SHUTDOWN_GRACE` | `600` | Seconds a shutdown signal (SIGTERM/SIGINT) waits for the gateway and its in-flight automations before their process group is force-killed. `0` forwards the signal then force-kills at once; invalid values warn and fall back. Keep the engine stop timeout above it. See [Graceful shutdown](#graceful-shutdown). |
 
 The base also bakes two OpenClaw runtime vars into the image (`ENV`):
 `OPENCLAW_SERVICE_REPAIR_POLICY=external` (doctor never attempts service
@@ -319,8 +321,13 @@ wrapper entrypoint.
    `gh auth login --with-token` from `AGENT_GIT_TOKEN`.
 5. **Seed** (`seed_content`): the table above, unless
    `AGENT_SKIP_SEED=1`.
-6. **Fork.** The parent `os.execvp`s the container CMD (`openclaw
-   gateway`) under tini. The child runs `post_startup` and then exits:
+6. **Fork.** The child runs `post_startup` (below) and exits. The parent
+   runs `supervise` (`entrypoint.supervise`): the container CMD
+   (`openclaw gateway`) spawns as a child in its own process group, and the
+   entrypoint stays between tini and it, returning the CMD's exit code
+   after graceful-shutdown drain (see
+   [Graceful shutdown](#graceful-shutdown)). The child's `post_startup`
+   tasks:
 
    - Wait for gateway health (polls `openclaw health` for up to 180s;
      timeout skips the rest, non-fatal).
@@ -362,6 +369,41 @@ wrapper entrypoint.
 
 `--validate-spec` replaces all of the above with a dry parse (spec plus
 automations directory) for CI.
+
+## Graceful shutdown
+
+`supervise` keeps the entrypoint alive between tini and the container CMD:
+the CMD runs as a child in its own process group, and a shutdown signal
+starts a drain instead of an immediate teardown.
+
+- **First `SIGTERM`/`SIGINT`** (`docker stop`, `compose stop`, Ctrl-C on an
+  attached run): forwarded to the CMD pid only — never to its process
+  group — so in-flight automations never see it. The gateway stops on its
+  own terms; once it has exited, the supervisor waits for the gateway's
+  process group (the automation processes; orphaned ones re-parent to
+  tini, so the group is probed rather than waited on) to empty.
+- **Grace bound** (`AGENT_SHUTDOWN_GRACE`, default 600s): whatever is
+  still running when the grace expires is `SIGKILL`ed as a group. `0`
+  skips the drain: forward, then force-kill at once.
+- **A second signal force-kills immediately** — the operator escape hatch
+  when a drain must not wait (a second Ctrl-C on an attached run).
+- **Unprompted CMD exit** (crash): the process group is killed at once —
+  identical to the pre-supervisor teardown — and the exit code propagates,
+  so `restart: unless-stopped` fires promptly. Draining is a
+  shutdown-signal courtesy, never a restart delay.
+- **Exit code**: the CMD's own code when it exits, `128+N` when it died of
+  signal N (a grace expiry surfaces as 137).
+
+The engine must not cut a drain short: the stop timeout
+(`stop_grace_period` in compose, `--stop-timeout` on `docker run`/`docker
+stop`) must exceed `AGENT_SHUTDOWN_GRACE`, because the engine `SIGKILL`s
+PID 1 when it expires and nothing survives that. The production compose
+template sets `stop_grace_period: 11m` against the 600s default.
+
+Boundary: only processes in the CMD's process group are drained. Every
+spawned automation inherits it, so normal operation is covered; anything
+that `setsid`s itself away escapes the drain and dies at container
+teardown.
 
 ## Standardization decisions
 
@@ -455,9 +497,9 @@ Projects with one-off needs do not get hooks or plugin loading in the base.
 They write a wrapper entrypoint: import the phases, run what you need,
 delegate the rest. Phases you can call directly include `load_agent_spec`,
 `first_boot_setup`, `reconcile_config`, `reconcile_mcp`,
-`reconcile_plugins`, `authenticate_gh`, `seed_content`, `post_startup`, and
-`main`. A minimal wrapper that adds a one-time legacy docs move and
-otherwise boots standard:
+`reconcile_plugins`, `authenticate_gh`, `seed_content`, `post_startup`,
+`supervise`, and `main`. A minimal wrapper that adds a one-time legacy
+docs move and otherwise boots standard:
 
 ```python
 #!/usr/bin/env python3
@@ -483,6 +525,8 @@ raise SystemExit(entrypoint.main(sys.argv[1:]))
 Point `ENTRYPOINT` at the wrapper (keeping tini in front of it) and it
 replaces the stock boot entirely; interleaving custom steps between phases
 works the same way, since each phase is a plain function over `(spec, env)`.
+`main` now returns the CMD's exit code once the supervised gateway exits,
+so a wrapper that delegates to it stays in charge through the drain.
 
 ## Image versioning
 

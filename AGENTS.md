@@ -34,6 +34,7 @@ templates/   spec.example.json (golden), env.example, compose snippets, workspac
 | Change boot behavior | `container/entrypoint.py` — each phase is a plain function over `(spec, env)` |
 | Spec schema change | `container/spec.py` + `templates/spec.example.json` + `docs/standard-agent.md` (same commit) |
 | Cron reconcile behavior | `container/seed_automations.py` |
+| Graceful shutdown / drain behavior | `container/entrypoint.py` — `supervise`, `ShutdownSupervisor`, `parse_shutdown_grace` |
 | Env var contract (base vs project) | `templates/env.example`, `docs/standard-agent.md#environment-contract` |
 | Smoke failure | `logs/smoke-*.log` (kept on failure, deleted on success) + `scripts/smoke.sh` |
 | Migration guides | `docs/standard-agent.md#migrations` |
@@ -44,7 +45,8 @@ Symbols relative to `container/`.
 
 | Symbol | Type | Location | Role |
 | ------ | ---- | -------- | ---- |
-| `main` | fn | entrypoint.py:958 | Phase orchestration; happy path ends in `os.execvp` — int returns only for `--validate-spec` (0/1) and usage (2) |
+| `main` | fn | entrypoint.py:1375 | Phase orchestration; forks post_startup then `supervise()`s the CMD — returns its exit code after graceful-shutdown drain; other int returns: `--validate-spec` (0/1) and usage (2) |
+| `supervise` / `ShutdownSupervisor` / `parse_shutdown_grace` | fn/cls | entrypoint.py:1350 / :1206 / :1187 | Graceful shutdown: CMD runs in its own process group; first SIGTERM/SIGINT forwards to the CMD pid only, the drain waits for the group to empty up to `AGENT_SHUTDOWN_GRACE` (default 600; 0 = forward + immediate force-kill), a second signal force-kills, an unprompted CMD exit kills the group (restart semantics); exit code = CMD's, 128+N when signaled |
 | `backup_before_upgrade` | fn | entrypoint.py:888 | Verified backup on `AGENT_BASE_VERSION` delta (warm volume); failure aborts — data safety beats availability for migrations |
 | `load_agent_spec` | fn | entrypoint.py:125 | Fail-closed load; `AGENT_SPEC_PATH` override |
 | `first_boot_setup` | fn | entrypoint.py:222 | One-time setup; gated on `openclaw.json` absent; snapshots base plugin installs to `{data}/agent-managed-plugins` |
@@ -90,7 +92,7 @@ Symbols relative to `container/`.
 ## Notes
 
 - Smoke is local-only (not in CI); logs are `logs/smoke-*.log` (gitignored) — kept on failure, removed on success.
-- `scripts/smoke.sh` embeds a Python RUNNER mirroring `main()` minus fork/execvp — update both when phases change.
+- `scripts/smoke.sh` embeds a Python RUNNER mirroring `main()` minus the fork/supervise handoff — update both when phases change.
 - Project one-offs go in wrapper entrypoints that import the phases — never hooks in the base (docs "Escape hatch: wrapper entrypoints").
 - Local `container/__pycache__` (cpython-313/314) and the `.codegraph` symlink are machine-local, untracked artifacts.
 
