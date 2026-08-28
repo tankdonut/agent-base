@@ -26,7 +26,8 @@ Usage: ./make.sh <target>
 Targets:
   test    Run container module tests (python3 -m unittest discover container)
   lint    Run pre-commit on all files
-  smoke   Build the smoke image and boot both fixtures (scripts/smoke.sh)
+  smoke   Build the smoke image: fixture boots + graceful-shutdown drain
+          (scripts/smoke.sh; SMOKE_ENGINE overrides engine detection)
   build   Build $IMAGE:<AGENT_BASE_VERSION or today's date>
   push    Push $IMAGE:\$AGENT_BASE_VERSION (env var must be set explicitly)
   help    Show this help

@@ -62,6 +62,26 @@ jobs:
           CONTRACT_ENGINE: docker
         run: scripts/contract-test.sh ghcr.io/tankdonut/agent-base:contract
 
+  smoke:
+    needs: [lint, test]
+    # Image smoke gate (formerly local-only): the contract job proves
+    # emitted argv against the real CLI, but only this job proves the
+    # boot PHASE ORDER (shim invocation log), gh presence, HEALTHCHECK
+    # presence — and the graceful-shutdown drain: engine `stop` must exit
+    # 0 only after the gateway's in-flight automation child finished
+    # (container/entrypoint.py supervise). SMOKE_ENGINE pins docker for
+    # the same reason CONTRACT_ENGINE does: GH runners preinstall podman
+    # and the script's podman-first auto-detect would build into a
+    # different image store.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Image smoke (fixtures + graceful-shutdown drain)
+        env:
+          SMOKE_ENGINE: docker
+        run: ./make.sh smoke
+
   # Multi-arch image (L1): native per-arch builds keep the docker media
   # type (a single buildx multi-platform push exports OCI and silently
   # drops the Dockerfile HEALTHCHECK — the trap X3 documented), then
@@ -70,7 +90,7 @@ jobs:
   # and cannot express per-arch runners; the ghcr-login composite action
   # is still composed below.
   image-amd64:
-    needs: [lint, test, contract]
+    needs: [lint, test, contract, smoke]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -91,7 +111,7 @@ jobs:
           if [ "${GITHUB_REF_TYPE}" = "tag" ]; then docker push "$IMAGE:${GITHUB_REF_NAME}-amd64"; fi
 
   image-arm64:
-    needs: [lint, test, contract]
+    needs: [lint, test, contract, smoke]
     # Free native arm64 runners are available to public repos.
     runs-on: ubuntu-24.04-arm
     permissions:

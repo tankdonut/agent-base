@@ -7,7 +7,7 @@
 | All tests | `./make.sh test` |
 | One module | `python3 -m unittest discover -s container -p "test_spec.py"` |
 | Lint (ruff, ruff-format, hadolint, markdownlint) | `./make.sh lint` |
-| Image smoke (local only; podman or docker) | `./make.sh smoke` |
+| Image smoke (CI + local; podman or docker, `SMOKE_ENGINE` override) | `./make.sh smoke` |
 | Build image (date tag default) | `./make.sh build` |
 | Push image | `AGENT_BASE_VERSION=YYYY.MM.DD[.N] ./make.sh push` — refuses implicit tags; same-day follow-up releases use the `.N` run suffix |
 | Validate a spec (CI gate) | `docker run --rm --env-file .env <image> --validate-spec` |
@@ -91,7 +91,7 @@ Symbols relative to `container/`.
 
 ## Notes
 
-- Smoke is local-only (not in CI); logs are `logs/smoke-*.log` (gitignored) — kept on failure, removed on success.
+- Smoke runs in CI (`smoke` job, docker via `SMOKE_ENGINE`) and locally (podman-first); logs are `logs/smoke-*.log` (gitignored) — kept on failure, removed on success.
 - `scripts/smoke.sh` embeds a Python RUNNER mirroring `main()` minus the fork/supervise handoff — update both when phases change.
 - Project one-offs go in wrapper entrypoints that import the phases — never hooks in the base (docs "Escape hatch: wrapper entrypoints").
 - Local `container/__pycache__` (cpython-313/314) and the `.codegraph` symlink are machine-local, untracked artifacts.

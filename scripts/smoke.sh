@@ -3,11 +3,15 @@
 # mimir-like) against the fake openclaw CLI (scripts/shim/openclaw), and
 # assert the boot's phase order from the shim's invocation log.
 #
-# Two runs per fixture:
-#   1. entrypoint --validate-spec — spec + automations parse, no mutation
-#   2. inline phase runner — full boot (first boot + reconcile + seed +
-#      post_startup) WITHOUT the fork/execvp gateway handoff (the container
-#      command is overridden, so no gateway process is started)
+# Three scenarios:
+#   1. per fixture: entrypoint --validate-spec — spec + automations parse,
+#      no mutation
+#   2. per fixture: inline phase runner — full boot (first boot + reconcile
+#      + seed + post_startup) WITHOUT the fork/supervise gateway handoff
+#      (the entrypoint is bypassed, so no gateway process is supervised)
+#   3. graceful-shutdown drain — the REAL entrypoint chain (tini included)
+#      with a fake gateway CMD: docker/podman stop must exit 0 only after
+#      the gateway's in-flight "automation" child finished
 #
 # The shim log contains resolved arg values by design (that is what the
 # assertions grep); it is a throwaway local artifact, removed on success.
@@ -21,13 +25,16 @@ LOGDIR="$REPO_ROOT/logs"
 mkdir -p "$LOGDIR"
 
 IMAGE=${AGENT_BASE_IMAGE:-${1:-agent-base:smoke}}
-ENGINE=$(command -v podman >/dev/null 2>&1 && echo podman || echo docker)
+# SMOKE_ENGINE pins the engine (CI sets docker: GH runners preinstall
+# podman, the auto-detect would pick it and build into podman's store —
+# same reason CONTRACT_ENGINE exists in scripts/contract-test.sh).
+ENGINE=${SMOKE_ENGINE:-$(command -v podman >/dev/null 2>&1 && echo podman || echo docker)}
 
 FAILURES=0
 pass() { printf '  PASS %s\n' "$1"; }
 fail() { printf '  FAIL %s\n' "$1" >&2; FAILURES=$((FAILURES + 1)); }
 
-# Mirrors entrypoint.main() minus the fork/execvp handoff. Each run starts
+# Mirrors entrypoint.main() minus the fork/supervise handoff. Each run starts
 # a fresh container (no volume), so openclaw.json is absent and the
 # first-boot path always executes. The shim log is printed after a marker
 # line instead of bind-mounting the log file out (rootless uid mapping
@@ -65,18 +72,13 @@ assert_present() { # assert_present PATTERN DESCRIPTION
 }
 first_line() { grep -n -- "$1" "$LOG" | head -n 1 | cut -d: -f1; }
 
-smoke_fixture() { # smoke_fixture FIXTURE EXPECTED_MCP_NAME
-  local f=$1 mcp=$2
-  local validate_log="$LOGDIR/smoke-$f.validate.log" boot_log="$LOGDIR/smoke-$f.boot.log"
-  LOG="$LOGDIR/smoke-$f.shim.log"
-  echo "[smoke] fixture: $f"
-
-  # Env every spec template can resolve ({env:...} refs resolve at load
-  # time even under if_env — absent vars abort the loader). Values are
-  # dummies. PATH puts the shim ahead of the real CLI; HOME pins the
-  # data dir to /home/node/.openclaw.
-  local -a common=(
-    "$ENGINE" run --rm
+# Shared run args for every scenario (engine, shim on PATH, dummy env for
+# every spec template, fixture content mounted read-only). Call sites
+# append the run mode (--rm, or -d --name), the image, and the command.
+build_common() { # build_common FIXTURE
+  local f=$1
+  COMMON_ARGS=(
+    "$ENGINE" run
     # Rootless podman on this host denies the container access to
     # bind-mounted repo files under the default MCS relabel (verified for
     # the image user, --user 0:0, and --userns=keep-id); disabling the
@@ -104,12 +106,20 @@ smoke_fixture() { # smoke_fixture FIXTURE EXPECTED_MCP_NAME
   # Not every fixture ships skills (mimir-like does not); the image's empty
   # /opt/seed/skills placeholder covers it.
   if [ -d "$REPO_ROOT/fixtures/$f/skills" ]; then
-    common+=(-v "$REPO_ROOT/fixtures/$f/skills:/opt/seed/skills:ro")
+    COMMON_ARGS+=(-v "$REPO_ROOT/fixtures/$f/skills:/opt/seed/skills:ro")
   fi
+}
+
+smoke_fixture() { # smoke_fixture FIXTURE EXPECTED_MCP_NAME
+  local f=$1 mcp=$2
+  local validate_log="$LOGDIR/smoke-$f.validate.log" boot_log="$LOGDIR/smoke-$f.boot.log"
+  LOG="$LOGDIR/smoke-$f.shim.log"
+  echo "[smoke] fixture: $f"
+  build_common "$f"
 
   # 1) --validate-spec: args after the image replace CMD, so this runs
   #    tini -- python3 /opt/agent/entrypoint.py --validate-spec.
-  if "${common[@]}" "$IMAGE" --validate-spec >"$validate_log" 2>&1; then
+  if "${COMMON_ARGS[@]}" --rm "$IMAGE" --validate-spec >"$validate_log" 2>&1; then
     pass "--validate-spec accepted spec + automations"
   else
     fail "--validate-spec rejected the fixture:" && sed 's/^/    /' "$validate_log" >&2
@@ -117,7 +127,7 @@ smoke_fixture() { # smoke_fixture FIXTURE EXPECTED_MCP_NAME
   fi
 
   # 2) full boot via the inline runner (tini bypassed; command = python3).
-  if "${common[@]}" --entrypoint python3 "$IMAGE" -c "$RUNNER" >"$boot_log" 2>&1; then
+  if "${COMMON_ARGS[@]}" --rm --entrypoint python3 "$IMAGE" -c "$RUNNER" >"$boot_log" 2>&1; then
     pass "full boot (first boot + reconcile + seed + post_startup) exited 0"
   else
     fail "full boot exited nonzero:" && sed 's/^/    /' "$boot_log" >&2
@@ -167,6 +177,55 @@ smoke_fixture() { # smoke_fixture FIXTURE EXPECTED_MCP_NAME
   fi
 }
 
+# 3) graceful shutdown through the REAL entrypoint chain (tini included):
+#    the CMD is a fake gateway that traps SIGTERM and runs a 3s in-flight
+#    "automation" child. A stop must exit 0 only after that child finished
+#    — the marker prints after child.wait(), so its presence in the logs
+#    proves the drain; marker asserts only, no timing asserts.
+smoke_drain() {
+  local name="agent-base-smoke-drain-$$"
+  local log="$LOGDIR/smoke-drain.log" run_log="$LOGDIR/smoke-drain.run.log"
+  echo "[smoke] graceful shutdown drain"
+  build_common freya-like
+
+  local gateway
+  gateway=$(cat <<'EOF'
+import signal, subprocess, sys
+signal.signal(signal.SIGTERM, lambda *_: None)
+child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(3)"])
+child.wait()
+print("=== DRAIN COMPLETE ===", flush=True)
+EOF
+)
+
+  "$ENGINE" rm -f "$name" >/dev/null 2>&1 || true
+  if ! "${COMMON_ARGS[@]}" -d --name "$name" "$IMAGE" python3 -u -c "$gateway" \
+      >"$run_log" 2>&1; then
+    fail "drain: container failed to start:"$'\n'"$(sed 's/^/    /' "$run_log")"
+    "$ENGINE" rm -f "$name" >/dev/null 2>&1 || true
+    return 0
+  fi
+  # Boot phases + gateway spawn; the shim answers health instantly, the
+  # margin covers cold starts.
+  sleep 8
+  "$ENGINE" stop -t 30 "$name" >>"$run_log" 2>&1
+  "$ENGINE" logs "$name" >"$log" 2>&1
+  local exit_code
+  exit_code=$("$ENGINE" inspect -f "{{.State.ExitCode}}" "$name")
+  "$ENGINE" rm -f "$name" >/dev/null 2>&1 || true
+
+  if [ "$exit_code" = "0" ]; then
+    pass "drain: container stopped with exit 0"
+  else
+    fail "drain: container exit code was '$exit_code' (expected 0):"$'\n'"$(sed 's/^/    /' "$log")"
+  fi
+  if grep -q "=== DRAIN COMPLETE ===" "$log"; then
+    pass "drain: in-flight automation child finished before exit"
+  else
+    fail "drain: in-flight automation child did not complete:"$'\n'"$(sed 's/^/    /' "$log")"
+  fi
+}
+
 echo "[smoke] building $IMAGE (podman/docker build -f container/Dockerfile .)"
 PODMAN_FORMAT_FLAG=""
 if [ "$ENGINE" = podman ]; then
@@ -193,6 +252,7 @@ fi
 
 smoke_fixture freya-like ac-infinity
 smoke_fixture mimir-like trade-agent
+smoke_drain
 
 if [ "$FAILURES" -eq 0 ]; then
   rm -f "$LOGDIR"/smoke-*.log
