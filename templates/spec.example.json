@@ -19,14 +19,9 @@
       "value": ["{data}/workspace", "{data}/skills"]
     },
     {
-      "path": "telegram.botToken",
+      "path": "channels.telegram.botToken",
       "value": "{env:TELEGRAM_BOT_TOKEN}",
       "strict": true
-    },
-    {
-      "path": "gateway.token",
-      "value": "{env:OPENCLAW_GATEWAY_TOKEN}",
-      "if_env": ["OPENCLAW_GATEWAY_TOKEN"]
     },
     {
       "path": "approvals.plugin.mode",

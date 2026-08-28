@@ -320,8 +320,9 @@ def _snapshot_base_plugins() -> None:
 # surfaces (OWASP ASI06 class — a scheduled turn reaching the cron tool
 # can self-replicate jobs; spawn chains multiply blast radius).
 # heartbeat_respond stays allowed so heartbeat delivery keeps working.
-# Any spec config entry under tools.* disables the base default (operator
-# owns tool policy from then on).
+# Any env-active spec config entry under tools.* disables the base
+# default (operator owns tool policy from then on; entries whose if_env
+# guard never fires configure nothing).
 TOOLS_DENY_DEFAULT = ("cron", "subagents", "sessions_spawn", "nodes")
 
 
@@ -346,20 +347,28 @@ def reconcile_config(spec: Spec, env: Mapping[str, str]) -> None:
     skipped = config_reconcile_stats["skipped"]
     log(f"Config reconcile: {applied} set, {skipped} already current")
 
-    spec_owns_tools = any(entry.path.startswith("tools.") for entry in spec.config_entries)
+    spec_owns_tools = any(
+        entry.path.startswith("tools.") and entry.env_guard_satisfied(env)
+        for entry in spec.config_entries
+    )
     if not spec_owns_tools:
         log("Applying base tools.deny default (agent tool policy unconfigured)")
         config_set("tools.deny", json.dumps(list(TOOLS_DENY_DEFAULT)), "--strict-json")
 
     if spec.features.gateway_auth:
-        log("Applying gateway auth pair (features.gateway_auth)")
-        for synthetic in _gateway_auth_entries():
-            if not synthetic.env_guard_satisfied(env):
-                continue
-            if synthetic.use_strict_json:
-                config_set(synthetic.path, synthetic.cli_value, "--strict-json")
-            else:
-                config_set(synthetic.path, synthetic.cli_value)
+        pair = _gateway_auth_entries()
+        if not all(synthetic.env_guard_satisfied(env) for synthetic in pair):
+            warn(
+                "features.gateway_auth set but OPENCLAW_GATEWAY_TOKEN absent — "
+                "gateway auth pair NOT applied"
+            )
+        else:
+            log("Applying gateway auth pair (features.gateway_auth)")
+            for synthetic in pair:
+                if synthetic.use_strict_json:
+                    config_set(synthetic.path, synthetic.cli_value, "--strict-json")
+                else:
+                    config_set(synthetic.path, synthetic.cli_value)
 
 
 def _gateway_auth_entries() -> list[ConfigEntry]:
@@ -387,22 +396,54 @@ def _gateway_auth_entries() -> list[ConfigEntry]:
     ]
 
 
-def mcp_exists(name: str) -> bool:
-    """True iff `openclaw mcp list --json` output contains the name. Any CLI
-    failure counts as absent (the subsequent add self-heals)."""
+def _mcp_listing_names() -> set[str] | None:
+    """Server names from `openclaw mcp list --json`, or None when the
+    listing fails or will not parse. The CLI has emitted two shapes — a
+    name-keyed object ({"acme": {...}}) and an enveloped variant
+    ({"servers": ["acme"] | [{"name": "acme"}]}) — both parse; names are
+    matched structurally, never as substrings of the raw output."""
     result = run("openclaw", "mcp", "list", "--json", check=False, capture=True)
     if result is None or result.returncode != 0:
-        return False
-    return f'"{name}"' in result.stdout
+        return None
+    try:
+        data = json.loads(result.stdout)
+    except (json.JSONDecodeError, ValueError):
+        return None
+
+    def names_from(items: object) -> set[str]:
+        names: set[str] = set()
+        if isinstance(items, list):
+            for entry in items:
+                if isinstance(entry, str):
+                    names.add(entry)
+                elif isinstance(entry, dict) and isinstance(entry.get("name"), str):
+                    names.add(entry["name"])
+        return names
+
+    if isinstance(data, dict):
+        servers = data.get("servers")
+        if isinstance(servers, list):
+            return names_from(servers)
+        return set(data)
+    return names_from(data)
+
+
+def mcp_exists(name: str) -> bool:
+    """True iff `openclaw mcp list --json` lists the server by name. Any CLI
+    failure or unparseable output counts as absent (the subsequent add
+    self-heals)."""
+    names = _mcp_listing_names()
+    return names is not None and name in names
 
 
 def reconcile_mcp(spec: Spec, env: Mapping[str, str]) -> None:
     """Register each spec MCP server when missing (flags come from
     mcp_to_cli_args; --no-probe is included by that builder). Servers whose
-    if_env guard is unsatisfied are skipped with a log line. Servers the
-    base itself registered (tracked in {data}/agent-managed-mcp) that left
-    the spec are unset; operator-registered servers are never touched.
-    Failures warn and never raise."""
+    if_env guard is unsatisfied are skipped with a log line. A warn-only
+    report lists registered servers nothing in the spec accounts for.
+    Removal of de-specified managed servers runs only under
+    features.mcp_prune (default off — the ownership marker lives in
+    agent-writable {data}). Failures warn and never raise."""
     for server in spec.mcp_servers:
         if not guard_satisfied(server.if_env, env):
             log(f"MCP server '{server.name}' skipped (if_env unsatisfied)")
@@ -419,7 +460,9 @@ def reconcile_mcp(spec: Spec, env: Mapping[str, str]) -> None:
         for key, value in server.passthrough_config.items():
             config_set(f"mcp.servers.{server.name}.{key}", json.dumps(value), "--strict-json")
 
-    _reconcile_managed_mcp(spec)
+    if spec.features.mcp_prune:
+        _reconcile_managed_mcp(spec)
+    _report_orphan_mcp(spec)
 
 
 def _reconcile_managed_mcp(spec: Spec) -> None:
@@ -460,13 +503,54 @@ def _reconcile_managed_mcp(spec: Spec) -> None:
         warn("could not update agent-managed-mcp marker")
 
 
-def plugin_exists(name: str) -> bool:
-    """True iff `openclaw plugins list --json` output contains the name. Any
-    CLI failure counts as absent."""
+def _report_orphan_mcp(spec: Spec) -> None:
+    """Warn-only diff of registered MCP servers against the spec surface.
+    The reconcile never prunes config it does not own, and the ownership
+    marker lives in agent-writable {data} — so a server registered by hand
+    or by a compromised agent is indistinguishable from an operator edit
+    unless the boot says so out loud. Removal stays the operator's call
+    (features.mcp_prune for base-managed entries)."""
+    names = _mcp_listing_names()
+    if names is None:
+        return
+    spec_names = {server.name for server in spec.mcp_servers}
+    for name in sorted(names - spec_names):
+        warn(f"MCP server '{name}' registered but not in spec")
+
+
+def _plugin_listing_ids() -> set[str] | None:
+    """Plugin ids from `openclaw plugins list --json`, or None when the
+    listing fails or will not parse. Both emitted shapes parse: enveloped
+    ({"plugins": [{"id": ...}]}) and name-keyed ({"acme": {}})."""
     result = run("openclaw", "plugins", "list", "--json", check=False, capture=True)
     if result is None or result.returncode != 0:
-        return False
-    return f'"{name}"' in result.stdout
+        return None
+    try:
+        data = json.loads(result.stdout)
+    except (json.JSONDecodeError, ValueError):
+        return None
+
+    def ids_from(items: object) -> set[str]:
+        ids: set[str] = set()
+        if isinstance(items, list):
+            for entry in items:
+                if isinstance(entry, dict) and isinstance(entry.get("id"), str):
+                    ids.add(entry["id"])
+        return ids
+
+    if isinstance(data, dict):
+        plugins = data.get("plugins")
+        if isinstance(plugins, list):
+            return ids_from(plugins)
+        return set(data)
+    return ids_from(data)
+
+
+def plugin_exists(name: str) -> bool:
+    """True iff `openclaw plugins list --json` carries the plugin id. Any
+    CLI failure or unparseable output counts as absent."""
+    ids = _plugin_listing_ids()
+    return ids is not None and name in ids
 
 
 def reconcile_plugins(spec: Spec) -> None:
@@ -632,21 +716,37 @@ def authenticate_gh(env: Mapping[str, str]) -> None:
             warn(f"gh auth stderr: {stderr}")
 
 
+def _seed_dir_safe(path: Path) -> bool:
+    """False when path is a symlink or any non-directory node (FIFO, file).
+    Seeded roots are replaced wholesale and written into, and {data} is
+    agent-writable — an unexpected node type must refuse rather than
+    rmtree/copytree/mkdir through it (an uncaught OSError here crash-loops
+    the boot; a followed symlink redirects writes and deletes)."""
+    if path.is_symlink():
+        return False
+    return not path.exists() or path.is_dir()
+
+
 def seed_content(spec: Spec, env: Mapping[str, str]) -> None:
     """Seed content from SEED_BASE subdirs into {data}.
 
     workspace/ is copied on first boot only (the agent evolves it at
     runtime); skills/ and docs/ are fully replaced every boot (image-baked
     reference content; docs land at {data}/workspace/docs). journal/ is
-    created with parents. AGENT_SKIP_SEED=1 skips content seeding only —
-    config/mcp/plugin reconciliation is the caller's business and still
-    runs."""
+    created with parents. Seeded roots that are symlinks or non-directory
+    nodes are refused with a warning (never followed, never deleted
+    through) — the boot continues with that root unseeded. AGENT_SKIP_SEED=1
+    skips content seeding only — config/mcp/plugin reconciliation is the
+    caller's business and still runs."""
     if env.get("AGENT_SKIP_SEED", "0") == "1":
         log("Content seeding skipped (AGENT_SKIP_SEED=1 — dev mode bind mounts)")
         return
 
     workspace = data_dir() / "workspace"
     workspace_src = SEED_BASE / "workspace"
+    if not _seed_dir_safe(workspace):
+        warn(f"refusing to seed: {workspace} is a symlink or not a directory")
+        return
     if workspace_src.is_dir():
         if not workspace.exists():
             shutil.copytree(workspace_src, workspace)
@@ -661,16 +761,22 @@ def seed_content(spec: Spec, env: Mapping[str, str]) -> None:
     skills_src = SEED_BASE / "skills"
     if skills_src.is_dir():
         skills_dst = data_dir() / "skills"
-        if skills_dst.exists():
-            shutil.rmtree(skills_dst)
-        shutil.copytree(skills_src, skills_dst)
+        if not _seed_dir_safe(skills_dst):
+            warn(f"refusing to replace skills: {skills_dst} is a symlink or not a directory")
+        else:
+            if skills_dst.exists():
+                shutil.rmtree(skills_dst)
+            shutil.copytree(skills_src, skills_dst)
 
     docs_src = SEED_BASE / "docs"
     if docs_src.is_dir():
         docs_dst = workspace / "docs"
-        if docs_dst.exists():
-            shutil.rmtree(docs_dst)
-        shutil.copytree(docs_src, docs_dst)
+        if not _seed_dir_safe(docs_dst):
+            warn(f"refusing to replace docs: {docs_dst} is a symlink or not a directory")
+        else:
+            if docs_dst.exists():
+                shutil.rmtree(docs_dst)
+            shutil.copytree(docs_src, docs_dst)
 
     (workspace / "journal").mkdir(parents=True, exist_ok=True)
 

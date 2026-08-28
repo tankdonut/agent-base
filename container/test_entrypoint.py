@@ -131,6 +131,18 @@ class ModuleImportSafety(unittest.TestCase):
             self.assertIn(standard, consulted)
 
 
+class DockerfileContract(unittest.TestCase):
+    """Supply chain: the base image FROM is digest-pinned — upstream tags
+    are mutable, and rebuilds must not silently pick up new bits."""
+
+    def test_from_is_digest_pinned(self) -> None:
+        dockerfile = (REPO_ROOT / "container" / "Dockerfile").read_text(encoding="utf-8")
+        from_lines = [line for line in dockerfile.splitlines() if line.startswith("FROM")]
+        self.assertTrue(from_lines, "no FROM instruction found")
+        for line in from_lines:
+            self.assertRegex(line, r"@sha256:[0-9a-f]{64}(\s|$)")
+
+
 class EntrypointTestCase(unittest.TestCase):
     """HOME-isolated harness: spec + automations + seeds in a tmpdir,
     subprocess.run captured, seed_automations.main mocked."""
@@ -703,6 +715,49 @@ class ReconcileMcpMatrix(EntrypointTestCase):
             self.calls_with("openclaw", "mcp", "add")[0],
         )
 
+    def _mcp_listing(self, stdout: str) -> None:
+        def listing(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+            if cmd[:3] == ["openclaw", "mcp", "list"]:
+                return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
+            return self._ok(cmd)
+
+        self.handler = listing
+
+    def test_mcp_exists_ignores_envelope_keys(self) -> None:
+        # A structural key like "servers" is not a server name — substring
+        # matching against the raw listing used to make it one.
+        self._mcp_listing('{"servers": []}')
+        self.assertFalse(entrypoint.mcp_exists("servers"))
+
+    def test_mcp_exists_envelope_name_entries(self) -> None:
+        self._mcp_listing('{"servers": [{"name": "acme"}]}')
+        self.assertTrue(entrypoint.mcp_exists("acme"))
+        self.assertFalse(entrypoint.mcp_exists("servers"))
+
+    def test_mcp_exists_envelope_string_entries(self) -> None:
+        self._mcp_listing('{"servers": ["kept", "guarded"]}')
+        self.assertTrue(entrypoint.mcp_exists("kept"))
+        self.assertFalse(entrypoint.mcp_exists("servers"))
+
+    def test_mcp_exists_name_keyed_shape(self) -> None:
+        self._mcp_listing('{"acme": {}, "servers": {}}')
+        self.assertTrue(entrypoint.mcp_exists("acme"))
+        self.assertTrue(entrypoint.mcp_exists("servers"))
+
+    def test_mcp_exists_unparseable_output_counts_absent(self) -> None:
+        self._mcp_listing("not json at all")
+        self.assertFalse(entrypoint.mcp_exists("acme"))
+
+    def test_server_named_servers_registers_under_envelope(self) -> None:
+        # The hunter scenario end to end: empty envelope, spec wants a
+        # server literally named "servers" — registration must happen.
+        self._mcp_listing('{"servers": []}')
+        spec_doc = copy.deepcopy(MINIMAL_SPEC)
+        spec_doc["mcp_servers"] = [{"name": "servers", "command": "tool"}]
+        spec = self.load_spec_with(spec_doc)
+        out, _err = self.capture(lambda: entrypoint.reconcile_mcp(spec, os.environ))
+        self.assertIn("Registering MCP server 'servers'", out)
+
 
 class ReconcilePluginsMatrix(EntrypointTestCase):
     REGISTRY_SPEC: dict[str, object] = {
@@ -774,6 +829,25 @@ class ReconcilePluginsMatrix(EntrypointTestCase):
         spec = self.load_spec_with(self.LOCAL_SPEC)
         _out, err = self.capture(lambda: entrypoint.reconcile_plugins(spec))
         self.assertIn("plugin install failed: approval-gate", err)
+
+    def _plugin_listing(self, stdout: str) -> None:
+        def listing(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+            if cmd[:3] == ["openclaw", "plugins", "list"]:
+                return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
+            return self._ok(cmd)
+
+        self.handler = listing
+
+    def test_plugin_exists_matches_ids_not_envelope_keys(self) -> None:
+        # Structural keys ("plugins", "id", "origin") are not plugin names.
+        self._plugin_listing('{"plugins": [{"id": "alpha", "origin": "registry"}]}')
+        self.assertTrue(entrypoint.plugin_exists("alpha"))
+        for key in ("plugins", "id", "origin"):
+            self.assertFalse(entrypoint.plugin_exists(key))
+
+    def test_plugin_exists_unparseable_output_counts_absent(self) -> None:
+        self._plugin_listing("garbage")
+        self.assertFalse(entrypoint.plugin_exists("alpha"))
 
 
 class AuthenticateGhMatrix(EntrypointTestCase):
@@ -902,6 +976,55 @@ class SeedContentSemantics(EntrypointTestCase):
         self.assertIn("Content seeding skipped (AGENT_SKIP_SEED=1", out)
         self.assertFalse((self.data / "workspace").exists())
         self.assertFalse((self.data / "skills").exists())
+
+    def test_symlinked_skills_refused_and_victim_intact(self) -> None:
+        # {data} is agent-writable: a symlink at a seeded root used to send
+        # an uncaught OSError through main() — a permanent boot crash-loop.
+        self.make_seeds()
+        victim = self.home / "victim"
+        victim.mkdir()
+        (victim / "keep.md").write_text("keep\n", encoding="utf-8")
+        self.data.mkdir(parents=True, exist_ok=True)
+        os.symlink(victim, self.data / "skills")
+        _out, err = self.seed()
+        self.assertIn("refusing to replace skills", err)
+        self.assertEqual("keep\n", (victim / "keep.md").read_text("utf-8"))
+        self.assertTrue((self.data / "skills").is_symlink())
+        self.assertEqual("# seed\n", (self.data / "workspace" / "AGENTS.md").read_text("utf-8"))
+
+    def test_fifo_skills_refused_without_crash(self) -> None:
+        self.make_seeds()
+        self.data.mkdir(parents=True, exist_ok=True)
+        os.mkfifo(self.data / "skills")
+        _out, err = self.seed()
+        self.assertIn("refusing to replace skills", err)
+
+    def test_symlinked_workspace_refused_blocks_write_redirect(self) -> None:
+        # mkdir(exist_ok=True) passes through a workspace symlink and the
+        # docs/journal writes used to land inside the symlink target.
+        self.make_seeds()
+        victim = self.home / "victim"
+        victim.mkdir()
+        (victim / "marker.md").write_text("m\n", encoding="utf-8")
+        self.data.mkdir(parents=True, exist_ok=True)
+        os.symlink(victim, self.data / "workspace")
+        _out, err = self.seed()
+        self.assertIn("refusing to seed", err)
+        self.assertEqual(["marker.md"], sorted(p.name for p in victim.iterdir()))
+        self.assertFalse((victim / "journal").exists())
+
+    def test_symlinked_docs_refused_and_target_intact(self) -> None:
+        # docs_dst under a symlinked parent used to be rmtree'd through the
+        # link, deleting real files in the target directory.
+        self.make_seeds()
+        (self.data / "workspace").mkdir(parents=True)
+        victim = self.home / "docs-victim"
+        victim.mkdir()
+        (victim / "keep.md").write_text("keep\n", encoding="utf-8")
+        os.symlink(victim, self.data / "workspace" / "docs")
+        _out, err = self.seed()
+        self.assertIn("refusing to replace docs", err)
+        self.assertEqual("keep\n", (victim / "keep.md").read_text("utf-8"))
 
 
 class MemoryStatusLadder(EntrypointTestCase):
@@ -1362,7 +1485,10 @@ class BackupBeforeUpgrade(EntrypointTestCase):
 class ManagedMcpRemoval(EntrypointTestCase):
     """X1c: de-specified MCP servers are removed — but only ones the base
     itself registered (marker `{data}/agent-managed-mcp`), never operator-
-    additions, and never spec servers merely skipped by if_env."""
+    additions, and never spec servers merely skipped by if_env. Removal is
+    gated on features.mcp_prune (default off): the marker file lives in
+    agent-writable {data}, so unsetting on its say-so is an opt-in, not a
+    default."""
 
     SPEC: dict[str, object] = {
         **copy.deepcopy(MINIMAL_SPEC),
@@ -1370,6 +1496,7 @@ class ManagedMcpRemoval(EntrypointTestCase):
             {"name": "kept", "command": "tool"},
             {"name": "guarded", "command": "tool", "if_env": ["NEEDED_KEY"]},
         ],
+        "features": {"mcp_prune": True},
     }
 
     def _marker(self) -> Path:
@@ -1402,6 +1529,19 @@ class ManagedMcpRemoval(EntrypointTestCase):
         self.assertEqual(
             ["kept", "guarded"], json.loads(self._marker().read_text(encoding="utf-8"))
         )
+
+    def test_prune_off_leaves_de_specified_server_alone(self) -> None:
+        # Default (features.mcp_prune unset): a forged or stale marker must
+        # never unset anything — the drift surfaces as the orphan warn.
+        self._write_marker(["kept", "stale"])
+        self.handler = self._registered
+        spec_doc = copy.deepcopy(self.SPEC)
+        del spec_doc["features"]
+        spec = self.load_spec_with(spec_doc)
+        _out, err = self.capture(lambda: entrypoint.reconcile_mcp(spec, os.environ))
+        self.assertEqual([], self.calls_with("openclaw", "mcp", "unset"))
+        self.assertIn("MCP server 'stale' registered but not in spec", err)
+        self.assertEqual(["kept", "stale"], json.loads(self._marker().read_text(encoding="utf-8")))
 
     def test_if_env_guarded_server_is_never_unset(self) -> None:
         # 'guarded' is in the spec (env merely unsatisfied this boot) — it
@@ -1638,6 +1778,18 @@ class FeaturesGatewayAuth(EntrypointTestCase):
         self.assertNotIn("gateway.auth.token", paths)
         self.assertNotIn("secrets.providers.default", paths)
 
+    def test_flag_without_token_warns_and_never_logs_apply(self) -> None:
+        # The skip must be loud and the "Applying" line must not fire — an
+        # operator reading "Applying gateway auth pair" with no follow-up
+        # believes auth is armed when it is not.
+        with mock.patch.dict(os.environ):
+            os.environ.pop("OPENCLAW_GATEWAY_TOKEN", None)
+            spec = self.load_spec_with(self.SPEC_WITH_FLAG)
+            out, err = self.capture(lambda: entrypoint.reconcile_config(spec, os.environ))
+        self.assertIn("OPENCLAW_GATEWAY_TOKEN absent", err)
+        self.assertIn("NOT applied", err)
+        self.assertNotIn("Applying gateway auth pair", out)
+
     def test_flag_absent_sets_nothing_extra(self) -> None:
         env = dict(os.environ)
         env["OPENCLAW_GATEWAY_TOKEN"] = "gw-1"
@@ -1680,6 +1832,18 @@ class ToolsDenyDefault(EntrypointTestCase):
         spec = self.load_spec_with(spec_dict)
         self.capture(lambda: entrypoint.reconcile_config(spec, os.environ))
         self.assertEqual([], self.calls_with("openclaw", "config", "set", "tools.deny"))
+
+    def test_guard_blind_tools_entry_keeps_base_default(self) -> None:
+        # A tools.* entry whose if_env never fires configures nothing this
+        # boot — ownership (and the stand-down) must key on env-active
+        # entries only, or the deny default silently disappears.
+        spec_dict = copy.deepcopy(MINIMAL_SPEC)
+        spec_dict["config"] = [
+            {"path": "tools.profile", "value": "coding", "if_env": ["NEVER_SET_XYZ"]}
+        ]
+        spec = self.load_spec_with(spec_dict)
+        self.capture(lambda: entrypoint.reconcile_config(spec, os.environ))
+        self.assertEqual(1, len(self.calls_with("openclaw", "config", "set", "tools.deny")))
 
     def test_post_startup_passes_default_tools_flag(self) -> None:
         spec_dict = copy.deepcopy(MINIMAL_SPEC)
@@ -2243,7 +2407,9 @@ class SecretsCanary(EntrypointTestCase):
 
     def canary_spec(self) -> dict[str, object]:
         spec = copy.deepcopy(MINIMAL_SPEC)
-        spec["config"] = [{"path": "gateway.token", "value": "{env:SECRET_TOKEN}", "strict": True}]
+        spec["config"] = [
+            {"path": "gateway.auth.token", "value": "{env:SECRET_TOKEN}", "strict": True}
+        ]
         spec["mcp_servers"] = [
             {"name": "sentinel", "url": "https://mcp.example.com/mcp?key={env:SECRET_TOKEN}"}
         ]
@@ -2270,7 +2436,7 @@ class SecretsCanary(EntrypointTestCase):
         self._write_spec(self.canary_spec())
         with mock.patch.dict(os.environ, {"SECRET_TOKEN": self.SECRET}):
             result = self.boot()
-        self.assertIn("config set failed: gateway.token", result.stderr)
+        self.assertIn("config set failed: gateway.auth.token", result.stderr)
         self.assertNotIn(self.SECRET, result.stdout + result.stderr)
 
 

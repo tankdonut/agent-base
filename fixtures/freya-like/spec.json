@@ -84,7 +84,8 @@
     }
   ],
   "features": {
-    "gh_auth": true
+    "gh_auth": true,
+    "mcp_prune": true
   },
   "automations": {
     "model": "zai/glm-4.7"

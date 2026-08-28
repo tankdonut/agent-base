@@ -10,8 +10,10 @@
 # All boot logic lives in the entrypoint — see docs/standard-agent.md.
 
 # Pinned to the exact tag both source agents build from (node:24-bookworm-
-# slim, USER node uid 1000, tini, openclaw CLI, gateway :18789).
-FROM ghcr.io/openclaw/openclaw:2026.7.1-2
+# slim, USER node uid 1000, tini, openclaw CLI, gateway :18789) — and by
+# manifest digest: upstream tags are mutable, digest pinning keeps rebuilds
+# bit-reproducible (Renovate digest PRs keep it current).
+FROM ghcr.io/openclaw/openclaw:2026.7.1-2@sha256:8789721d2e9b24b780a1504b56deb4c6bd5c7dbf96a1dd117e7c45c2ed72c8ac
 
 # Image version (OCI label + io.agent.base.version); date-tag default.
 # Promoted to ENV so the entrypoint's upgrade-backup phase can detect

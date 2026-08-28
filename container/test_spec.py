@@ -121,7 +121,7 @@ class GoldenExampleSpec(SpecTestCase):
         self.assertEqual(Features(gh_auth=True, gateway_auth=True), spec.features)
 
         by_path = {entry.path: entry for entry in spec.config_entries}
-        token = by_path["telegram.botToken"]
+        token = by_path["channels.telegram.botToken"]
         self.assertEqual("tg-token-123", token.resolved_value)
         self.assertEqual('"tg-token-123"', token.cli_value)
         self.assertTrue(token.use_strict_json)
@@ -334,6 +334,22 @@ class PluginPruneFeature(SpecTestCase):
         variant["features"] = {"gh_auth": False, "plugin_prune": True}
         spec = self.load(variant, env={"ZAI_API_KEY": "zai-key"})
         self.assertTrue(spec.features.plugin_prune)
+
+
+class McpPruneFeature(SpecTestCase):
+    """features.mcp_prune (default false): opt-in removal of de-specified
+    MCP servers the base itself registered (ownership via
+    {data}/agent-managed-mcp)."""
+
+    def test_absent_defaults_false(self) -> None:
+        spec = self.load(MINIMAL, env={"ZAI_API_KEY": "zai-key"})
+        self.assertFalse(spec.features.mcp_prune)
+
+    def test_true_accepted(self) -> None:
+        variant = copy.deepcopy(MINIMAL)
+        variant["features"] = {"mcp_prune": True}
+        spec = self.load(variant, env={"ZAI_API_KEY": "zai-key"})
+        self.assertTrue(spec.features.mcp_prune)
 
 
 class ConfigPresets(SpecTestCase):

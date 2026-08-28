@@ -164,11 +164,13 @@ class Features:
     """Toggles for optional base-image behaviour; gh_auth bootstraps GitHub
     CLI auth, gateway_auth installs the gateway-token auth pair,
     plugin_prune opts into removal of de-specified plugins the base
-    installed (all default off)."""
+    installed, mcp_prune likewise for de-specified base-registered MCP
+    servers (all default off)."""
 
     gh_auth: bool = False
     gateway_auth: bool = False
     plugin_prune: bool = False
+    mcp_prune: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -380,7 +382,7 @@ _MCP_ENTRY_KEYS = frozenset(
     {"name", "command", "url", "args", "env", "headers", "no_probe", "timeout", "if_env", "config"}
 )
 _PLUGIN_KEYS = frozenset({"name", "source"})
-_FEATURES_KEYS = frozenset({"gh_auth", "gateway_auth", "plugin_prune"})
+_FEATURES_KEYS = frozenset({"gh_auth", "gateway_auth", "plugin_prune", "mcp_prune"})
 _AUTOMATIONS_KEYS = frozenset({"model", "default_tools"})
 
 
@@ -619,6 +621,7 @@ def _parse_features(root: Mapping[str, JSONValue]) -> Features:
         gh_auth=_expect_bool(node.get("gh_auth", False), "features.gh_auth"),
         gateway_auth=_expect_bool(node.get("gateway_auth", False), "features.gateway_auth"),
         plugin_prune=_expect_bool(node.get("plugin_prune", False), "features.plugin_prune"),
+        mcp_prune=_expect_bool(node.get("mcp_prune", False), "features.mcp_prune"),
     )
 
 

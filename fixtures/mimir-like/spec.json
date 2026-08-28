@@ -59,7 +59,8 @@
   ],
   "plugins": [],
   "features": {
-    "gh_auth": false
+    "gh_auth": false,
+    "mcp_prune": true
   },
   "automations": {
     "model": "zai/glm-5.2"
