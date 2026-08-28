@@ -4,9 +4,11 @@
 Ports the freya/mimir config fast-path matrices to the generic module and
 locks the spec-driven behaviour: first-boot sequence, config/mcp/plugin
 reconciliation, gh auth, content-seeding semantics, the post-startup memory
-ladder (force/incremental/skip, degraded detection, retry), fork/execvp
-handoff, --validate-spec mode, fixture-project boots, and the secrets
-canary (resolved values never reach logs).
+ladder (force/incremental/skip, degraded detection, retry), fork/supervise
+handoff with graceful-shutdown drain (SIGTERM/SIGINT forwarding, pgid
+drain, grace expiry, second-signal force), --validate-spec mode,
+fixture-project boots, and the secrets canary (resolved values never reach
+logs).
 
 Runs directly with no pytest dependency:
 
@@ -29,8 +31,11 @@ import copy
 import io
 import json
 import os
+import signal
 import subprocess
+import sys
 import tempfile
+import textwrap
 import time
 import unittest
 from collections.abc import Callable
@@ -93,7 +98,7 @@ class ModuleImportSafety(unittest.TestCase):
 
     def test_import_exposes_main_without_booting(self) -> None:
         # Reaching this assertion proves the module import above did not
-        # exec the gateway (os.execvp would have replaced the process).
+        # spawn or supervise the gateway (supervise() would still be running).
         self.assertTrue(callable(entrypoint.main))
 
     def test_openclaw_home_popped_at_import(self) -> None:
@@ -127,6 +132,7 @@ class ModuleImportSafety(unittest.TestCase):
             "AGENT_SKIP_SEED",
             "AGENT_MEMORY_REINDEX",
             "AGENT_GIT_TOKEN",
+            "AGENT_SHUTDOWN_GRACE",
         ):
             self.assertIn(standard, consulted)
 
@@ -262,12 +268,12 @@ class EntrypointTestCase(unittest.TestCase):
         return entrypoint.load_agent_spec(env)
 
     def boot(self, argv: list[str] | None = None) -> SimpleNamespace:
-        """Run main() on the parent path (fork -> child pid) with execvp captured."""
+        """Run main() on the parent path (fork -> child pid) with supervise captured."""
         argv = ["openclaw", "gateway"] if argv is None else argv
         out, err = io.StringIO(), io.StringIO()
         with (
             mock.patch.object(os, "fork", return_value=1234) as fork_mock,
-            mock.patch.object(os, "execvp") as execvp_mock,
+            mock.patch.object(entrypoint, "supervise", return_value=0) as supervise_mock,
             redirect_stdout(out),
             redirect_stderr(err),
         ):
@@ -277,7 +283,7 @@ class EntrypointTestCase(unittest.TestCase):
             stdout=out.getvalue(),
             stderr=err.getvalue(),
             fork=fork_mock,
-            execvp=execvp_mock,
+            supervise=supervise_mock,
         )
 
     def boot_child(self, argv: list[str] | None = None) -> SimpleNamespace:
@@ -293,7 +299,7 @@ class EntrypointTestCase(unittest.TestCase):
         with (
             mock.patch.object(os, "fork", return_value=0),
             mock.patch.object(os, "_exit", side_effect=fake_exit),
-            mock.patch.object(os, "execvp") as execvp_mock,
+            mock.patch.object(entrypoint, "supervise", return_value=0) as supervise_mock,
             redirect_stdout(out),
             redirect_stderr(err),
             self.assertRaises(ChildExited),
@@ -303,7 +309,7 @@ class EntrypointTestCase(unittest.TestCase):
             stdout=out.getvalue(),
             stderr=err.getvalue(),
             exit_codes=exit_codes,
-            execvp=execvp_mock,
+            supervise=supervise_mock,
         )
 
 
@@ -2101,11 +2107,11 @@ class PluginPrune(EntrypointTestCase):
 
 
 class MainFlow(EntrypointTestCase):
-    def test_full_boot_orders_phases_and_hands_off_via_execvp(self) -> None:
+    def test_full_boot_orders_phases_and_supervises_cmd(self) -> None:
         result = self.boot()
         self.assertEqual(0, result.code)
         result.fork.assert_called_once_with()
-        result.execvp.assert_called_once_with("openclaw", ["openclaw", "gateway"])
+        result.supervise.assert_called_once_with(["openclaw", "gateway"], 600, forward_pids=(1234,))
         setup_idx = self.index_of("openclaw", "setup")
         config_idx = self.index_of("openclaw", "config", "set")
         self.assertLess(setup_idx, config_idx)
@@ -2139,10 +2145,10 @@ class MainFlow(EntrypointTestCase):
         self.assertTrue(self.has_call("openclaw", "config", "set", "channels.telegram.dmPolicy"))
         self.assertFalse((self.data / "workspace").exists())
 
-    def test_child_branch_runs_post_startup_and_exits_without_exec(self) -> None:
+    def test_child_branch_runs_post_startup_and_never_supervises(self) -> None:
         result = self.boot_child()
         self.assertEqual([0], result.exit_codes)
-        result.execvp.assert_not_called()
+        result.supervise.assert_not_called()
         self.assertTrue(self.has_call("openclaw", "health"))
         self.assertEqual([["--model", "zai/glm-4.7"]], self.automation_argv)
 
@@ -2268,7 +2274,7 @@ class FixtureBoots(EntrypointTestCase):
         with mock.patch.object(entrypoint.shutil, "which", return_value="/usr/bin/gh"):
             result = self.boot_fixture("freya-like", FREYA_ENV)
         self.assertEqual(0, result.code)
-        result.execvp.assert_called_once_with("openclaw", ["openclaw", "gateway"])
+        result.supervise.assert_called_once_with(["openclaw", "gateway"], 600, forward_pids=(1234,))
 
         self.assertTrue(self.has_call("openclaw", "setup"))
         self.assertEqual(
@@ -2438,6 +2444,406 @@ class SecretsCanary(EntrypointTestCase):
             result = self.boot()
         self.assertIn("config set failed: gateway.auth.token", result.stderr)
         self.assertNotIn(self.SECRET, result.stdout + result.stderr)
+
+
+class GraceParsing(unittest.TestCase):
+    """parse_shutdown_grace: AGENT_SHUTDOWN_GRACE seconds — 600 default,
+    0 preserved (forward + immediate force-kill), invalid/negative values
+    warn naming the env var and fall back to the default."""
+
+    def parse(self, env: dict[str, str]) -> tuple[int, str]:
+        err = io.StringIO()
+        with redirect_stderr(err):
+            grace = entrypoint.parse_shutdown_grace(env)
+        return grace, err.getvalue()
+
+    def test_defaults_to_600_when_unset(self) -> None:
+        self.assertEqual((600, ""), self.parse({}))
+
+    def test_parses_valid_seconds(self) -> None:
+        self.assertEqual((45, ""), self.parse({"AGENT_SHUTDOWN_GRACE": "45"}))
+
+    def test_zero_is_preserved(self) -> None:
+        self.assertEqual((0, ""), self.parse({"AGENT_SHUTDOWN_GRACE": "0"}))
+
+    def test_non_integer_warns_and_uses_default(self) -> None:
+        grace, err = self.parse({"AGENT_SHUTDOWN_GRACE": "soon"})
+        self.assertEqual(600, grace)
+        self.assertIn("AGENT_SHUTDOWN_GRACE", err)
+
+    def test_negative_warns_and_uses_default(self) -> None:
+        grace, err = self.parse({"AGENT_SHUTDOWN_GRACE": "-5"})
+        self.assertEqual(600, grace)
+        self.assertIn("AGENT_SHUTDOWN_GRACE", err)
+
+
+class _FakePopen:
+    """Popen stand-in: fixed pid, recorded spawn kwargs, settable returncode."""
+
+    def __init__(self, command: list[str], **kwargs: object) -> None:
+        self.command = list(command)
+        self.pid = 4242
+        self.kwargs = kwargs
+        self.returncode: int | None = None
+
+
+class _Kills:
+    """os.kill fake recording every signal; listed pids raise (already dead)."""
+
+    def __init__(self, fail_pids: set[int] | None = None) -> None:
+        self.calls: list[tuple[int, int]] = []
+        self.fail_pids = fail_pids or set()
+
+    def __call__(self, pid: int, sig: int) -> None:
+        if pid in self.fail_pids:
+            raise ProcessLookupError()
+        self.calls.append((pid, sig))
+
+
+class _Killpg:
+    """os.killpg fake: signal-0 probes succeed `empty_after` times, then the
+    group reads as gone; real signals are recorded."""
+
+    def __init__(self, empty_after: int = 0) -> None:
+        self.calls: list[tuple[int, int]] = []
+        self.probes = 0
+        self.empty_after = empty_after
+
+    def __call__(self, pgid: int, sig: int) -> None:
+        self.calls.append((pgid, sig))
+        if sig == 0:
+            if self.probes >= self.empty_after:
+                raise ProcessLookupError()
+            self.probes += 1
+
+
+class _Waitpid:
+    """os.waitpid fake consuming a scripted (pid, status) list; (0, 0) when
+    exhausted (WNOHANG: nothing reapable right now)."""
+
+    def __init__(self, script: list[tuple[int, int]]) -> None:
+        self.script = list(script)
+
+    def __call__(self, pid: int, flags: int) -> tuple[int, int]:
+        return self.script.pop(0) if self.script else (0, 0)
+
+
+class _Clock:
+    def __init__(self, start: float = 1000.0, step: float = 1.0) -> None:
+        self.now = start
+        self.step = step
+
+    def __call__(self) -> float:
+        self.now += self.step
+        return self.now
+
+
+class _Sleep:
+    """time.sleep fake running one scripted hook per call (how the unit tests
+    inject signals and gateway exits between supervisor loop iterations)."""
+
+    def __init__(self) -> None:
+        self.steps: list[Callable[[], None]] = []
+
+    def __call__(self, seconds: float) -> None:
+        if self.steps:
+            self.steps.pop(0)()
+
+
+GATEWAY_PID = 4242
+
+
+def _exit_status(code: int) -> int:
+    """Raw wait-status encoding for a normal (non-signal) exit code."""
+    return code << 8
+
+
+class SuperviseUnit(unittest.TestCase):
+    """ShutdownSupervisor state machine under scripted OS primitives."""
+
+    def setUp(self) -> None:
+        self.kill = _Kills()
+        self.killpg = _Killpg()
+        self.waitpid = _Waitpid([])
+        self.clock = _Clock()
+        self.sleep = _Sleep()
+
+    def supervisor(
+        self, popen: Callable[..., object] | None = None
+    ) -> entrypoint.ShutdownSupervisor:
+        return entrypoint.ShutdownSupervisor(
+            popen=popen or _FakePopen,
+            kill=self.kill,
+            killpg=self.killpg,
+            waitpid=self.waitpid,
+            monotonic=self.clock,
+            sleep=self.sleep,
+        )
+
+    @staticmethod
+    def deliver(sup: entrypoint.ShutdownSupervisor, sig: int) -> Callable[[], None]:
+        return lambda: sup._handle_signal(sig, None)
+
+    def test_popen_spawns_cmd_in_own_session(self) -> None:
+        popen_calls: list[dict[str, object]] = []
+
+        class RecordingPopen(_FakePopen):
+            def __init__(self, command: list[str], **kwargs: object) -> None:
+                super().__init__(command, **kwargs)
+                popen_calls.append(dict(kwargs))
+
+        self.waitpid.script.append((GATEWAY_PID, _exit_status(0)))
+        rc = self.supervisor(popen=RecordingPopen).supervise(["openclaw", "gateway"], 600)
+        self.assertEqual(0, rc)
+        self.assertEqual([{"start_new_session": True}], popen_calls)
+
+    def test_first_signal_forwarded_to_gateway_pid_only(self) -> None:
+        sup = self.supervisor()
+        self.sleep.steps = [
+            self.deliver(sup, signal.SIGTERM),
+            lambda: self.waitpid.script.append((GATEWAY_PID, _exit_status(0))),
+        ]
+        rc = sup.supervise(["openclaw", "gateway"], 600)
+        self.assertEqual(0, rc)
+        self.assertIn((GATEWAY_PID, signal.SIGTERM), self.kill.calls)
+        for _pgid, sig in self.killpg.calls:
+            self.assertNotIn(sig, (signal.SIGTERM, signal.SIGINT))
+
+    def test_first_signal_forwarded_to_tracked_pids(self) -> None:
+        self.kill = _Kills(fail_pids={8888})  # post_startup child already reaped
+        sup = self.supervisor()
+        self.sleep.steps = [
+            self.deliver(sup, signal.SIGTERM),
+            lambda: self.waitpid.script.append((GATEWAY_PID, _exit_status(0))),
+        ]
+        rc = sup.supervise(["openclaw", "gateway"], 600, forward_pids=(7777, 8888))
+        self.assertEqual(0, rc)
+        self.assertIn((7777, signal.SIGTERM), self.kill.calls)
+        self.assertNotIn((8888, signal.SIGTERM), self.kill.calls)
+
+    def test_drain_waits_for_process_group_to_empty(self) -> None:
+        self.killpg = _Killpg(empty_after=2)  # two probes alive, third: gone
+        sup = self.supervisor()
+        self.sleep.steps = [
+            self.deliver(sup, signal.SIGTERM),
+            lambda: self.waitpid.script.append((GATEWAY_PID, _exit_status(7))),
+        ]
+        rc = sup.supervise(["openclaw", "gateway"], 600)
+        self.assertEqual(7, rc)
+        self.assertEqual(2, self.killpg.probes)
+        self.assertNotIn((GATEWAY_PID, signal.SIGKILL), self.killpg.calls)
+
+    def test_grace_expiry_force_kills_and_returns_137(self) -> None:
+        self.clock = _Clock(step=1000.0)  # each loop tick blows past the deadline
+        sup = self.supervisor()
+        self.sleep.steps = [
+            self.deliver(sup, signal.SIGTERM),
+            lambda: None,
+            lambda: self.waitpid.script.append((GATEWAY_PID, 9)),  # killed by our KILL
+        ]
+        rc = sup.supervise(["openclaw", "gateway"], 600)
+        self.assertEqual(137, rc)
+        self.assertIn((GATEWAY_PID, signal.SIGKILL), self.killpg.calls)
+
+    def test_second_signal_force_kills_immediately(self) -> None:
+        sup = self.supervisor()
+        self.sleep.steps = [
+            self.deliver(sup, signal.SIGTERM),
+            self.deliver(sup, signal.SIGINT),
+            lambda: self.waitpid.script.append((GATEWAY_PID, 9)),
+        ]
+        rc = sup.supervise(["openclaw", "gateway"], 600)
+        self.assertEqual(137, rc)
+        self.assertEqual(1, len([s for _p, s in self.killpg.calls if s == signal.SIGKILL]))
+        self.assertIn((GATEWAY_PID, signal.SIGTERM), self.kill.calls)
+
+    def test_unprompted_gateway_exit_kills_group_and_returns_code(self) -> None:
+        self.waitpid.script.append((GATEWAY_PID, _exit_status(3)))
+        rc = self.supervisor().supervise(["openclaw", "gateway"], 600)
+        self.assertEqual(3, rc)
+        self.assertIn((GATEWAY_PID, signal.SIGKILL), self.killpg.calls)
+        self.assertEqual([], self.kill.calls)
+
+    def test_signaled_gateway_exit_code_maps_to_128_plus_signum(self) -> None:
+        sup = self.supervisor()
+        self.sleep.steps = [
+            self.deliver(sup, signal.SIGTERM),
+            lambda: self.waitpid.script.append((GATEWAY_PID, 15)),
+        ]
+        rc = sup.supervise(["openclaw", "gateway"], 600)
+        self.assertEqual(143, rc)
+
+    def test_grace_zero_forwards_then_force_kills(self) -> None:
+        sup = self.supervisor()
+        self.sleep.steps = [
+            self.deliver(sup, signal.SIGTERM),
+            lambda: self.waitpid.script.append((GATEWAY_PID, 9)),
+        ]
+        rc = sup.supervise(["openclaw", "gateway"], 0)
+        self.assertEqual(137, rc)
+        self.assertIn((GATEWAY_PID, signal.SIGTERM), self.kill.calls)
+        self.assertIn((GATEWAY_PID, signal.SIGKILL), self.killpg.calls)
+
+    def test_popen_failure_warns_naming_command_returns_one(self) -> None:
+        def failing_popen(command: list[str], **kwargs: object) -> object:
+            raise OSError("No such file or directory")
+
+        err = io.StringIO()
+        with redirect_stderr(err):
+            rc = self.supervisor(popen=failing_popen).supervise(
+                ["definitely-missing", "--flag"], 600
+            )
+        self.assertEqual(1, rc)
+        self.assertIn("failed to start definitely-missing", err.getvalue())
+
+    def test_signal_handlers_restored_after_supervise(self) -> None:
+        before = (signal.getsignal(signal.SIGTERM), signal.getsignal(signal.SIGINT))
+        self.waitpid.script.append((GATEWAY_PID, _exit_status(0)))
+        self.supervisor().supervise(["openclaw", "gateway"], 600)
+        after = (signal.getsignal(signal.SIGTERM), signal.getsignal(signal.SIGINT))
+        self.assertEqual(before, after)
+
+
+class MainSuperviseHandoff(EntrypointTestCase):
+    def test_main_passes_parsed_grace_and_forked_pid_to_supervise(self) -> None:
+        with (
+            mock.patch.object(os, "fork", return_value=1234),
+            mock.patch.dict(os.environ, {"AGENT_SHUTDOWN_GRACE": "90"}),
+            mock.patch.object(entrypoint, "supervise", return_value=0) as supervise_mock,
+        ):
+            code = entrypoint.main(["openclaw", "gateway"])
+        self.assertEqual(0, code)
+        supervise_mock.assert_called_once_with(["openclaw", "gateway"], 90, forward_pids=(1234,))
+
+    def test_main_returns_supervisor_exit_code(self) -> None:
+        with (
+            mock.patch.object(os, "fork", return_value=1234),
+            mock.patch.object(entrypoint, "supervise", return_value=7),
+        ):
+            self.assertEqual(7, entrypoint.main(["openclaw", "gateway"]))
+
+
+class SuperviseIntegration(unittest.TestCase):
+    """Real subprocesses + real signals: supervise() drains the gateway's
+    process group on SIGTERM, force-kills at grace expiry, and kills the
+    group when the gateway exits unprompted. Marker files (not timings)
+    carry the assertions; every wait() is timeout-bounded."""
+
+    GATEWAY_DRAIN = textwrap.dedent(
+        """\
+        import os
+        import signal
+        import subprocess
+        import sys
+        from pathlib import Path
+
+        signal.signal(signal.SIGTERM, lambda *_: None)
+        child_code = (
+            "import os, time; from pathlib import Path; time.sleep(1.5); "
+            "Path(os.environ['MARKER_PATH']).write_text('drained', encoding='utf-8')"
+        )
+        child = subprocess.Popen([sys.executable, "-u", "-c", child_code])
+        Path(os.environ["READY_PATH"]).write_text("1", encoding="utf-8")
+        child.wait()
+        sys.exit(7)
+        """
+    )
+
+    GATEWAY_STUBBORN = textwrap.dedent(
+        """\
+        import os
+        import signal
+        import subprocess
+        import sys
+        import time
+        from pathlib import Path
+
+        signal.signal(signal.SIGTERM, lambda *_: None)
+        subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        Path(os.environ["READY_PATH"]).write_text("1", encoding="utf-8")
+        time.sleep(30)
+        """
+    )
+
+    GATEWAY_CRASH = textwrap.dedent(
+        """\
+        import os
+        import subprocess
+        import sys
+        from pathlib import Path
+
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(10)"])
+        Path(os.environ["CHILD_PID_PATH"]).write_text(str(child.pid), encoding="utf-8")
+        sys.exit(3)
+        """
+    )
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.tmp = Path(tmp.name)
+
+    def start_driver(
+        self, gateway_source: str, grace: int, extra_env: dict[str, str] | None = None
+    ) -> subprocess.Popen:
+        gateway = self.tmp / "gateway.py"
+        gateway.write_text(gateway_source, encoding="utf-8")
+        driver = textwrap.dedent(
+            f"""\
+            import sys
+            sys.path.insert(0, {str(REPO_ROOT / "container")!r})
+            import entrypoint
+            sys.exit(entrypoint.supervise({[sys.executable, "-u", str(gateway)]!r}, {grace}))
+            """
+        )
+        env = {**os.environ, "READY_PATH": str(self.tmp / "ready")}
+        env.update(extra_env or {})
+        return subprocess.Popen([sys.executable, "-c", driver], env=env)
+
+    def wait_for_ready(self, timeout: float = 15.0) -> None:
+        ready = self.tmp / "ready"
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if ready.exists():
+                return
+            time.sleep(0.05)
+        self.fail("fake gateway never reported ready")
+
+    def test_sigterm_drains_inflight_child_and_returns_gateway_code(self) -> None:
+        marker = self.tmp / "drain.marker"
+        driver = self.start_driver(
+            self.GATEWAY_DRAIN, grace=30, extra_env={"MARKER_PATH": str(marker)}
+        )
+        self.wait_for_ready()
+        driver.send_signal(signal.SIGTERM)
+        self.assertEqual(7, driver.wait(timeout=30))
+        self.assertEqual("drained", marker.read_text(encoding="utf-8"))
+
+    def test_grace_expiry_force_kills_stubborn_gateway(self) -> None:
+        driver = self.start_driver(self.GATEWAY_STUBBORN, grace=1)
+        self.wait_for_ready()
+        driver.send_signal(signal.SIGTERM)
+        started = time.monotonic()
+        self.assertEqual(137, driver.wait(timeout=30))
+        self.assertLess(time.monotonic() - started, 25)
+
+    def test_unprompted_gateway_exit_kills_group_and_returns_code(self) -> None:
+        child_pid_file = self.tmp / "child.pid"
+        driver = self.start_driver(
+            self.GATEWAY_CRASH, grace=600, extra_env={"CHILD_PID_PATH": str(child_pid_file)}
+        )
+        started = time.monotonic()
+        self.assertEqual(3, driver.wait(timeout=30))
+        self.assertLess(time.monotonic() - started, 9)
+        child_pid = int(child_pid_file.read_text(encoding="utf-8"))
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            try:
+                os.kill(child_pid, 0)
+            except ProcessLookupError:
+                return
+            time.sleep(0.1)
+        self.fail("gateway's child survived the unprompted-exit group kill")
 
 
 if __name__ == "__main__":

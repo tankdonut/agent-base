@@ -22,8 +22,11 @@ Every boot (declarative reconciliation — idempotent, self-healing volumes):
   8. seed_content       — workspace first-boot-only; skills + docs full
                           replacement every boot
   9. fork; the child runs post_startup (gateway wait, cron seeding via
-     seed_automations in-process, memory reindex, skill disable) and the
-     parent os.execvp's into the container CMD.
+     seed_automations in-process, memory reindex, skill disable) while the
+     parent supervise()s the container CMD: the CMD runs in its own
+     process group, a shutdown signal is forwarded to the CMD only, and
+     in-flight automations drain for up to AGENT_SHUTDOWN_GRACE seconds
+     before the group is force-killed and the CMD's exit code returned.
 
 Content-seeding standard (owner decision): docs live at {data}/workspace/
 docs — there is no {data}/docs destination. Agents migrating from a legacy
@@ -41,8 +44,13 @@ spec.json files via {env:...} templating, if_env guards, and split_csv):
   AGENT_SKIP_SEED        "1" skips CONTENT SEEDING ONLY — reconciliation
                          still runs (dev overlays bind-mount the content).
   AGENT_MEMORY_REINDEX   "0" skips the post-startup memory reindex
-                         (default 1).
+                          (default 1).
   AGENT_GIT_TOKEN        gh auth token, used only when features.gh_auth.
+  AGENT_SHUTDOWN_GRACE   Seconds a shutdown signal (SIGTERM/SIGINT) waits
+                          for the gateway and its in-flight automations
+                          before their process group is force-killed
+                          (default 600; 0 forwards then force-kills at
+                          once).
   AGENT_AUTOMATIONS_DIR  Automations directory; resolved inside
                          seed_automations (default /opt/agent/automations)
                          — deliberately not duplicated here.
@@ -62,10 +70,12 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -1167,6 +1177,183 @@ def backup_before_upgrade(env: Mapping[str, str]) -> None:
         warn("could not record image version (backup check will rerun next boot)")
 
 
+# --- shutdown supervision (graceful stop: drain in-flight automations) ---
+
+_SHUTDOWN_SIGNALS = (signal.SIGTERM, signal.SIGINT)
+_SHUTDOWN_POLL_S = 0.2
+DEFAULT_SHUTDOWN_GRACE = 600
+
+
+def parse_shutdown_grace(env: Mapping[str, str]) -> int:
+    """AGENT_SHUTDOWN_GRACE in seconds: how long a shutdown signal waits for
+    the gateway and its in-flight automations before their process group is
+    force-killed. Default 600; 0 forwards the signal then force-kills at
+    once; invalid values warn naming the env var and fall back to 600."""
+    raw = env.get("AGENT_SHUTDOWN_GRACE", "")
+    if not raw:
+        return DEFAULT_SHUTDOWN_GRACE
+    try:
+        grace = int(raw)
+    except ValueError:
+        warn(f"AGENT_SHUTDOWN_GRACE={raw!r} is not an integer — using {DEFAULT_SHUTDOWN_GRACE}s")
+        return DEFAULT_SHUTDOWN_GRACE
+    if grace < 0:
+        warn(f"AGENT_SHUTDOWN_GRACE={raw!r} is negative — using {DEFAULT_SHUTDOWN_GRACE}s")
+        return DEFAULT_SHUTDOWN_GRACE
+    return grace
+
+
+class ShutdownSupervisor:
+    """Runs the container CMD as a child in its own session and returns its
+    exit code, keeping in-flight automations alive across shutdown signals:
+
+    - the first SIGTERM/SIGINT is forwarded to the CMD pid ONLY — never its
+      process group, because the automations in that group must outlive the
+      gateway's own shutdown
+    - once the CMD has exited, the drain waits for its process group (the
+      automation processes; orphaned ones are re-parented to tini, so the
+      group is probed with killpg(pgid, 0), not waitpid) to empty, bounded
+      by the grace timeout, then SIGKILLs what remains
+    - a second signal force-kills the group immediately (operator escape)
+    - an unprompted CMD exit also kills the group: identical teardown
+      semantics to the exec era, so restart policies fire promptly
+    """
+
+    def __init__(
+        self,
+        *,
+        popen: Callable[..., subprocess.Popen] = subprocess.Popen,
+        kill: Callable[[int, int], None] = os.kill,
+        killpg: Callable[[int, int], None] = os.killpg,
+        waitpid: Callable[[int, int], tuple[int, int]] = os.waitpid,
+        monotonic: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
+        self._popen = popen
+        self._kill = kill
+        self._killpg = killpg
+        self._waitpid = waitpid
+        self._monotonic = monotonic
+        self._sleep = sleep
+        self._signals: list[int] = []
+
+    def _handle_signal(self, signum: int, frame: object) -> None:
+        self._signals.append(signum)
+
+    def supervise(self, command: list[str], grace: int, forward_pids: tuple[int, ...] = ()) -> int:
+        saved = [(sig, signal.getsignal(sig)) for sig in _SHUTDOWN_SIGNALS]
+        try:
+            for sig, _handler in saved:
+                signal.signal(sig, self._handle_signal)
+            try:
+                proc = self._popen(command, start_new_session=True)
+            except OSError as exc:
+                warn(f"failed to start {command[0]}: {exc}")
+                return 1
+            log(f"supervising {command[0]} (pid {proc.pid}, shutdown grace {grace}s)")
+            return self._run(
+                proc, pgid=proc.pid, command=command, grace=grace, forward_pids=forward_pids
+            )
+        finally:
+            for sig, handler in saved:
+                signal.signal(sig, handler)
+
+    def _run(
+        self,
+        proc: subprocess.Popen,
+        pgid: int,
+        command: list[str],
+        grace: int,
+        forward_pids: tuple[int, ...],
+    ) -> int:
+        gateway_status: int | None = None
+        forwarded = False
+        forced = False
+        deadline = 0.0
+        while True:
+            while True:
+                try:
+                    pid, status = self._waitpid(-1, os.WNOHANG)
+                except ChildProcessError:
+                    break
+                if pid == 0:
+                    break
+                if pid == proc.pid:
+                    gateway_status = status
+                    proc.returncode = os.waitstatus_to_exitcode(status)
+            now = self._monotonic()
+
+            if len(self._signals) >= 2 and not forced:
+                log("second shutdown signal — force-killing the gateway process group")
+                forced = True
+                self._killpg_guarded(pgid, signal.SIGKILL)
+
+            if self._signals and not forwarded:
+                signum = self._signals[0]
+                log(
+                    f"shutdown signal {signum}: forwarded to {command[0]}"
+                    f" (pid {proc.pid}); draining in-flight automations"
+                    f" for up to {grace}s"
+                )
+                if gateway_status is None:
+                    self._kill_guarded(proc.pid, signum)
+                for fpid in forward_pids:
+                    self._kill_guarded(fpid, signum)
+                forwarded = True
+                deadline = now + grace
+
+            if gateway_status is None:
+                if forwarded and not forced and (grace <= 0 or now >= deadline):
+                    log(f"shutdown grace ({grace}s) expired — force-killing")
+                    forced = True
+                    self._killpg_guarded(pgid, signal.SIGKILL)
+                self._sleep(_SHUTDOWN_POLL_S)
+                continue
+
+            if not self._signals and not forced:
+                log(f"{command[0]} exited unprompted — killing its process group")
+                forced = True
+                self._killpg_guarded(pgid, signal.SIGKILL)
+
+            if self._signals and not forced:
+                if now >= deadline:
+                    log(f"shutdown grace ({grace}s) expired — force-killing")
+                    forced = True
+                    self._killpg_guarded(pgid, signal.SIGKILL)
+                elif not self._group_alive(pgid):
+                    log("drain complete — gateway process group is empty")
+                else:
+                    self._sleep(_SHUTDOWN_POLL_S)
+                    continue
+
+            code = os.waitstatus_to_exitcode(gateway_status)
+            return code if code >= 0 else 128 - code
+
+    def _group_alive(self, pgid: int) -> bool:
+        try:
+            self._killpg(pgid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        return True
+
+    def _kill_guarded(self, pid: int, signum: int) -> None:
+        with suppress(ProcessLookupError):
+            self._kill(pid, signum)
+
+    def _killpg_guarded(self, pgid: int, signum: int) -> None:
+        with suppress(ProcessLookupError):
+            self._killpg(pgid, signum)
+
+
+def supervise(command: list[str], grace: int, forward_pids: tuple[int, ...] = ()) -> int:
+    """Phase function wrapping ShutdownSupervisor (the seam wrapper
+    entrypoints and tests patch): spawn the CMD in its own session and
+    return its exit code after graceful-shutdown drain."""
+    return ShutdownSupervisor().supervise(command, grace, forward_pids)
+
+
 def validate_spec(env: Mapping[str, str]) -> int:
     """--validate-spec mode for downstream CI: load the spec and the
     automations directory WITHOUT any mutation. Returns 0 when both parse,
@@ -1186,10 +1373,11 @@ def validate_spec(env: Mapping[str, str]) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Boot the agent container and hand off to the container CMD.
+    """Boot the agent container, then supervise the container CMD.
 
-    The happy path ends in os.execvp (never returns); an int is returned
-    only for --validate-spec (0/1) and usage errors (2)."""
+    The happy path spawns the CMD via supervise() and returns its exit
+    code after graceful-shutdown drain (bounded by AGENT_SHUTDOWN_GRACE).
+    Other int returns: --validate-spec (0/1) and usage errors (2)."""
     args = list(sys.argv[1:]) if argv is None else list(argv)
     command = [arg for arg in args if arg != "--validate-spec"]
     env = os.environ
@@ -1227,8 +1415,7 @@ def main(argv: list[str] | None = None) -> int:
 
     log("Scheduled post-startup: cron seeding + memory reindex (background)")
 
-    os.execvp(command[0], command)
-    return 0
+    return supervise(command, parse_shutdown_grace(env), forward_pids=(pid,))
 
 
 if __name__ == "__main__":
