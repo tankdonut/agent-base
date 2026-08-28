@@ -1,0 +1,81 @@
+# Production agent service: a COMPLETE compose file skeleton, not a snippet.
+#
+# Expects a thin project Dockerfile at the repo root (docs/standard-agent.md
+# Quick start): FROM ghcr.io/tankdonut/agent-base:<date-tag> pinned by exact
+# tag (or tag@sha256:… digest; Renovate pinDigests keeps it current) plus
+# COPY lines for spec.json, seed content, and automations.
+#
+# The hardening below is ACTIVE, not commented out: named volumes cover
+# every writable path the base needs ({data} at /home/node/.openclaw, plus
+# /backups), so the container root filesystem stays immutable.
+# docs/deployment.md carries the full playbook this file summarizes (host
+# prep, reverse proxy, update/rollback, unhealthy-watchdog).
+#
+# Rootless Podman: if SELinux MCS denials hit the named volumes, add
+# `label=disable` under security_opt (rationale in compose.agent.yml).
+
+services:
+  agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    # Dedicated network with nothing else on it: sibling containers must not
+    # share L2 with the gateway port (a bearer-auth-only surface). A
+    # host-process reverse proxy reaches it via the 127.0.0.1 bind below; a
+    # containerized proxy must be attached to this network explicitly and is
+    # then the only peer.
+    networks:
+      - agent-net
+    volumes:
+      - <project>-agent-data:/home/node/.openclaw
+      # Upgrade backups land here: a verified archive is written before any
+      # image-version delta mutates a warm volume. Without this volume the
+      # archives vanish with the container.
+      - <project>-agent-backups:/backups
+    # Loopback-only bind; remote access goes through a TLS-terminating
+    # reverse proxy (docs/deployment.md). AGENT_GATEWAY_PORT is host-side
+    # compose interpolation (templates/env.example section 4), and never
+    # enters the container.
+    ports:
+      - "127.0.0.1:${AGENT_GATEWAY_PORT:-18789}:18789"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:18789/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      # First boot runs setup + reconcile + seed before the gateway exec;
+      # upgrade boots add a verified backup. Match the image HEALTHCHECK.
+      start_period: 300s
+    # Hardening baseline (docs/standard-agent.md "Deployment hardening").
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    read_only: true
+    tmpfs:
+      - /tmp
+    # Resource ceiling. OOM kill exits tini, which trips restart:
+    # unless-stopped. Keep the sum of all service limits below host RAM;
+    # the pids limit blunts fork runaway from agent-spawned processes.
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2g
+          pids: 512
+    # Rotate container logs host-side; json-file keeps `docker logs --follow`
+    # working. Values are strings, not numbers.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+networks:
+  agent-net: {}
+
+volumes:
+  <project>-agent-data:
+  <project>-agent-backups:
