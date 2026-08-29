@@ -136,6 +136,11 @@ class RemoteMcpServer:
     Invariants: url and header values are template-resolved at load time
     ({env:...} for API keys is the intended use); headers preserve insertion
     order; timeout is seconds (CLI contract, verified at 2026.7.1-2).
+
+    auth="oauth" arms OpenClaw's MCP OAuth flow (credentials live in
+    OpenClaw's own store after a one-time ``mcp login`` — never in the
+    spec); oauth carries the documented metadata sub-keys verbatim,
+    never templated (they are structural, not secrets).
     """
 
     name: str
@@ -145,6 +150,8 @@ class RemoteMcpServer:
     timeout: int | None = None
     if_env: tuple[str, ...] = ()
     passthrough_config: dict[str, JSONValue] = field(default_factory=dict)
+    auth: str | None = None
+    oauth: dict[str, str] = field(default_factory=dict)
 
 
 McpServer: TypeAlias = LocalMcpServer | RemoteMcpServer
@@ -379,8 +386,22 @@ _PRESET_NAME_RE = re.compile(r"[a-z0-9][a-z0-9_-]*")
 _CONFIG_KEY_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
 _CHANNEL_KEYS = frozenset({"type", "use_env"})
 _MCP_ENTRY_KEYS = frozenset(
-    {"name", "command", "url", "args", "env", "headers", "no_probe", "timeout", "if_env", "config"}
+    {
+        "name",
+        "command",
+        "url",
+        "args",
+        "env",
+        "headers",
+        "no_probe",
+        "timeout",
+        "if_env",
+        "config",
+        "auth",
+        "oauth",
+    }
 )
+_MCP_OAUTH_KEYS = frozenset({"identity", "scope", "authProfileId"})
 _PLUGIN_KEYS = frozenset({"name", "source"})
 _FEATURES_KEYS = frozenset({"gh_auth", "gateway_auth", "plugin_prune", "mcp_prune"})
 _AUTOMATIONS_KEYS = frozenset({"model", "default_tools"})
@@ -504,6 +525,56 @@ def _parse_channels(root: Mapping[str, JSONValue]) -> list[Channel]:
     return channels
 
 
+def _parse_mcp_auth(
+    node: Mapping[str, JSONValue], passthrough_config: dict[str, JSONValue], base: str
+) -> tuple[str | None, dict[str, str]]:
+    """Parse the first-class 'auth'/'oauth' pair of an mcp_servers entry.
+
+    auth must be "oauth" (the only mode the pinned CLI documents); oauth
+    is the metadata object with the documented sub-keys (identity |
+    scope | authProfileId), carried verbatim — never templated, because
+    the values are structural metadata and OAuth credentials live in
+    OpenClaw's own store after a one-time login, never in the spec.
+    Passthrough config keys the pair would overwrite ('auth', 'oauth',
+    'oauth.*') are a load error instead of a silent precedence rule."""
+
+    for key in passthrough_config:
+        if (key == "auth" or key == "oauth" or key.startswith("oauth.")) and (
+            "auth" in node or "oauth" in node
+        ):
+            _fail(
+                _join(base, "config"),
+                f"key {key!r} conflicts with the first-class 'auth'/'oauth' entry keys",
+            )
+
+    if "auth" not in node and "oauth" not in node:
+        return None, {}
+    if "auth" not in node:
+        _fail(base, "'oauth' requires 'auth': \"oauth\"")
+    auth = _expect_str(node["auth"], _join(base, "auth"))
+    if auth != "oauth":
+        _fail(_join(base, "auth"), 'must be "oauth" (the only documented auth mode)')
+    oauth: dict[str, str] = {}
+    if "oauth" in node:
+        raw = _expect_object(node["oauth"], _join(base, "oauth"))
+        _reject_unknown_keys(raw, _MCP_OAUTH_KEYS, _join(base, "oauth"))
+        for key, value in raw.items():
+            oauth[key] = _expect_str(value, _join(f"{base}.oauth", key))
+        for key, value in oauth.items():
+            if not value:
+                _fail(_join(f"{base}.oauth", key), "must be a non-empty string")
+            if "{env:" in value or "{data}" in value:
+                _fail(
+                    _join(f"{base}.oauth", key),
+                    "oauth metadata is literal — {env:}/{data} templating is not applied here",
+                )
+        if oauth.get("identity") not in (None, "shared", "per-requester"):
+            _fail(_join(f"{base}.oauth", "identity"), 'must be "shared" or "per-requester"')
+        if oauth.get("identity") == "per-requester" and "authProfileId" in oauth:
+            _fail(_join(base, "oauth"), "per-requester identity cannot combine with authProfileId")
+    return auth, oauth
+
+
 def _parse_mcp_servers(root: Mapping[str, JSONValue], env: Mapping[str, str]) -> list[McpServer]:
     servers: list[McpServer] = []
     for index, raw in enumerate(_expect_list(root.get("mcp_servers", []), "mcp_servers")):
@@ -537,6 +608,9 @@ def _parse_mcp_servers(root: Mapping[str, JSONValue], env: Mapping[str, str]) ->
                 "entry must specify exactly one of 'command' (local) or "
                 "'url' (remote), not neither",
             )
+        auth, oauth = _parse_mcp_auth(node, passthrough_config, base)
+        if has_command and (auth is not None or oauth):
+            _fail(base, "'auth' and 'oauth' apply to remote (url) servers only")
         if has_url:
             servers.append(
                 RemoteMcpServer(
@@ -556,6 +630,8 @@ def _parse_mcp_servers(root: Mapping[str, JSONValue], env: Mapping[str, str]) ->
                     else _expect_int(node.get("timeout"), _join(base, "timeout")),
                     if_env=if_env,
                     passthrough_config=passthrough_config,
+                    auth=auth,
+                    oauth=oauth,
                 )
             )
         else:

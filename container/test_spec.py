@@ -640,6 +640,188 @@ class McpPassThrough(SpecTestCase):
         )
 
 
+class McpOAuth(SpecTestCase):
+    """mcp_servers[].auth="oauth" + oauth metadata: first-class keys for
+    OpenClaw's MCP OAuth flow, validated at load — fail closed on unknown
+    sub-keys, non-oauth modes, local (stdio) servers, templated metadata,
+    and passthrough-config conflicts."""
+
+    def oauth_spec(self, entry: dict[str, object]) -> dict[str, object]:
+        variant = copy.deepcopy(MINIMAL)
+        variant["mcp_servers"] = [entry]
+        return variant
+
+    def test_auth_only_accepted(self) -> None:
+        spec = self.load(
+            self.oauth_spec(
+                {"name": "docs", "url": "https://mcp.example.com/mcp", "auth": "oauth"}
+            ),
+            env={"ZAI_API_KEY": "zai-key"},
+        )
+        server = spec.mcp_servers[0]
+        self.assertIsInstance(server, RemoteMcpServer)
+        self.assertEqual("oauth", server.auth)
+        self.assertEqual({}, server.oauth)
+
+    def test_full_metadata_preserved_verbatim(self) -> None:
+        spec = self.load(
+            self.oauth_spec(
+                {
+                    "name": "docs",
+                    "url": "https://mcp.example.com/mcp",
+                    "auth": "oauth",
+                    "oauth": {
+                        "identity": "shared",
+                        "scope": "docs.read",
+                        "authProfileId": "docs:mcp",
+                    },
+                }
+            ),
+            env={"ZAI_API_KEY": "zai-key"},
+        )
+        self.assertEqual(
+            {"identity": "shared", "scope": "docs.read", "authProfileId": "docs:mcp"},
+            spec.mcp_servers[0].oauth,
+        )
+
+    def test_per_requester_identity_allowed(self) -> None:
+        spec = self.load(
+            self.oauth_spec(
+                {
+                    "name": "docs",
+                    "url": "https://mcp.example.com/mcp",
+                    "auth": "oauth",
+                    "oauth": {"identity": "per-requester", "scope": "docs.read"},
+                }
+            ),
+            env={"ZAI_API_KEY": "zai-key"},
+        )
+        self.assertEqual("per-requester", spec.mcp_servers[0].oauth["identity"])
+
+    def test_oauth_without_auth_rejected(self) -> None:
+        self.load_expect_error(
+            self.oauth_spec(
+                {"name": "docs", "url": "https://mcp.example.com/mcp", "oauth": {"scope": "s"}}
+            ),
+            env={"ZAI_API_KEY": "zai-key"},
+            containing="'oauth' requires 'auth'",
+        )
+
+    def test_non_oauth_auth_mode_rejected(self) -> None:
+        self.load_expect_error(
+            self.oauth_spec(
+                {"name": "docs", "url": "https://mcp.example.com/mcp", "auth": "basic"}
+            ),
+            env={"ZAI_API_KEY": "zai-key"},
+            containing="only documented auth mode",
+        )
+
+    def test_unknown_oauth_subkey_rejected(self) -> None:
+        self.load_expect_error(
+            self.oauth_spec(
+                {
+                    "name": "docs",
+                    "url": "https://mcp.example.com/mcp",
+                    "auth": "oauth",
+                    "oauth": {"token": "t"},
+                }
+            ),
+            env={"ZAI_API_KEY": "zai-key"},
+            containing="oauth",
+        )
+
+    def test_bad_identity_rejected(self) -> None:
+        self.load_expect_error(
+            self.oauth_spec(
+                {
+                    "name": "docs",
+                    "url": "https://mcp.example.com/mcp",
+                    "auth": "oauth",
+                    "oauth": {"identity": "everyone"},
+                }
+            ),
+            env={"ZAI_API_KEY": "zai-key"},
+            containing='"shared" or "per-requester"',
+        )
+
+    def test_per_requester_with_auth_profile_rejected(self) -> None:
+        self.load_expect_error(
+            self.oauth_spec(
+                {
+                    "name": "docs",
+                    "url": "https://mcp.example.com/mcp",
+                    "auth": "oauth",
+                    "oauth": {"identity": "per-requester", "authProfileId": "docs:mcp"},
+                }
+            ),
+            env={"ZAI_API_KEY": "zai-key"},
+            containing="per-requester identity cannot combine with authProfileId",
+        )
+
+    def test_templated_metadata_rejected(self) -> None:
+        self.load_expect_error(
+            self.oauth_spec(
+                {
+                    "name": "docs",
+                    "url": "https://mcp.example.com/mcp",
+                    "auth": "oauth",
+                    "oauth": {"scope": "{env:OAUTH_SCOPE}"},
+                }
+            ),
+            env={"ZAI_API_KEY": "zai-key", "OAUTH_SCOPE": "s"},
+            containing="literal",
+        )
+
+    def test_empty_metadata_value_rejected(self) -> None:
+        self.load_expect_error(
+            self.oauth_spec(
+                {
+                    "name": "docs",
+                    "url": "https://mcp.example.com/mcp",
+                    "auth": "oauth",
+                    "oauth": {"scope": ""},
+                }
+            ),
+            env={"ZAI_API_KEY": "zai-key"},
+            containing="non-empty string",
+        )
+
+    def test_oauth_on_local_server_rejected(self) -> None:
+        self.load_expect_error(
+            self.oauth_spec({"name": "local", "command": "srv", "auth": "oauth"}),
+            env={"ZAI_API_KEY": "zai-key"},
+            containing="remote (url) servers only",
+        )
+
+    def test_passthrough_oauth_conflict_rejected(self) -> None:
+        self.load_expect_error(
+            self.oauth_spec(
+                {
+                    "name": "docs",
+                    "url": "https://mcp.example.com/mcp",
+                    "auth": "oauth",
+                    "config": {"oauth.identity": "shared"},
+                }
+            ),
+            env={"ZAI_API_KEY": "zai-key"},
+            containing="conflicts with the first-class",
+        )
+
+    def test_passthrough_auth_conflict_rejected(self) -> None:
+        self.load_expect_error(
+            self.oauth_spec(
+                {
+                    "name": "docs",
+                    "url": "https://mcp.example.com/mcp",
+                    "auth": "oauth",
+                    "config": {"auth": "oauth"},
+                }
+            ),
+            env={"ZAI_API_KEY": "zai-key"},
+            containing="conflicts with the first-class",
+        )
+
+
 class TemplateResolution(SpecTestCase):
     def test_env_token_resolved_inline(self) -> None:
         spec = self.load(self.config_spec("Hello {env:GREETING} world"))
