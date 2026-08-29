@@ -30,6 +30,11 @@ Targets:
           (scripts/smoke.sh; SMOKE_ENGINE overrides engine detection)
   build   Build $IMAGE:<AGENT_BASE_VERSION or today's date>
   push    Push $IMAGE:\$AGENT_BASE_VERSION (env var must be set explicitly)
+  agentctl         Run agentctl via go run (args pass through: ./make.sh
+                   agentctl <command> [flags])
+  agentctl-test    Run agentctl Go tests (go test ./...)
+  agentctl-build   Build the agentctl binary to ./agentctl (gitignored)
+  agentctl-install Install agentctl into \$(go env GOPATH)/bin
   help    Show this help
 
 Environment:
@@ -70,6 +75,20 @@ case $target in
     version=${AGENT_BASE_VERSION:?set AGENT_BASE_VERSION=YYYY.MM.DD[.N] to push}
     eng=$(engine)
     "$eng" push "$IMAGE:$version"
+    ;;
+  agentctl)
+    # Forward to go run — args pass through (e.g. ./make.sh agentctl help).
+    shift
+    go run ./cmd/agentctl "$@"
+    ;;
+  agentctl-test)
+    go test ./...
+    ;;
+  agentctl-build)
+    go build -o agentctl ./cmd/agentctl
+    ;;
+  agentctl-install)
+    go install ./cmd/agentctl
     ;;
   help | -h | --help)
     usage

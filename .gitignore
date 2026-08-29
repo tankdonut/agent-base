@@ -2,6 +2,9 @@
 __pycache__/
 *.py[cod]
 
+# Go (agentctl binary built at repo root)
+/agentctl
+
 # smoke-test log artifacts (scripts/smoke.sh)
 logs/
 
