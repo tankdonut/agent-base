@@ -99,6 +99,41 @@ func TestSecretsInitRefusesExistingEnv(t *testing.T) {
 	}
 }
 
+func TestSecretsInitRefusesSymlinkAtEnvPath(t *testing.T) {
+	// A dangling symlink (committable to git) must not be written
+	// through: O_EXCL creation fails and the target stays absent.
+	root := writeProject(t, map[string]string{"agent/.env.example": envExampleWithToken})
+	link := filepath.Join(root, "agent", ".env")
+	if err := os.Symlink("../outside.env", link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := SecretsInit(root); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("err = %v, want symlink refusal", err)
+	}
+	if fi, err := os.Lstat(link); err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("env path must remain a symlink, got fi=%v err=%v", fi, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "outside.env")); !os.IsNotExist(err) {
+		t.Error("init wrote through the dangling symlink")
+	}
+
+	// A symlink with an existing target is refused just as loudly.
+	root2 := writeProject(t, map[string]string{
+		"agent/.env.example": envExampleWithToken,
+		"agent/.env.target":  "PREEXISTING=1\n",
+	})
+	if err := os.Symlink(".env.target", filepath.Join(root2, "agent", ".env")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := SecretsInit(root2); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("err = %v, want symlink refusal for existing target", err)
+	}
+	data, _ := os.ReadFile(filepath.Join(root2, "agent", ".env.target"))
+	if string(data) != "PREEXISTING=1\n" {
+		t.Error("symlink target was modified through the link")
+	}
+}
+
 func TestSecretsInitMissingExample(t *testing.T) {
 	root := writeProject(t, map[string]string{"agent/spec.json": "{}"})
 	if _, err := SecretsInit(root); err == nil || !strings.Contains(err.Error(), ".env.example") {

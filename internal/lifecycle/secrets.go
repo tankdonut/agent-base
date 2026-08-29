@@ -3,7 +3,9 @@ package lifecycle
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -30,7 +32,10 @@ func GenerateToken() (string, error) {
 // 0600.
 func SecretsInit(root string) (string, error) {
 	envPath := filepath.Join(root, "agent", ".env")
-	if _, err := os.Stat(envPath); err == nil {
+	if fi, err := os.Lstat(envPath); err == nil {
+		if fi.Mode()&os.ModeSymlink != 0 {
+			return "", fmt.Errorf("%s already exists and is a symlink — inspect it, then run `agentctl secrets edit`", envPath)
+		}
 		return "", fmt.Errorf("%s already exists — run `agentctl secrets edit` to change values", envPath)
 	}
 	data, err := os.ReadFile(filepath.Join(root, "agent", ".env.example"))
@@ -42,10 +47,24 @@ func SecretsInit(root string) (string, error) {
 		return "", err
 	}
 	out := setGatewayToken(string(data), token)
-	if err := os.WriteFile(envPath, []byte(out), 0o600); err != nil {
-		return "", err
+	// O_EXCL creation never follows a symlink planted at envPath (a
+	// dangling symlink yields EEXIST too), so a hostile clone cannot
+	// turn init into an arbitrary-path write.
+	f, err := os.OpenFile(envPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		if errors.Is(err, fs.ErrExist) {
+			return "", fmt.Errorf("%s already exists — run `agentctl secrets edit` to change values", envPath)
+		}
+		return "", fmt.Errorf("creating agent/.env: %w", err)
 	}
-	// WriteFile applies mode only on create; chmod keeps it explicit.
+	if _, err := f.WriteString(out); err != nil {
+		f.Close()
+		return "", fmt.Errorf("writing agent/.env: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return "", fmt.Errorf("writing agent/.env: %w", err)
+	}
+	// chmod keeps 0600 explicit even under a permissive umask.
 	if err := os.Chmod(envPath, 0o600); err != nil {
 		return "", err
 	}
