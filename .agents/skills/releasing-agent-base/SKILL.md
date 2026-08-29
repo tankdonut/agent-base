@@ -32,7 +32,14 @@ git fetch --tags origin
 git status --porcelain              # must be empty
 git rev-parse HEAD main origin/main # must all agree; release from main tip
 gh run list --branch main --limit 3 # last main push must be green
+scripts/check-image-refs.sh         # every tracked <image>:<date> ref exists in GHCR
 ```
+
+The refs script scans ALL tracked files — docs and test fixtures alike.
+Hypothetical tags in fixtures (`2026.08.28.2`, a future `2026.09.01`) are
+the 2026.08.29 failure: the release-job gate caught them only after image
+publish had burned the tag. Run it here and an unpublished ref costs a
+one-line fixture edit, not a `.N` re-release.
 
 Pick the version: `$(date +%Y.%m.%d)`. If that tag already exists (check
 local **and** remote — the remote is what raced you), take the highest
@@ -107,7 +114,7 @@ consumer repos on its own — not your concern here.)
 ## Failure playbook
 
 A tag with no GitHub release is a known historical state (`2026.08.24`,
-`.2`, `.3` all published images but never released). Handle failures by
+`.2`, `.3`, and `2026.08.29` all published images but never released). Handle failures by
 class:
 
 1. **Read the failure**: `gh run view <run-id> --log-failed`.
@@ -125,7 +132,11 @@ class:
 Known failure classes (all with shipped fixes — cite for pattern, not
 novelty): attest without ghcr login; HEALTHCHECK gate jq path / blob
 redirects; refs gate failing because a tracked doc references a
-never-published tag (fix the doc ref on main, then re-release `.N`).
+never-published tag (fix the doc ref on main, then re-release `.N`);
+refs gate tripped by hypothetical tags in **test fixtures** — the
+2026.08.29 case, caught after image publish burned the tag, fixed by
+pointing fixtures at published tags and re-releasing as `.1` (the
+pre-flight refs script now catches this class before tagging).
 
 ## Common mistakes
 
