@@ -43,6 +43,7 @@ func newLifecycleCmds() []*cobra.Command {
 			if err != nil {
 				return err
 			}
+			lifecycle.WarnGatewayPortBusy(cmd.ErrOrStderr(), root, viper.GetInt("gateway_port"))
 			return lifecycle.Up(newRunner(), engine, root)
 		},
 	}
@@ -55,6 +56,7 @@ func newLifecycleCmds() []*cobra.Command {
 			if err != nil {
 				return err
 			}
+			lifecycle.WarnGatewayPortBusy(cmd.ErrOrStderr(), root, viper.GetInt("gateway_port"))
 			return lifecycle.Dev(newRunner(), engine, root)
 		},
 	}
