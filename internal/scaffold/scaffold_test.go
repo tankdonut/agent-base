@@ -269,6 +269,28 @@ func TestRunForceRefusesSymlinkAtManifestPath(t *testing.T) {
 	}
 }
 
+func TestRunMidTreeFailureNamesRecovery(t *testing.T) {
+	dir := t.TempDir()
+	agent := filepath.Join(dir, "agent")
+	if err := os.Mkdir(agent, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(agent, 0o755) })
+
+	cfg := validConfig(dir)
+	cfg.Force = true
+	_, err := Run(cfg)
+	if err == nil {
+		t.Skip("running as root: permission-based failure did not trigger")
+	}
+	if !strings.Contains(err.Error(), "writing ") {
+		t.Fatalf("err = %v, want the failing file named", err)
+	}
+	if !strings.Contains(err.Error(), "partial scaffold") || !strings.Contains(err.Error(), "--force") {
+		t.Fatalf("err = %v, want partial-scaffold + --force recovery hint", err)
+	}
+}
+
 func TestRunGitInit(t *testing.T) {
 	dir := t.TempDir()
 	cfg := validConfig(dir)

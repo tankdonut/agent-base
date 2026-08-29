@@ -52,7 +52,7 @@ func Run(cfg Config) ([]string, error) {
 	created := make([]string, 0, len(paths))
 	for _, rel := range paths {
 		if err := renderFile(tmplFS, cfg.TargetDir, rel, data); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("%w — partial scaffold left in %s: re-run with --force to overwrite generated files", err, cfg.TargetDir)
 		}
 		created = append(created, rel)
 	}
@@ -109,15 +109,18 @@ func renderFile(fsys fs.FS, target, rel string, data templateData) error {
 		return fmt.Errorf("%s exists and is not a regular file — remove it and re-run", dest)
 	}
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
-		return err
+		return fmt.Errorf("creating %s: %w", filepath.Dir(dest), err)
 	}
 	mode := templates.Mode(rel)
 	if err := os.WriteFile(dest, out, mode); err != nil {
-		return err
+		return fmt.Errorf("writing %s: %w", dest, err)
 	}
 	// WriteFile applies mode only on create; chmod keeps modes
 	// deterministic when --force overwrites existing files.
-	return os.Chmod(dest, mode)
+	if err := os.Chmod(dest, mode); err != nil {
+		return fmt.Errorf("chmod %s: %w", dest, err)
+	}
+	return nil
 }
 
 // gitInit runs `git init` inside dir.
