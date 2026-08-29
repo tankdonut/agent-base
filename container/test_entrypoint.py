@@ -1097,8 +1097,9 @@ class MemoryStatusLadder(EntrypointTestCase):
 
 class ReindexRetryMatrix(EntrypointTestCase):
     def memory_index_calls(self) -> list[list[str]]:
-        # The ported command inserts --force at position 2 (verbatim from
-        # the freya/mimir originals): ["openclaw", "memory", "--force", "index", ...]
+        # --force belongs to the `memory index` subcommand; placing it at
+        # the memory-group level ("memory --force index") is rejected by
+        # the pinned CLI (docs.openclaw.ai/cli/memory).
         return [c for c in self.calls if c[:2] == ["openclaw", "memory"] and "index" in c]
 
     def reindex(
@@ -1129,7 +1130,7 @@ class ReindexRetryMatrix(EntrypointTestCase):
     def test_force_flag_inserted_for_full_rebuild(self) -> None:
         self.reindex([subprocess.CompletedProcess([], 0, stdout="", stderr="")], force=True)
         self.assertEqual(
-            ["openclaw", "memory", "--force", "index", "--agent", "main", "--verbose"],
+            ["openclaw", "memory", "index", "--force", "--agent", "main", "--verbose"],
             self.memory_index_calls()[0],
         )
 

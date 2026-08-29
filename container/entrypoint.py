@@ -865,9 +865,10 @@ def reindex_memory(
 
     force=True for a full rebuild (model change, missing index); force=False
     for incremental (only re-embed changed files)."""
-    cmd = ["openclaw", "memory", "index", "--agent", agent, "--verbose"]
+    cmd = ["openclaw", "memory", "index"]
     if force:
-        cmd.insert(2, "--force")
+        cmd.append("--force")
+    cmd += ["--agent", agent, "--verbose"]
     mode = "full" if force else "incremental"
 
     for attempt in range(1, attempts + 1):
