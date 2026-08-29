@@ -5,9 +5,12 @@ package cli
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
+
+	"github.com/tankdonut/agent-base/internal/lifecycle"
 )
 
 // Version is the single agentctl version constant, date-versioned in the
@@ -55,18 +58,40 @@ func Execute() int {
 	return 0
 }
 
-// setupViper layers configuration: defaults, then an optional project
-// .agentctl.yaml in the working directory, then AGENTCTL_* env vars.
+// setupViper layers configuration: defaults, then an optional
+// .agentctl.yaml (working directory, else the project root), then
+// AGENTCTL_* env vars.
 func setupViper() error {
 	viper.SetDefault("engine", "auto")
 	viper.SetDefault("gateway_port", 18789)
 	viper.SetEnvPrefix("AGENTCTL")
 	viper.AutomaticEnv()
-	if _, err := os.Stat(".agentctl.yaml"); err == nil {
-		viper.SetConfigFile(".agentctl.yaml")
-		if err := viper.ReadInConfig(); err != nil {
-			return fmt.Errorf("reading .agentctl.yaml: %w", err)
-		}
+	path := agentctlConfigPath()
+	if path == "" {
+		return nil
+	}
+	viper.SetConfigFile(path)
+	if err := viper.ReadInConfig(); err != nil {
+		return fmt.Errorf("reading %s: %w", path, err)
 	}
 	return nil
+}
+
+// agentctlConfigPath resolves the config file: a .agentctl.yaml in the
+// working directory wins; otherwise the project root's copy — commands
+// resolve the project by marker from any subdirectory, so the config
+// must follow the same root, not the invocation cwd.
+func agentctlConfigPath() string {
+	if _, err := os.Stat(".agentctl.yaml"); err == nil {
+		return ".agentctl.yaml"
+	}
+	root, err := lifecycle.FindProjectRoot(".")
+	if err != nil {
+		return "" // not inside a project: defaults + env only
+	}
+	candidate := filepath.Join(root, ".agentctl.yaml")
+	if _, err := os.Stat(candidate); err == nil {
+		return candidate
+	}
+	return ""
 }
