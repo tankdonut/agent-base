@@ -58,6 +58,17 @@
       "hadolint *": "allow",
       "markdownlint-cli2 *": "allow",
 
+      "go version": "allow",
+      "go env *": "allow",
+      "go test": "allow",
+      "go test *": "allow",
+      "go vet *": "allow",
+      "go build *": "allow",
+      "go run ./*": "allow",
+      "go install ./cmd/agentctl*": "allow",
+      "go fmt *": "allow",
+      "gofmt *": "allow",
+
       "git *": "allow",
       "git config *": "ask",
       "git config --get*": "allow",
