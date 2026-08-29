@@ -32,6 +32,14 @@ func TestLifecycleArgv(t *testing.T) {
 		{"logs bare", func(r Runner) error { return Logs(r, "podman", nil) }, [][]string{
 			{"podman", "compose", "-f", "compose.yml", "logs"},
 		}},
+		{"mcp login passthrough", func(r Runner) error {
+			return Mcp(r, "podman", []string{"login", "docs", "--code", "abc123"})
+		}, [][]string{
+			{"podman", "compose", "-f", "compose.yml", "exec", "agent", "openclaw", "mcp", "login", "docs", "--code", "abc123"},
+		}},
+		{"mcp bare", func(r Runner) error { return Mcp(r, "podman", nil) }, [][]string{
+			{"podman", "compose", "-f", "compose.yml", "exec", "agent", "openclaw", "mcp"},
+		}},
 		{"build-images", func(r Runner) error { return BuildImages(r, "podman") }, [][]string{
 			{"podman", "compose", "-f", "compose.yml", "build"},
 		}},
@@ -114,6 +122,7 @@ func TestNilRunnerNeverPanics(t *testing.T) {
 		"hooks":    func() error { return PreCommitHooks(nil) },
 		"worktree": func() error { return WorktreeCreate(nil, root, "b") },
 		"open":     func() error { return Open(nil, root, 18789, &strings.Builder{}) },
+		"mcp":      func() error { return Mcp(nil, "podman", nil) },
 		"edit":     func() error { return SecretsEdit(nil, "vi", "/tmp/x") },
 		"update":   func() error { return Update(nil, "podman", root) },
 	}

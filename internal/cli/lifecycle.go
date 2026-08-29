@@ -90,6 +90,21 @@ func newLifecycleCmds() []*cobra.Command {
 			return lifecycle.Logs(newRunner(), engine, args)
 		},
 	}
+	var mcp = &cobra.Command{
+		Use:                "mcp [args...]",
+		Short:              "Run openclaw mcp inside the agent container (login, logout, status, doctor)",
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if _, err := chdirProject(); err != nil {
+				return err
+			}
+			engine, err := resolveEngine()
+			if err != nil {
+				return err
+			}
+			return lifecycle.Mcp(newRunner(), engine, args)
+		},
+	}
 	var buildImages = &cobra.Command{
 		Use:   "build-images",
 		Short: "Build the project image",
@@ -157,7 +172,7 @@ func newLifecycleCmds() []*cobra.Command {
 			return lifecycle.Validate(newRunner(), engine, root)
 		},
 	}
-	return []*cobra.Command{up, dev, down, logs, buildImages, restart, rebuild, update, validate}
+	return []*cobra.Command{up, dev, down, logs, mcp, buildImages, restart, rebuild, update, validate}
 }
 
 // projectEngine resolves the project root (chdir'ing into it) and the

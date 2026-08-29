@@ -265,6 +265,45 @@ resolve `{data}` templates, but keep executable surfaces out of `{data}`
 (plugin sources and MCP commands) — that tree is agent-writable, and the
 loader cannot know your mount layout.
 
+#### OAuth remote servers
+
+Remote entries can arm OpenClaw's MCP OAuth flow with first-class keys:
+
+```json
+{
+  "name": "docs",
+  "url": "https://mcp.example.com/mcp",
+  "auth": "oauth",
+  "oauth": { "identity": "shared", "scope": "docs.read" }
+}
+```
+
+`auth` must be `"oauth"` (the only documented mode); the `oauth` object
+accepts exactly the sub-keys OpenClaw documents — `identity`
+(`"shared"` | `"per-requester"`), `scope`, `authProfileId` — carried
+verbatim: values are never `{env:}`-templated (they are structural
+metadata, not secrets), `per-requester` cannot combine with
+`authProfileId`, and the pair is remote-only (a `command` entry with
+either key aborts the load). Overlapping `config` passthrough keys
+(`auth`, `oauth`, `oauth.*`) are likewise a load error — no silent
+precedence.
+
+The boot registers the server and writes `mcp.servers.<name>.auth` /
+`.oauth` via `config set --strict-json`. Credentials never live in the
+spec or in `openclaw.json`: after the first boot, complete the flow once
+from inside the running container —
+
+```sh
+agentctl mcp login docs   # prints the authorization URL (loopback callback)
+agentctl mcp login docs --code abc123   # headless: paste the code from the redirect URL
+```
+
+— and OpenClaw stores and refreshes the tokens itself. While
+`auth: "oauth"` is set, static `Authorization` headers on the same entry
+are ignored by the runtime. `identity: "per-requester"` additionally
+requires `gateway.publicOrigin` in the OpenClaw config (set it via a
+spec config entry) so the OAuth callback URL is reachable.
+
 ### Worked examples
 
 - `templates/spec.example.json`: one entry per feature, annotated by shape.

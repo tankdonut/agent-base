@@ -67,6 +67,18 @@ func Logs(r Runner, engine string, args []string) error {
 	return runArgv(r, nil, composeArgv(engine, false, verb...)...)
 }
 
+// Mcp passes args to `openclaw mcp` inside the running agent container
+// (login/logout/status/doctor/…). Stdio is inherited, so interactive
+// flows — the OAuth login URL print and the --code paste-back — work
+// verbatim against the pinned CLI.
+func Mcp(r Runner, engine string, args []string) error {
+	if r == nil {
+		return errNilRunner
+	}
+	verb := append([]string{"exec", "agent", "openclaw", "mcp"}, args...)
+	return runArgv(r, nil, composeArgv(engine, false, verb...)...)
+}
+
 // BuildImages builds the project image(s).
 func BuildImages(r Runner, engine string) error {
 	if r == nil {
