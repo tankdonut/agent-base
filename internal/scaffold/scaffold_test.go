@@ -10,31 +10,21 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/tankdonut/agent-base/internal/templates"
 )
 
-// goldenPaths is the exact file manifest `init` must produce.
-var goldenPaths = []string{
-	".agentctl.yaml",
-	".github/workflows/ci.yml",
-	".gitignore",
-	".markdownlint-cli2.yaml",
-	".pre-commit-config.yaml",
-	"AGENTS.md",
-	"README.md",
-	"agent/.env.example",
-	"agent/Dockerfile",
-	"agent/automations/daily-briefing.md",
-	"agent/skills/.gitkeep",
-	"agent/spec.json",
-	"agent/workspace/AGENTS.md",
-	"agent/workspace/MEMORY.md",
-	"agent/workspace/SOUL.md",
-	"agent/workspace/USER.md",
-	"compose.dev.yml",
-	"compose.yml",
-	"knowledge/content/index.md",
-	"make.sh",
-	"renovate.json",
+// The golden manifest lives in internal/templates (templates_test
+// pins Paths() against the embedded FS); scaffold tests derive from it
+// so adding a template file needs one edit, not three.
+func goldenPaths(t *testing.T) []string {
+	t.Helper()
+	paths, err := templates.Paths()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sort.Strings(paths)
+	return paths
 }
 
 func validConfig(dir string) Config {
@@ -116,9 +106,10 @@ func TestRunGoldenTree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
+	want := goldenPaths(t)
 	sort.Strings(created)
-	if !reflect.DeepEqual(created, goldenPaths) {
-		t.Fatalf("created paths mismatch:\n got  %v\n want %v", created, goldenPaths)
+	if !reflect.DeepEqual(created, want) {
+		t.Fatalf("created paths mismatch:\n got  %v\n want %v", created, want)
 	}
 	var found []string
 	err = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
@@ -157,8 +148,8 @@ func TestRunGoldenTree(t *testing.T) {
 		t.Fatalf("walk: %v", err)
 	}
 	sort.Strings(found)
-	if !reflect.DeepEqual(found, goldenPaths) {
-		t.Fatalf("on-disk tree mismatch:\n got  %v\n want %v", found, goldenPaths)
+	if !reflect.DeepEqual(found, want) {
+		t.Fatalf("on-disk tree mismatch:\n got  %v\n want %v", found, want)
 	}
 }
 
