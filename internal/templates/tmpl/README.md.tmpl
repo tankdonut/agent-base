@@ -30,7 +30,7 @@ agentctl dev            # dev overlay: bind-mounted seed content, no rebuild
 
 `./make.sh <command>` works as a shim for the same commands.
 
-Gateway: <http://localhost:18789/healthz> — loopback-only,
+Gateway: <http://localhost:{{.GatewayPort}}/healthz> — loopback-only,
 token-authenticated when OPENCLAW_GATEWAY_TOKEN is set.
 
 ## Structure
