@@ -19,6 +19,16 @@ const (
 // same-day run suffix (.N).
 var baseTagRe = regexp.MustCompile(`^\d{4}\.\d{2}\.\d{2}(\.\d+)?$`)
 
+// projectSafeRe matches project names that are safe as compose volume
+// identifiers ("{{.ProjectName}}-agent-data" is rendered unquoted).
+var projectSafeRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`)
+
+// jsonUnsafe reports runes that cannot be safely interpolated into the
+// JSON string literals of agent/spec.json.
+func jsonUnsafe(r rune) bool {
+	return r == '"' || r == '\\' || r == '`' || r < 0x20 || r == 0x7f
+}
+
 // Config is the complete `agentctl init` configuration. The first six
 // fields form the template surface; the rest controls scaffolding
 // behavior and is never visible to templates.
@@ -56,14 +66,23 @@ func (c Config) Validate() error {
 	if c.ProjectName == "" || c.ProjectName == "." || c.ProjectName == "/" {
 		return fmt.Errorf("cannot derive a project name from the target directory")
 	}
+	if !projectSafeRe.MatchString(c.ProjectName) {
+		return fmt.Errorf("project name %q must start with a letter or digit and contain only letters, digits, dot, underscore, or dash (it is rendered into compose volume names)", c.ProjectName)
+	}
 	if c.AgentName == "" {
 		return fmt.Errorf("--agent-name is empty")
+	}
+	if strings.ContainsFunc(c.AgentName, jsonUnsafe) {
+		return fmt.Errorf("--agent-name %q must not contain quotes, backslashes, backticks, or control characters (it is rendered into spec.json)", c.AgentName)
 	}
 	if !baseTagRe.MatchString(c.BaseTag) {
 		return fmt.Errorf("--base-tag %q must match YYYY.MM.DD[.N]", c.BaseTag)
 	}
 	if c.Model == "" {
 		return fmt.Errorf("--model is empty")
+	}
+	if strings.ContainsFunc(c.Model, jsonUnsafe) {
+		return fmt.Errorf("--model %q must not contain quotes, backslashes, backticks, or control characters (it is rendered into spec.json)", c.Model)
 	}
 	if c.GatewayPort < 1 || c.GatewayPort > 65535 {
 		return fmt.Errorf("--gateway-port %d out of range 1-65535", c.GatewayPort)
