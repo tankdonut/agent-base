@@ -329,10 +329,49 @@ WantedBy=multi-user.target
 
 ## Multi-agent on one host
 
-One compose project per agent: distinct `COMPOSE_PROJECT_NAME` (which
-namespaces the volumes) and a distinct `AGENT_GATEWAY_PORT` host bind per
-agent. Nothing is shared — by design, agents are not each other's trust
-domain. The container-internal port stays 18789; only the host bind moves.
+One compose project per agent, nothing shared — by design, agents are not
+each other's trust domain. Exactly two resources must be unique
+host-wide; everything else derives from them.
+
+| Resource | How it stays unique |
+| --- | --- |
+| Compose project name | The scaffolded `compose.yml` pins a top-level `name:` (the lowercased project name); it prefixes the containers, volumes, and `agent-net` network, and keeps them stable across directory renames. Hand-rolled stacks get the same by setting `name:` explicitly (or exporting `COMPOSE_PROJECT_NAME`). |
+| Host gateway bind | A distinct `AGENT_GATEWAY_PORT` per agent, in each project's `.env`. The container-internal port stays 18789; only the host bind moves. |
+
+`agentctl up`/`dev` probe the resolved loopback port before starting and
+warn when it is already bound — either this stack is already up (ignore)
+or another agent owns the port and the new one needs its own
+`AGENT_GATEWAY_PORT`.
+
+The rest of the playbook:
+
+- **Reverse proxy:** one site block per agent domain, each forwarding to
+  its agent's loopback port:
+
+  ```caddyfile
+  freya.example.com {
+      reverse_proxy 127.0.0.1:18789
+  }
+  mimir.example.com {
+      reverse_proxy 127.0.0.1:18790
+  }
+  ```
+
+- **Watchdog:** scope the restart filter per project —
+  `docker ps -q -f health=unhealthy -f name=^<project>-agent` — or run
+  one timer per agent ([watchdog](#when-healthy-stays-down-watchdog)).
+- **systemd:** one `<project>-agent.service` per compose project
+  ([systemd integration](#systemd-integration-optional)).
+- **Resources:** keep the sum of all agents' `deploy.resources.limits`
+  below host RAM; each agent keeps its own ceiling.
+- **Backups:** volumes are per-project (`<project>_agent-data`,
+  `<project>_agent-backups`); the [snapshot
+  procedure](#backups-and-restore) runs unchanged, once per project.
+- **Re-scaffolding over an older project:** project-name pinning changed
+  real volume names from `<dir>_<project>-agent-data` to
+  `<project>_agent-data`. After `agentctl init --force` + `up`, either
+  copy the old volume's contents into the new one or keep the previous
+  compose.yml — an empty new volume silently re-runs first boot.
 
 ## Alternative platforms
 
