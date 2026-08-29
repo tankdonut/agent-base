@@ -98,11 +98,14 @@ func Rebuild(r Runner, engine string, services []string) error {
 	return runArgv(r, nil, composeArgv(engine, false, recreate...)...)
 }
 
-// Update fast-forwards the project repo, then rebuilds and recreates
-// the whole stack.
+// Update gates on agent/.env (its rebuild ends in up -d), fast-forwards
+// the project repo, then rebuilds and recreates the whole stack.
 func Update(r Runner, engine, root string) error {
 	if r == nil {
 		return errNilRunner
+	}
+	if err := requireEnvFile(root); err != nil {
+		return err
 	}
 	if err := runArgv(r, nil, "git", "pull", "--ff-only"); err != nil {
 		return fmt.Errorf("git pull: %w", err)

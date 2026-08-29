@@ -80,8 +80,19 @@ func TestUpGatesOnEnvFile(t *testing.T) {
 	}
 }
 
+func TestUpdateGatesOnEnvFile(t *testing.T) {
+	root := writeProject(t, map[string]string{"agent/spec.json": fixtureSpec}) // no agent/.env
+	r := newFakeRunner("podman")
+	if err := Update(r, "podman", root); err == nil || !strings.Contains(err.Error(), "secrets init") {
+		t.Fatalf("Update without agent/.env: err = %v, want gate error mentioning secrets init", err)
+	}
+	if len(r.calls) != 0 {
+		t.Errorf("gate failure must not exec anything, got %v", r.calls)
+	}
+}
+
 func TestUpdatePullFailureStopsRebuild(t *testing.T) {
-	root := writeProject(t, map[string]string{"agent/spec.json": fixtureSpec})
+	root := writeProject(t, map[string]string{"agent/spec.json": fixtureSpec, "agent/.env": "ZAI_API_KEY=x\n"})
 	r := newFakeRunner("podman")
 	r.failArgv = [][]string{{"git", "pull", "--ff-only"}}
 	if err := Update(r, "podman", root); err == nil || !strings.Contains(err.Error(), "git pull") {
