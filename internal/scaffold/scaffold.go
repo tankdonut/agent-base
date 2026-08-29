@@ -103,6 +103,11 @@ func renderFile(fsys fs.FS, target, rel string, data templateData) error {
 		out = append(out, '\n')
 	}
 	dest := filepath.Join(target, filepath.FromSlash(rel))
+	// --force must never write through a symlink planted at a manifest
+	// path (WriteFile follows symlinks); refuse anything non-regular.
+	if fi, err := os.Lstat(dest); err == nil && !fi.Mode().IsRegular() {
+		return fmt.Errorf("%s exists and is not a regular file — remove it and re-run", dest)
+	}
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 		return err
 	}

@@ -296,6 +296,29 @@ func TestRunForceOverwrites(t *testing.T) {
 	}
 }
 
+func TestRunForceRefusesSymlinkAtManifestPath(t *testing.T) {
+	dir := t.TempDir()
+	outside := filepath.Join(dir, "outside.txt")
+	if err := os.WriteFile(outside, []byte("safe"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("outside.txt", filepath.Join(dir, "make.sh")); err != nil {
+		t.Fatal(err)
+	}
+	cfg := validConfig(dir)
+	cfg.Force = true
+	_, err := Run(cfg)
+	if err == nil || !strings.Contains(err.Error(), "not a regular file") {
+		t.Fatalf("Run() = %v, want non-regular-file refusal", err)
+	}
+	if fi, statErr := os.Lstat(filepath.Join(dir, "make.sh")); statErr != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("make.sh must remain a symlink, got fi=%v err=%v", fi, statErr)
+	}
+	if b, err := os.ReadFile(outside); err != nil || string(b) != "safe" {
+		t.Errorf("symlink target was overwritten through the link: %q, %v", b, err)
+	}
+}
+
 func TestRunGitInit(t *testing.T) {
 	dir := t.TempDir()
 	cfg := validConfig(dir)
