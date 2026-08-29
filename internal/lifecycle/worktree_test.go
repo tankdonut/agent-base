@@ -74,6 +74,37 @@ func TestWorktreeCreateRefusesRegularFileAtLink(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "not a symlink") {
 		t.Fatalf("err = %v, want not-a-symlink refusal", err)
 	}
+	// The worktree was already added, so the error must teach the cleanup.
+	if !strings.Contains(err.Error(), "git worktree remove") {
+		t.Fatalf("err = %v, want orphan-worktree cleanup hint", err)
+	}
+}
+
+func TestWorktreeRejectsHostileBranchNames(t *testing.T) {
+	tests := []struct{ branch, want string }{
+		{"../evil", "plain branch name"},
+		{"-exec", "must not start with '-'"},
+		{"/abs/branch", "plain branch name"},
+		{"", "empty"},
+	}
+	for _, tt := range tests {
+		root := writeProject(t, map[string]string{"agent/spec.json": "{}", "agent/.env": "X=1\n"})
+		r := newFakeRunner("git")
+		err := WorktreeCreate(r, root, tt.branch)
+		if err == nil || !strings.Contains(err.Error(), tt.want) {
+			t.Fatalf("create(%q) err = %v, want %q", tt.branch, err, tt.want)
+		}
+		if len(r.calls) != 0 {
+			t.Errorf("create(%q) ran git before validating: %v", tt.branch, r.calls)
+		}
+		err = WorktreeRemove(r, root, tt.branch)
+		if err == nil || !strings.Contains(err.Error(), tt.want) {
+			t.Fatalf("remove(%q) err = %v, want %q", tt.branch, err, tt.want)
+		}
+		if len(r.calls) != 0 {
+			t.Errorf("remove(%q) ran git before validating: %v", tt.branch, r.calls)
+		}
+	}
 }
 
 func TestWorktreeRemove(t *testing.T) {
