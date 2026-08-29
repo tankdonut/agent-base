@@ -232,6 +232,49 @@ func TestRunRenderedJSONParses(t *testing.T) {
 	}
 }
 
+// TestRunTelegramAllowlistPairIsCoGuarded pins the invariant that the
+// scaffolded telegram allowlist never arms dmPolicy without allowFrom
+// (docs/standard-agent.md "config entries"): both entries carry the same
+// TELEGRAM_ALLOWED_USERS guard, so an unset variable leaves OpenClaw's
+// default DM policy in place instead of an allowlist with an empty list
+// (which drops every DM).
+func TestRunTelegramAllowlistPairIsCoGuarded(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := Run(validConfig(dir)); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	b, err := os.ReadFile(filepath.Join(dir, "agent", "spec.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var spec struct {
+		Config []struct {
+			Path  string   `json:"path"`
+			IfEnv []string `json:"if_env"`
+		} `json:"config"`
+	}
+	if err := json.Unmarshal(b, &spec); err != nil {
+		t.Fatalf("spec.json does not parse: %v", err)
+	}
+	wantGuard := []string{"TELEGRAM_ALLOWED_USERS"}
+	guards := make(map[string][]string)
+	for _, entry := range spec.Config {
+		guards[entry.Path] = entry.IfEnv
+	}
+	for _, path := range []string{
+		"channels.telegram.dmPolicy",
+		"channels.telegram.allowFrom",
+	} {
+		guard, ok := guards[path]
+		if !ok {
+			t.Fatalf("%s missing from scaffolded spec (telegram variant)", path)
+		}
+		if !reflect.DeepEqual(guard, wantGuard) {
+			t.Errorf("%s if_env = %v, want %v", path, guard, wantGuard)
+		}
+	}
+}
+
 func TestRunNoTelegramVariant(t *testing.T) {
 	dir := t.TempDir()
 	cfg := validConfig(dir)

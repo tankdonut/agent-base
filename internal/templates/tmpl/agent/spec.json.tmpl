@@ -12,7 +12,8 @@
   "config": [{{if .Telegram}}
     {
       "path": "channels.telegram.dmPolicy",
-      "value": "allowlist"
+      "value": "allowlist",
+      "if_env": ["TELEGRAM_ALLOWED_USERS"]
     },
     {
       "path": "channels.telegram.allowFrom",

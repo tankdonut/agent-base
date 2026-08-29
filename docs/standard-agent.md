@@ -234,7 +234,14 @@ from the resolved value:
   empty result is a load error naming the referenced env var(s); a
   configured CSV that yields nothing is a misconfiguration, not a skip.
 - `if_env`: the entry is applied only when every listed variable is
-  present. An unsatisfied guard is a logged skip, never an error.
+  present. An unsatisfied guard is a logged skip, never an error. Guards
+  must pair the knobs they make optional: `channels.telegram.dmPolicy`
+  takes `if_env: [TELEGRAM_ALLOWED_USERS]` alongside
+  `channels.telegram.allowFrom`, so an unset variable leaves OpenClaw's
+  default DM policy in place instead of an allowlist with an empty list
+  (which drops every DM). A spec that instead *requires* the variable
+  (unguarded `allowFrom`) fails closed at load — both shapes are safe;
+  the broken one is the mix.
 
 On warm volumes the entrypoint compares each desired value against
 `openclaw.json` directly and shells out only for keys that actually drift,
