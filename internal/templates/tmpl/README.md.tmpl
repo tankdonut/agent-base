@@ -11,7 +11,11 @@ automations.
 Install agentctl once (the agent-base operator CLI):
 
 ```sh
-go install github.com/tankdonut/agent-base/cmd/agentctl@latest
+# release binary (pick your arch; checksums: agentctl-SHA256SUMS)
+curl -fsSL -o ~/bin/agentctl \
+  https://github.com/tankdonut/agent-base/releases/download/{{.BaseTag}}/agentctl-linux-amd64
+# or build from source
+go install ./agent-base/cmd/agentctl   # from a clone of tankdonut/agent-base
 ```
 
 Then:
