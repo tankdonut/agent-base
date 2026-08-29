@@ -15,6 +15,8 @@ lifecycle, boot sequence, extension checklist) lives in
 | Path | Purpose |
 | ----- | ------- |
 | `container/` | Base-image Python modules (entrypoint, spec loader, automations reconciler) + unittest suites |
+| `cmd/` | `agentctl` CLI — scaffolds new downstream agent repos |
+| `internal/` | agentctl scaffold engine + embedded templates |
 | `templates/` | Project-facing templates: spec example, env contract, compose snippets, workspace skeletons |
 | `docs/` | The standard-agent contract + migration guides |
 | `scripts/` | Smoke harness |
@@ -26,3 +28,18 @@ lifecycle, boot sequence, extension checklist) lives in
 ./make.sh test    # python3 -m unittest discover container
 ./make.sh lint    # pre-commit run --all-files
 ```
+
+## agentctl
+
+`agentctl` is the operator CLI for downstream agent projects — scaffolding is
+its first feature:
+
+```sh
+go run ./cmd/agentctl init ../my-agent   # scaffold a new agent repo
+go install ./cmd/agentctl                # then, in any project:
+agentctl up                              # lifecycle: dev/down/logs/rebuild/update
+agentctl secrets init                    # secrets: init/check/edit
+agentctl validate                        # spec gate via the base image
+```
+
+See `agentctl help` for the full command surface.

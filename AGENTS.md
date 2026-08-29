@@ -6,6 +6,9 @@
 | ----- | ------- |
 | All tests | `./make.sh test` |
 | One module | `python3 -m unittest discover -s container -p "test_spec.py"` |
+| agentctl (Go) tests | `./make.sh agentctl-test` |
+| agentctl build/install | `./make.sh agentctl-build` / `./make.sh agentctl-install` |
+| Run agentctl without installing | `./make.sh agentctl <command> [flags]` (forwards to `go run`) |
 | Lint (ruff, ruff-format, hadolint, markdownlint) | `./make.sh lint` |
 | Image smoke (CI + local; podman or docker, `SMOKE_ENGINE` override) | `./make.sh smoke` |
 | Build image (date tag default) | `./make.sh build` |
@@ -16,11 +19,14 @@
 ## Structure
 
 ```text
+cmd/         agentctl CLI — operator tool for downstream agent repos (scaffold first)
 container/   Image contract: entrypoint.py (boot), spec.py (loader), seed_automations.py
              (cron reconciler), Dockerfile, colocated test_*.py (never shipped)
 docs/        standard-agent.md — the whole agent contract + Freya/Mimir migration guides
 fixtures/    freya-like/, mimir-like/ — boot-tested spec+automations trees; input for
              unit FixtureBoots and smoke; consult, don't copy whole
+internal/    agentctl engine: cli (cobra), lifecycle (cobra-free), scaffold,
+             embedded templates (templates/tmpl)
 scripts/     smoke.sh (shim harness), contract-test.sh + contract/ (real-CLI drift
              gate: emitted-flag cross-check vs --help + clean shim-free boot),
              shim/openclaw (fake CLI; asserts via invocation log)
@@ -38,6 +44,7 @@ templates/   spec.example.json (golden), env.example, compose snippets, workspac
 | Env var contract (base vs project) | `templates/env.example`, `docs/standard-agent.md#environment-contract` |
 | Smoke failure | `logs/smoke-*.log` (kept on failure, deleted on success) + `scripts/smoke.sh` |
 | Migration guides | `docs/standard-agent.md#migrations` |
+| Scaffold a new downstream agent repo | `cmd/agentctl` — `go run ./cmd/agentctl init <dir>` |
 
 ## Code Map
 
@@ -63,6 +70,7 @@ Symbols relative to `container/`.
 ## Key Conventions
 
 - Python 3.11 floor (bookworm image), stdlib only; no 3.12+ syntax; full type annotations (convention — no mypy gate); `unittest` + `mock`, never pytest. Stdlib-only is enforced by construction: the image installs no pip; `.ruff.toml` targets py311, line 100; CI matrix is 3.11 (floor) + 3.14 (drift guard).
+- Go module at the repo root (`agentctl`, spf13/cobra + viper): operator CLI for downstream projects (scaffold + lifecycle + secrets + validate); scaffold templates embedded under `internal/templates/tmpl`; lifecycle logic stays cobra-free in `internal/lifecycle` behind a Runner interface.
 - Loader modules fail closed: unknown key/token, ambiguous shape → abort loudly; never a silent empty string or skip.
 - Secrets flow only through `{env:VAR}` spec refs and env vars; resolved values must never reach logs — warnings name keys/env vars, never values (locked by SecretsCanary tests).
 - `container/` files are the image contract; renaming/moving any of them changes downstream projects' Dockerfiles — update `docs/standard-agent.md` in the same commit. Modules import each other top-level (no package, no `__init__.py`); the Dockerfile COPYs exactly the three modules flat to `/opt/agent`.
