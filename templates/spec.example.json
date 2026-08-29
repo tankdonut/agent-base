@@ -60,6 +60,12 @@
         "Authorization": "Bearer {env:SENTIMENT_API_KEY}"
       },
       "if_env": ["SENTIMENT_API_KEY"]
+    },
+    {
+      "name": "docs",
+      "url": "https://mcp.example.com/mcp",
+      "auth": "oauth",
+      "oauth": { "scope": "docs.read" }
     }
   ],
   "plugins": [

@@ -82,6 +82,7 @@ from pathlib import Path
 import seed_automations
 from spec import (
     ConfigEntry,
+    RemoteMcpServer,
     Spec,
     SpecError,
     load_spec,
@@ -469,6 +470,12 @@ def reconcile_mcp(spec: Spec, env: Mapping[str, str]) -> None:
                 warn(f"mcp add failed: {server.name}")
         for key, value in server.passthrough_config.items():
             config_set(f"mcp.servers.{server.name}.{key}", json.dumps(value), "--strict-json")
+        if isinstance(server, RemoteMcpServer) and server.auth == "oauth":
+            config_set(f"mcp.servers.{server.name}.auth", json.dumps(server.auth), "--strict-json")
+            if server.oauth:
+                config_set(
+                    f"mcp.servers.{server.name}.oauth", json.dumps(server.oauth), "--strict-json"
+                )
 
     if spec.features.mcp_prune:
         _reconcile_managed_mcp(spec)

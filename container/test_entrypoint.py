@@ -1750,6 +1750,57 @@ class McpPassThroughApply(EntrypointTestCase):
         self.assertEqual([], [p for p in paths if p.startswith("mcp.servers.opt.")])
 
 
+class McpOAuthApply(EntrypointTestCase):
+    """L2: first-class auth="oauth" + oauth metadata land as
+    mcp.servers.<name>.auth / .oauth strict-json config sets after
+    registration; guarded servers apply nothing when the guard fails."""
+
+    SPEC: dict[str, object] = {
+        **copy.deepcopy(MINIMAL_SPEC),
+        "mcp_servers": [
+            {
+                "name": "docs",
+                "url": "https://mcp.example.com/mcp",
+                "auth": "oauth",
+                "oauth": {"identity": "shared", "scope": "docs.read"},
+            },
+            {
+                "name": "opt",
+                "url": "https://mcp.example.com/o",
+                "auth": "oauth",
+                "if_env": ["OPT_TOKEN"],
+            },
+        ],
+    }
+
+    def test_auth_and_metadata_applied_as_config_sets(self) -> None:
+        spec = self.load_spec_with(self.SPEC, {"OPT_TOKEN": "tok-1"})
+        env = dict(os.environ)
+        env["OPT_TOKEN"] = "tok-1"
+        self.capture(lambda: entrypoint.reconcile_mcp(spec, env))
+        by_path = {
+            c[3]: c[4]
+            for c in self.calls_with("openclaw", "config", "set")
+            if c[3].startswith("mcp.servers.")
+        }
+        self.assertEqual('"oauth"', by_path.get("mcp.servers.docs.auth"))
+        self.assertEqual(
+            '{"identity": "shared", "scope": "docs.read"}',
+            by_path.get("mcp.servers.docs.oauth"),
+        )
+        self.assertEqual('"oauth"', by_path.get("mcp.servers.opt.auth"))
+        self.assertNotIn("mcp.servers.opt.oauth", by_path)
+        for call in self.calls_with("openclaw", "config", "set"):
+            if call[3] in ("mcp.servers.docs.auth", "mcp.servers.docs.oauth"):
+                self.assertIn("--strict-json", call)
+
+    def test_guard_unsatisfied_applies_no_oauth(self) -> None:
+        spec = self.load_spec_with(self.SPEC)
+        self.capture(lambda: entrypoint.reconcile_mcp(spec, os.environ))
+        paths = [c[3] for c in self.calls_with("openclaw", "config", "set")]
+        self.assertEqual([], [p for p in paths if p.startswith("mcp.servers.opt.")])
+
+
 class FeaturesGatewayAuth(EntrypointTestCase):
     """X6: features.gateway_auth replaces the gateway-auth + secrets-provider
     pair both consumers hand-rolled. The base emits the pair (guarded on
