@@ -3,10 +3,7 @@
 package scaffold
 
 import (
-	"flag"
 	"fmt"
-	"io"
-	"path/filepath"
 	"regexp"
 	"strings"
 )
@@ -36,48 +33,6 @@ type Config struct {
 	TargetDir string // absolute path to the scaffold destination
 	GitInit   bool   // run `git init` in the target after scaffolding
 	Force     bool   // overwrite an existing non-empty target directory
-}
-
-// ParseFlags parses the args of the init subcommand (excluding "init"
-// itself). Flag errors and wrong positional counts are usage errors.
-func ParseFlags(args []string) (Config, error) {
-	var cfg Config
-	fs := flag.NewFlagSet("init", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-	fs.StringVar(&cfg.AgentName, "agent-name", "", "agent name (default: title-cased dir basename)")
-	fs.StringVar(&cfg.BaseTag, "base-tag", DefaultBaseTag, "agent-base image tag")
-	fs.StringVar(&cfg.Model, "model", DefaultModel, "fallback and automations model")
-	fs.IntVar(&cfg.GatewayPort, "gateway-port", DefaultGatewayPort, "host gateway port")
-	fs.BoolVar(&cfg.Telegram, "telegram", true, "wire the telegram channel")
-	fs.BoolVar(&cfg.GitInit, "git-init", false, "run git init in the target after scaffolding")
-	fs.BoolVar(&cfg.Force, "force", false, "overwrite an existing non-empty target directory")
-	// flag.Parse stops at the first positional, but the CLI contract is
-	// `init <dir> [flags]`: keep parsing after each positional so flags
-	// work on either side of the directory.
-	if err := fs.Parse(args); err != nil {
-		return cfg, err
-	}
-	var positional []string
-	for fs.NArg() > 0 {
-		positional = append(positional, fs.Arg(0))
-		if err := fs.Parse(fs.Args()[1:]); err != nil {
-			return cfg, err
-		}
-	}
-	if len(positional) != 1 {
-		return cfg, fmt.Errorf("init takes exactly one target directory, got %d", len(positional))
-	}
-	dir := positional[0]
-	abs, err := filepath.Abs(dir)
-	if err != nil {
-		return cfg, fmt.Errorf("resolving target dir: %w", err)
-	}
-	cfg.TargetDir = abs
-	cfg.ProjectName = filepath.Base(abs)
-	if cfg.AgentName == "" {
-		cfg.AgentName = DefaultAgentName(cfg.ProjectName)
-	}
-	return cfg, nil
 }
 
 // DefaultAgentName title-cases a project directory name: "my-agent" and

@@ -102,56 +102,6 @@ func TestDefaultAgentName(t *testing.T) {
 	}
 }
 
-func TestParseFlags(t *testing.T) {
-	t.Run("defaults", func(t *testing.T) {
-		dir := t.TempDir()
-		cfg, err := ParseFlags([]string{dir})
-		if err != nil {
-			t.Fatalf("ParseFlags: %v", err)
-		}
-		if cfg.BaseTag != DefaultBaseTag || cfg.Model != DefaultModel || cfg.GatewayPort != DefaultGatewayPort {
-			t.Errorf("defaults not applied: %+v", cfg)
-		}
-		if !cfg.Telegram || cfg.GitInit || cfg.Force {
-			t.Errorf("bool defaults not applied: %+v", cfg)
-		}
-		if cfg.AgentName != DefaultAgentName(filepath.Base(dir)) {
-			t.Errorf("agent name %q, want title-cased default %q", cfg.AgentName, DefaultAgentName(filepath.Base(dir)))
-		}
-	})
-	t.Run("explicit flags", func(t *testing.T) {
-		cfg, err := ParseFlags([]string{
-			"/tmp/whatever", "--agent-name", "Bot", "--base-tag", "2026.01.02",
-			"--model", "m", "--gateway-port", "8080", "--telegram=false",
-			"--git-init", "--force",
-		})
-		if err != nil {
-			t.Fatalf("ParseFlags: %v", err)
-		}
-		if cfg.AgentName != "Bot" || cfg.BaseTag != "2026.01.02" || cfg.Model != "m" ||
-			cfg.GatewayPort != 8080 || cfg.Telegram || !cfg.GitInit || !cfg.Force {
-			t.Errorf("flags not applied: %+v", cfg)
-		}
-	})
-	tests := []struct {
-		name string
-		args []string
-		want string
-	}{
-		{"no target dir", nil, "exactly one"},
-		{"two target dirs", []string{"a", "b"}, "exactly one"},
-		{"unknown flag", []string{"dir", "--nope"}, "not defined"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			_, err := ParseFlags(tt.args)
-			if err == nil || !strings.Contains(err.Error(), tt.want) {
-				t.Fatalf("ParseFlags(%v) = %v, want error containing %q", tt.args, err, tt.want)
-			}
-		})
-	}
-}
-
 func TestRunGoldenTree(t *testing.T) {
 	dir := t.TempDir()
 	created, err := Run(validConfig(dir))
