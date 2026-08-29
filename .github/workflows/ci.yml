@@ -38,8 +38,9 @@ jobs:
         run: python3 -m unittest discover -s container -v
 
   agentctl:
-    # Go scaffolder quality gate (module at repo root); mirrors the
-    # local pre-commit go-fmt/go-vet hooks.
+    # Go operator-CLI quality gate (module at repo root); mirrors the
+    # local pre-commit go-fmt/go-vet hooks and gates the release chain
+    # via the image-* jobs' needs.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -110,7 +111,7 @@ jobs:
   # and cannot express per-arch runners; the ghcr-login composite action
   # is still composed below.
   image-amd64:
-    needs: [lint, test, contract, smoke]
+    needs: [agentctl, lint, test, contract, smoke]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -131,7 +132,7 @@ jobs:
           if [ "${GITHUB_REF_TYPE}" = "tag" ]; then docker push "$IMAGE:${GITHUB_REF_NAME}-amd64"; fi
 
   image-arm64:
-    needs: [lint, test, contract, smoke]
+    needs: [agentctl, lint, test, contract, smoke]
     # Free native arm64 runners are available to public repos.
     runs-on: ubuntu-24.04-arm
     permissions:
@@ -284,6 +285,10 @@ jobs:
               echo
               echo "Verify provenance: \`gh attestation verify oci://ghcr.io/tankdonut/agent-base:$TAG@$DIGEST -R $GITHUB_REPOSITORY\`"
             fi
+            echo
+            echo "### agentctl"
+            echo
+            echo "Operator CLI for downstream agent projects — binaries: \`agentctl-linux-amd64\`, \`agentctl-linux-arm64\` (checksums: \`agentctl-SHA256SUMS\`)."
           } > release-notes.md
           cat release-notes.md
 
@@ -299,6 +304,30 @@ jobs:
           format: spdx-json
           output-file: sbom.spdx.json
 
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+
+      - name: Build agentctl release binaries
+        # Pure Go — cross-compiles from one runner for both image
+        # architectures. The version check enforces the pre-tag bump
+        # convention: agentctl's date-versioned constant must equal the
+        # tag being released, or the constants drifted and the release
+        # must fix-forward with a .N suffix.
+        run: |
+          for arch in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath -ldflags "-s -w" \
+              -o "dist/agentctl-linux-$arch" ./cmd/agentctl
+          done
+          (cd dist && sha256sum agentctl-linux-* > agentctl-SHA256SUMS)
+          v=$(./dist/agentctl-linux-amd64 version | awk '{print $2}')
+          if [ "$v" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::agentctl version $v != tag $GITHUB_REF_NAME — bump internal/cli Version and scaffold DefaultBaseTag on main, then cut the next .N"
+            exit 1
+          fi
+          grep -Eq "DefaultBaseTag[[:space:]]+=[[:space:]]+\"$GITHUB_REF_NAME\"" internal/scaffold/config.go \
+            || { echo "::error::scaffold DefaultBaseTag != $GITHUB_REF_NAME — bump it with the internal/cli Version on main, then cut the next .N"; exit 1; }
+
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -310,4 +339,7 @@ jobs:
             --title "$GITHUB_REF_NAME" \
             --notes-file release-notes.md \
             --generate-notes
-          gh release upload "$GITHUB_REF_NAME" sbom.spdx.json
+          gh release upload "$GITHUB_REF_NAME" \
+            sbom.spdx.json \
+            dist/agentctl-linux-amd64 dist/agentctl-linux-arm64 \
+            dist/agentctl-SHA256SUMS
