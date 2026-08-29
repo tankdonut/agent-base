@@ -141,6 +141,43 @@ func TestSecretsInitMissingExample(t *testing.T) {
 	}
 }
 
+// TestSecretsCanary locks the secrets-handling contract the container
+// image enforces via its own canaries: a value planted in agent/.env
+// must never reach child argv or injected environments — compose reads
+// the env file itself, and validate substitutes dummies.
+func TestSecretsCanary(t *testing.T) {
+	const canary = "CANARY-7f3a9d1c-value"
+	root := writeProject(t, map[string]string{
+		"agent/spec.json":    fixtureSpec,
+		"agent/Dockerfile":   fixtureDockerfile,
+		"agent/.env.example": "#FALLBACK_MODEL=\n",
+		"agent/.env":         "FALLBACK_MODEL=m\nPROVIDER_KEY=" + canary + "\nTELEGRAM_ALLOWED_USERS=" + canary + "\nZAI_API_KEY=" + canary + "\nOPENCLAW_GATEWAY_TOKEN=" + canary + "\n",
+	})
+	r := newFakeRunner("podman", "git")
+	for _, fn := range []func() error{
+		func() error { return Up(r, "podman", root) },
+		func() error { return Dev(r, "podman", root) },
+		func() error { return Update(r, "podman", root) },
+		func() error { return Validate(r, "podman", root) },
+	} {
+		if err := fn(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i, call := range r.calls {
+		for _, arg := range call {
+			if strings.Contains(arg, canary) {
+				t.Fatalf("call %d argv leaks the agent/.env canary: %v", i, call)
+			}
+		}
+		for _, kv := range r.envs[i] {
+			if strings.Contains(kv, canary) {
+				t.Fatalf("call %d environment leaks the agent/.env canary: %s", i, kv)
+			}
+		}
+	}
+}
+
 func TestSecretsCheck(t *testing.T) {
 	tests := []struct {
 		name    string
