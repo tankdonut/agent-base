@@ -2,9 +2,12 @@
 # the thin project Dockerfile (agent/Dockerfile) over
 # ghcr.io/tankdonut/agent-base per docs/standard-agent.md Quick start.
 #
-# Named volumes cover every writable path the base needs ({data} at
-# /home/node/.openclaw, plus /backups for verified upgrade archives), so
-# the container root filesystem stays immutable.
+# The hardening below is ACTIVE, matching the agent-base production
+# baseline (agent-base templates/compose.prod.agent.yml;
+# docs/standard-agent.md "Deployment hardening"): named volumes cover
+# every writable path the base needs ({data} at /home/node/.openclaw,
+# plus /backups for verified upgrade archives), so the container root
+# filesystem stays immutable under read_only.
 
 services:
   agent:
@@ -16,13 +19,22 @@ services:
     # AGENT_SHUTDOWN_GRACE (600s default) or the engine SIGKILLs the
     # gateway process group mid-drain.
     stop_grace_period: 11m
-    # Rootless podman: SELinux MCS denials can hit the named volumes;
-    # disable labeling (rationale in agent-base
-    # templates/compose.prod.agent.yml).
+    # Hardening baseline: no privilege escalation, no Linux
+    # capabilities, and a read-only root filesystem (writable paths are
+    # the named volumes plus tmpfs /tmp).
     security_opt:
-      - label=disable
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    read_only: true
+    tmpfs:
+      - /tmp
     env_file:
       - agent/.env
+    # Dedicated network with nothing else on it: sibling containers must
+    # not share L2 with the gateway port (a bearer-auth-only surface). A
+    # host-process reverse proxy reaches it via the 127.0.0.1 bind below.
+    networks:
+      - agent-net
     volumes:
       - {{.ProjectName}}-agent-data:/home/node/.openclaw
       # Verified upgrade backups land here before any image-version
@@ -42,6 +54,28 @@ services:
       # starts; upgrade boots add a verified backup. Matches the image
       # HEALTHCHECK.
       start_period: 300s
+    # Resource ceiling: the pids limit blunts fork runaway from
+    # agent-spawned processes; keep the sum of service limits below
+    # host RAM.
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2g
+          pids: 512
+    # Rotate container logs host-side; json-file keeps `agentctl logs -f`
+    # working. Values are strings, not numbers.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    # Rootless podman: if SELinux MCS denials hit the named volumes, add
+    # `label=disable` under security_opt (rationale in agent-base
+    # templates/compose.agent.yml).
+
+networks:
+  agent-net: {}
 
 volumes:
   {{.ProjectName}}-agent-data:

@@ -162,6 +162,34 @@ func TestRunGoldenTree(t *testing.T) {
 	}
 }
 
+func TestRunComposeCarriesHardeningBaseline(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := Run(validConfig(dir)); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	b, err := os.ReadFile(filepath.Join(dir, "compose.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	compose := string(b)
+	for _, want := range []string{
+		"no-new-privileges:true",
+		"cap_drop: [ALL]",
+		"read_only: true",
+		"tmpfs:",
+		"agent-net",
+		"stop_grace_period: 11m",
+		"127.0.0.1:${AGENT_GATEWAY_PORT:-18789}:18789",
+	} {
+		if !strings.Contains(compose, want) {
+			t.Errorf("compose.yml lacks the prod hardening baseline entry %q", want)
+		}
+	}
+	if strings.Contains(compose, "security_opt:\n      - label=disable") {
+		t.Error("compose.yml activates label=disable instead of documenting it as a rootless-podman fallback")
+	}
+}
+
 func TestRunRenderedJSONParses(t *testing.T) {
 	for _, telegram := range []bool{true, false} {
 		dir := t.TempDir()
