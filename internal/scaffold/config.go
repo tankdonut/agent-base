@@ -10,7 +10,7 @@ import (
 
 // Init flag defaults.
 const (
-	DefaultBaseTag     = "2026.08.29.1"
+	DefaultBaseTag     = "2026.08.29.2"
 	DefaultModel       = "zai/glm-5.2"
 	DefaultGatewayPort = 18789
 )
