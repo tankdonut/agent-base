@@ -23,6 +23,15 @@ var baseTagRe = regexp.MustCompile(`^\d{4}\.\d{2}\.\d{2}(\.\d+)?$`)
 // identifiers ("{{.ProjectName}}-agent-data" is rendered unquoted).
 var projectSafeRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`)
 
+// ComposeProject derives the compose project name from a validated
+// project name: lowercased, dots mapped to dashes (compose project names
+// are [a-z0-9][a-z0-9_-]*). Distinct project names that collide after
+// sanitizing ("my.agent" vs "my-agent") share a resource namespace —
+// avoid such pairs when running several agents on one host.
+func ComposeProject(project string) string {
+	return strings.ReplaceAll(strings.ToLower(project), ".", "-")
+}
+
 // jsonUnsafe reports runes that cannot be safely interpolated into the
 // JSON string literals of agent/spec.json.
 func jsonUnsafe(r rune) bool {

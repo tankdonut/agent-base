@@ -9,6 +9,13 @@
 # plus /backups for verified upgrade archives), so the container root
 # filesystem stays immutable under read_only.
 
+# Pinned compose project name: every generated resource (containers,
+# volumes, the agent-net network) is prefixed with it, so the stack is
+# immune to directory renames and cannot collide with another agent
+# scaffolded from a different project on the same host. Real volume
+# names are <project>_agent-data / <project>_agent-backups.
+name: {{.ComposeProject}}
+
 services:
   agent:
     build:
@@ -36,10 +43,10 @@ services:
     networks:
       - agent-net
     volumes:
-      - {{.ProjectName}}-agent-data:/home/node/.openclaw
+      - agent-data:/home/node/.openclaw
       # Verified upgrade backups land here before any image-version
       # delta mutates a warm volume.
-      - {{.ProjectName}}-agent-backups:/backups
+      - agent-backups:/backups
     # Loopback-only bind; remote access goes through a TLS-terminating
     # reverse proxy (agent-base docs/deployment.md). AGENT_GATEWAY_PORT
     # is host-side compose interpolation and never enters the container.
@@ -78,5 +85,5 @@ networks:
   agent-net: {}
 
 volumes:
-  {{.ProjectName}}-agent-data:
-  {{.ProjectName}}-agent-backups:
+  agent-data:
+  agent-backups:

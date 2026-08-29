@@ -13,14 +13,16 @@ import (
 )
 
 // templateData is the complete template surface: templates may use ONLY
-// these fields. Keep in sync with the Config fields of the same names.
+// these fields. Keep in sync with the Config fields of the same names
+// (ComposeProject is derived from ProjectName via ComposeProject).
 type templateData struct {
-	ProjectName string
-	AgentName   string
-	BaseTag     string
-	Model       string
-	GatewayPort int
-	Telegram    bool
+	ProjectName    string
+	ComposeProject string
+	AgentName      string
+	BaseTag        string
+	Model          string
+	GatewayPort    int
+	Telegram       bool
 }
 
 // Run validates cfg, renders the embedded template tree into
@@ -36,12 +38,13 @@ func Run(cfg Config) ([]string, error) {
 		return nil, err
 	}
 	data := templateData{
-		ProjectName: cfg.ProjectName,
-		AgentName:   cfg.AgentName,
-		BaseTag:     cfg.BaseTag,
-		Model:       cfg.Model,
-		GatewayPort: cfg.GatewayPort,
-		Telegram:    cfg.Telegram,
+		ProjectName:    cfg.ProjectName,
+		ComposeProject: ComposeProject(cfg.ProjectName),
+		AgentName:      cfg.AgentName,
+		BaseTag:        cfg.BaseTag,
+		Model:          cfg.Model,
+		GatewayPort:    cfg.GatewayPort,
+		Telegram:       cfg.Telegram,
 	}
 
 	tmplFS := templates.FS()

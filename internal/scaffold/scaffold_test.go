@@ -153,9 +153,24 @@ func TestRunGoldenTree(t *testing.T) {
 	}
 }
 
+func TestComposeProject(t *testing.T) {
+	tests := []struct{ in, want string }{
+		{"my-agent", "my-agent"},
+		{"MyAgent", "myagent"},
+		{"my.agent", "my-agent"},
+		{"A1.b_2", "a1-b_2"},
+	}
+	for _, tt := range tests {
+		if got := ComposeProject(tt.in); got != tt.want {
+			t.Errorf("ComposeProject(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
 func TestRunComposeCarriesHardeningBaseline(t *testing.T) {
 	dir := t.TempDir()
-	if _, err := Run(validConfig(dir)); err != nil {
+	cfg := validConfig(dir)
+	if _, err := Run(cfg); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	b, err := os.ReadFile(filepath.Join(dir, "compose.yml"))
@@ -164,6 +179,7 @@ func TestRunComposeCarriesHardeningBaseline(t *testing.T) {
 	}
 	compose := string(b)
 	for _, want := range []string{
+		"name: " + ComposeProject(cfg.ProjectName),
 		"no-new-privileges:true",
 		"cap_drop: [ALL]",
 		"read_only: true",
@@ -171,6 +187,8 @@ func TestRunComposeCarriesHardeningBaseline(t *testing.T) {
 		"agent-net",
 		"stop_grace_period: 11m",
 		"127.0.0.1:${AGENT_GATEWAY_PORT:-18789}:18789",
+		"- agent-data:/home/node/.openclaw",
+		"- agent-backups:/backups",
 	} {
 		if !strings.Contains(compose, want) {
 			t.Errorf("compose.yml lacks the prod hardening baseline entry %q", want)

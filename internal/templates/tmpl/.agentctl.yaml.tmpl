@@ -4,5 +4,6 @@
 # engine: auto — podman when available, docker otherwise (or pin: podman | docker)
 #engine: auto
 
-# gateway_port: host port the gateway URL uses
+# gateway_port: host port the gateway URL uses (keep it distinct per
+# agent when several agents share one host)
 #gateway_port: {{.GatewayPort}}

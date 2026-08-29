@@ -14,6 +14,13 @@
 # Rootless Podman: if SELinux MCS denials hit the named volumes, add
 # `label=disable` under security_opt (rationale in compose.agent.yml).
 
+# Pinned compose project name: namespaces every generated resource
+# (containers, volumes, the agent-net network) so the stack is immune to
+# directory renames and cannot collide with another agent on the same
+# host. Set one <project> per agent host-wide; real volume names become
+# <project>_agent-data / <project>_agent-backups.
+name: <project>
+
 services:
   agent:
     build:
@@ -35,11 +42,11 @@ services:
     networks:
       - agent-net
     volumes:
-      - <project>-agent-data:/home/node/.openclaw
+      - agent-data:/home/node/.openclaw
       # Upgrade backups land here: a verified archive is written before any
       # image-version delta mutates a warm volume. Without this volume the
       # archives vanish with the container.
-      - <project>-agent-backups:/backups
+      - agent-backups:/backups
     # Loopback-only bind; remote access goes through a TLS-terminating
     # reverse proxy (docs/deployment.md). AGENT_GATEWAY_PORT is host-side
     # compose interpolation (templates/env.example section 4), and never
@@ -83,5 +90,5 @@ networks:
   agent-net: {}
 
 volumes:
-  <project>-agent-data:
-  <project>-agent-backups:
+  agent-data:
+  agent-backups:

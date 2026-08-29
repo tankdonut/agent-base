@@ -11,24 +11,27 @@ import (
 )
 
 // data mirrors the scaffold template surface (scaffold.Config's first
-// six fields); templates may reference nothing else.
+// six fields plus the derived ComposeProject); templates may reference
+// nothing else.
 type data struct {
-	ProjectName string
-	AgentName   string
-	BaseTag     string
-	Model       string
-	GatewayPort int
-	Telegram    bool
+	ProjectName    string
+	ComposeProject string
+	AgentName      string
+	BaseTag        string
+	Model          string
+	GatewayPort    int
+	Telegram       bool
 }
 
 func sampleData(telegram bool) data {
 	return data{
-		ProjectName: "my-agent",
-		AgentName:   "My Agent",
-		BaseTag:     "2026.08.28",
-		Model:       "zai/glm-5.2",
-		GatewayPort: 18789,
-		Telegram:    telegram,
+		ProjectName:    "my-agent",
+		ComposeProject: "my-agent",
+		AgentName:      "My Agent",
+		BaseTag:        "2026.08.28",
+		Model:          "zai/glm-5.2",
+		GatewayPort:    18789,
+		Telegram:       telegram,
 	}
 }
 
