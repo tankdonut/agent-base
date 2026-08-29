@@ -16,6 +16,8 @@ func TestBaseTagFromDockerfile(t *testing.T) {
 		{"plain date tag", "FROM ghcr.io/tankdonut/agent-base:2026.08.28\n", "2026.08.28", ""},
 		{"same-day run suffix", "FROM ghcr.io/tankdonut/agent-base:2026.08.28.2\n", "2026.08.28.2", ""},
 		{"digest suffix carried", "FROM ghcr.io/tankdonut/agent-base:2026.08.28@sha256:abc123\n", "2026.08.28@sha256:abc123", ""},
+		{"multi-stage alias dropped", "FROM ghcr.io/tankdonut/agent-base:2026.08.28 AS base\n", "2026.08.28", ""},
+		{"digest and alias", "FROM ghcr.io/tankdonut/agent-base:2026.08.28@sha256:abc AS base\n", "2026.08.28@sha256:abc", ""},
 		{"indented line", "  FROM ghcr.io/tankdonut/agent-base:2026.09.01\n", "2026.09.01", ""},
 		{"no base line", "FROM debian:bookworm\n", "", "no `FROM ghcr.io/tankdonut/agent-base:<tag>` line"},
 		{"empty tag", "FROM ghcr.io/tankdonut/agent-base:\n", "", "empty base image tag"},

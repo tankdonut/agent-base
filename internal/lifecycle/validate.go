@@ -11,9 +11,10 @@ import (
 const baseImagePrefix = "FROM ghcr.io/tankdonut/agent-base:"
 
 // BaseTagFromDockerfile extracts the base image tag from the project
-// Dockerfile: everything after the colon on the
-// `FROM ghcr.io/tankdonut/agent-base:<tag>` line, which correctly
-// carries a possible @sha256 digest suffix.
+// Dockerfile: the first whitespace-delimited field after the colon on
+// the `FROM ghcr.io/tankdonut/agent-base:<tag>` line. That keeps a
+// possible @sha256 digest suffix (no spaces) while dropping multi-stage
+// aliases (`...:<tag> AS base`).
 func BaseTagFromDockerfile(path string) (string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -24,11 +25,11 @@ func BaseTagFromDockerfile(path string) (string, error) {
 		if !strings.HasPrefix(trimmed, baseImagePrefix) {
 			continue
 		}
-		tag := strings.TrimPrefix(trimmed, baseImagePrefix)
-		if tag == "" {
+		fields := strings.Fields(strings.TrimPrefix(trimmed, baseImagePrefix))
+		if len(fields) == 0 {
 			return "", fmt.Errorf("%s: empty base image tag", path)
 		}
-		return tag, nil
+		return fields[0], nil
 	}
 	return "", fmt.Errorf("%s: no `FROM ghcr.io/tankdonut/agent-base:<tag>` line found", path)
 }
