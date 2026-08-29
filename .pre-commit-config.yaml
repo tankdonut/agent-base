@@ -25,3 +25,18 @@ repos:
     rev: v0.23.2
     hooks:
       - id: markdownlint-cli2
+
+  # agentctl (Go module at repo root); system hooks — requires a local Go toolchain
+  - repo: local
+    hooks:
+      - id: go-fmt
+        name: go fmt
+        entry: gofmt -w
+        language: system
+        files: ^(cmd|internal)/.*\.go$
+      - id: go-vet
+        name: go vet
+        entry: go vet ./...
+        language: system
+        pass_filenames: false
+        files: ^(cmd|internal)/

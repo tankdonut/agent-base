@@ -6,7 +6,10 @@
 # Lint tools mirror the pre-commit revs in .pre-commit-config.yaml so
 # direct CLI runs match ./make.sh lint. ruff stays unpinned here: it runs
 # only inside pre-commit's managed env (rev v0.15.21).
+# golang: agentctl toolchain (go.mod at repo root); the go directive in
+# go.mod sets the minimum, this pin tracks the local toolchain.
 python 3.14.7
+golang 1.26.5
 pre-commit 4.6.2
 hadolint 2.15.1
 markdownlint-cli2 0.23.2

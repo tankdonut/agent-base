@@ -37,6 +37,26 @@ jobs:
       - name: Run container test suites
         run: python3 -m unittest discover -s container -v
 
+  agentctl:
+    # Go scaffolder quality gate (module at repo root); mirrors the
+    # local pre-commit go-fmt/go-vet hooks.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+
+      - name: Check formatting (gofmt)
+        run: test -z "$(gofmt -l cmd internal)"
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
+
   contract:
     needs: [lint, test]
     # Real-image CLI drift gate (roadmap N4): unit tests and the shim-based
