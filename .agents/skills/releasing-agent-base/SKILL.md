@@ -9,8 +9,9 @@ description: Use when asked to release agent-base, cut a release, publish a new 
 
 A release is **one signed annotated date tag pushed to origin**. CI does
 everything else: quality gates, multi-arch image publish, manifest
-HEALTHCHECK verify, SLSA attestation, SBOM, and the GitHub release with
-digest-pinned notes. Your job: pick the version, tag correctly, watch the
+HEALTHCHECK verify, SLSA attestation, SBOM, agentctl binaries + checksums,
+and the GitHub release with digest-pinned notes. Your job: bump the
+agentctl version constants, pick the version, tag correctly, watch the
 run, verify the artifacts, and fix forward if a job fails.
 
 ## Version scheme (hard rules)
@@ -42,7 +43,27 @@ git tag -l '2026.08.28*' | sort -V | tail -1    # highest existing (local)
 git ls-remote --tags origin 'refs/tags/2026.08.28*'
 ```
 
-### 2. Tag and push (this triggers the release)
+### 2. Bump the agentctl constants (on main, before tagging)
+
+Two Go constants ship in every release and must equal the tag verbatim
+(including any `.N` suffix):
+
+- `internal/cli/root.go` — `Version` (agentctl reports it; date-versioned)
+- `internal/scaffold/config.go` — `DefaultBaseTag` (new projects default
+  to this image)
+
+```sh
+# edit both constants, then:
+git commit -am "chore(release): bump agentctl to <tag>"
+git push origin main
+gh run list --branch main --limit 1   # watch to green before tagging
+```
+
+The release job cross-compiles agentctl and **fails if either constant
+≠ tag** — a skipped bump is caught in CI, not in the wild. Fix-forward is
+the next `.N` suffix, same as any release failure.
+
+### 3. Tag and push (this triggers the release)
 
 ```sh
 git tag -a 2026.08.28 -m "agent-base 2026.08.28 — <one-line summary of what this release carries>"
@@ -51,28 +72,33 @@ git push origin 2026.08.28
 
 - Annotated; SSH signing is automatic from repo config (`tag.gpgsign=true`).
 - Message convention, every past release: `agent-base <tag> — <summary>`.
-- Tag main's tip. Never tag a dirty tree, a non-main commit, or an
-  unpushed commit.
+- Tag main's tip (the bump commit). Never tag a dirty tree, a non-main
+  commit, or an unpushed commit.
 
-### 3. Watch the pipeline
+### 4. Watch the pipeline
 
 Tag pushes matching `20*` run the whole chain, in order:
-`lint` → `test` (3.11+3.14) → `contract` + `smoke` → `image-amd64` +
-`image-arm64` (push `<tag>-amd64`/`<tag>-arm64`) → `image` (imagetools
-merge + HEALTHCHECK gate) → `attest` (SLSA provenance to GHCR) →
-`release` (image-refs gate, notes + digest, SBOM asset, `gh release create`).
+`lint` + `agentctl` (fmt/vet/test) → `test` (3.11+3.14) → `contract` +
+`smoke` → `image-amd64` + `image-arm64` (push `<tag>-amd64`/`<tag>-arm64`)
+→ `image` (imagetools merge + HEALTHCHECK gate) → `attest` (SLSA
+provenance to GHCR) → `release` (image-refs gate, notes + digest, SBOM,
+agentctl `linux-amd64`/`linux-arm64` binaries + `agentctl-SHA256SUMS`,
+version-equals-tag check, `gh release create`).
 
 ```sh
 gh run list --branch 2026.08.28 --limit 1   # tag runs carry the tag as branch
 gh run watch <run-id> --exit-status
 ```
 
-### 4. Verify
+### 5. Verify
 
 ```sh
-gh release view 2026.08.28            # exists; sbom.spdx.json asset; digest + pin line
+gh release view 2026.08.28            # exists; assets: sbom.spdx.json, agentctl-linux-amd64,
+                                      # agentctl-linux-arm64, agentctl-SHA256SUMS; digest + pin line
 docker buildx imagetools inspect ghcr.io/tankdonut/agent-base:2026.08.28   # amd64+arm64
 gh attestation verify oci://ghcr.io/tankdonut/agent-base:2026.08.28@sha256:<digest-from-notes> -R tankdonut/agent-base
+curl -fsSL -o /tmp/agentctl "https://github.com/tankdonut/agent-base/releases/download/2026.08.28/agentctl-linux-amd64"
+/tmp/agentctl version                 # must print: agentctl 2026.08.28
 ```
 
 Every check green = release complete. (Renovate then opens digest-bump PRs in
@@ -108,14 +134,16 @@ never-published tag (fix the doc ref on main, then re-release `.N`).
 | `AGENT_BASE_VERSION=<tag> ./make.sh push` to publish the release | CI is the only publisher — multi-arch needs the native arm64 runner; a local push is single-arch and collides with the tag run |
 | Bumping `ARG AGENT_BASE_VERSION` in `container/Dockerfile` at release time | CI bakes `--build-arg AGENT_BASE_VERSION=<tag>`; the Dockerfile default is for bare local builds only |
 | Re-tagging the same version after a failure | Tags are immutable; the fix-forward is the next `.N` suffix |
-| Hand-writing release notes | The release job generates the digest, pin line, changelog, and provenance command; manual edits break the consumer contract |
+| Hand-writing release notes | The release job generates the digest, pin line, changelog, agentctl assets line, and provenance command; manual edits break the consumer contract |
 | Tagging a commit not on main | Releases are cut from main; pre-flight catches this |
+| Tagging without the agentctl bump | The release job's version-equals-tag check fails the run; fix-forward with the next `.N` |
 
 ## Quick reference
 
 | Step | Command |
 | --- | --- |
 | Existing tags | `git tag -l '20*'`; `git ls-remote --tags origin` |
+| Bump agentctl | edit `internal/cli/root.go` `Version` + `internal/scaffold/config.go` `DefaultBaseTag` → `chore(release): bump agentctl to <tag>` |
 | Cut | `git tag -a <tag> -m "agent-base <tag> — <summary>"` → `git push origin <tag>` |
 | Watch | `gh run list --branch <tag> --limit 1` → `gh run watch <run-id> --exit-status` |
 | Failed-job log | `gh run view <run-id> --log-failed` |
