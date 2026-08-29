@@ -190,6 +190,37 @@ func TestRunComposeCarriesHardeningBaseline(t *testing.T) {
 	}
 }
 
+func TestRunScaffoldedCIPinsAgentctlRelease(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := Run(validConfig(dir)); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	b, err := os.ReadFile(filepath.Join(dir, ".github", "workflows", "ci.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ci := string(b)
+	if !strings.Contains(ci, `v="2026.08.28"`) {
+		t.Errorf("scaffolded CI does not pin the agentctl release tag")
+	}
+	if !strings.Contains(ci, "agentctl-SHA256SUMS") || !strings.Contains(ci, "sha256sum -c") {
+		t.Errorf("scaffolded CI does not checksum-verify the agentctl binary")
+	}
+	if strings.Contains(ci, "go install") {
+		t.Errorf("scaffolded CI still builds agentctl from a checkout")
+	}
+	if !strings.Contains(ci, "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1") {
+		t.Errorf("scaffolded CI uses a floating action tag instead of a pinned SHA")
+	}
+	renovate, err := os.ReadFile(filepath.Join(dir, "renovate.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(renovate), "github-actions") {
+		t.Errorf("renovate.json does not manage the pinned workflow actions")
+	}
+}
+
 func TestRunRenderedJSONParses(t *testing.T) {
 	for _, telegram := range []bool{true, false} {
 		dir := t.TempDir()

@@ -10,28 +10,30 @@ jobs:
   pre-commit:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Run pre-commit checks
-        uses: tankdonut/github-actions/actions/pre-commit@v1
+        uses: tankdonut/github-actions/actions/pre-commit@246ecbe1d54fe84165f0b9f7d8aae44a0e5fa373 # v1
 
   validate:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # Pinned to the default branch until agentctl ships semver tags.
-      - uses: actions/checkout@v5
-        with:
-          repository: tankdonut/agent-base
-          path: agent-base
-
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: agent-base/go.mod
-
-      - name: Install agentctl
-        run: go install ./agent-base/cmd/agentctl
+      # agentctl comes from the release matching the image tag baked
+      # into agent/Dockerfile, checksum-verified — never built from a
+      # moving branch. Renovate (renovate.json) keeps the SHA-pinned
+      # actions above current.
+      - name: Install agentctl {{.BaseTag}} (checksum-verified)
+        run: |
+          v="{{.BaseTag}}"
+          arch="$(uname -m | sed 's/^x86_64$/amd64/; s/^aarch64$/arm64/')"
+          base="https://github.com/tankdonut/agent-base/releases/download/${v}"
+          curl -fsSL "${base}/agentctl-SHA256SUMS" -o SHA256SUMS
+          curl -fsSL "${base}/agentctl-linux-${arch}" -o "agentctl-linux-${arch}"
+          grep " agentctl-linux-${arch}\$" SHA256SUMS | sha256sum -c -
+          install -m 0755 "agentctl-linux-${arch}" /usr/local/bin/agentctl
+          [ "$(agentctl version | awk '{print $2}')" = "${v}" ]
 
       - name: Validate agent spec + automations (agent-base --validate-spec)
         run: agentctl validate
