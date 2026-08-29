@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  pre-commit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Run pre-commit checks
+        uses: tankdonut/github-actions/actions/pre-commit@v1
+
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # Pinned to the default branch until agentctl ships semver tags.
+      - uses: actions/checkout@v5
+        with:
+          repository: tankdonut/agent-base
+          path: agent-base
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: agent-base/go.mod
+
+      - name: Install agentctl
+        run: go install ./agent-base/cmd/agentctl
+
+      - name: Validate agent spec + automations (agent-base --validate-spec)
+        run: agentctl validate

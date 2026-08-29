@@ -1,0 +1,56 @@
+# {{.ProjectName}}
+
+{{.AgentName}} — an agent on the [agent-base](https://github.com/tankdonut/agent-base) container image. All boot
+logic (spec validation, config/MCP/plugin reconciliation, content
+seeding, cron scheduling) lives in the base image; this repo contributes
+content only: a `spec.json`, seed directories, and image-baked
+automations.
+
+## Quick start
+
+Install agentctl once (the agent-base operator CLI):
+
+```sh
+go install github.com/tankdonut/agent-base/cmd/agentctl@latest
+```
+
+Then:
+
+```sh
+agentctl secrets init   # agent/.env from agent/.env.example (+ generated gateway token)
+agentctl secrets edit   # fill in real values (ZAI_API_KEY is required)
+agentctl secrets check  # verify every required var is set
+agentctl up             # build + start (podman or docker, auto-detected)
+agentctl dev            # dev overlay: bind-mounted seed content, no rebuild
+```
+
+`./make.sh <command>` works as a shim for the same commands.
+
+Gateway: <http://localhost:18789/healthz> — loopback-only,
+token-authenticated when OPENCLAW_GATEWAY_TOKEN is set.
+
+## Structure
+
+| Path | Purpose |
+| ---- | ------- |
+| `.agentctl.yaml` | Optional agentctl config (engine, gateway_port); defaults apply while commented out |
+| `agent/spec.json` | Declarative boot contract (fail-closed loader) |
+| `agent/Dockerfile` | Thin project image: FROM agent-base + five COPY lines |
+| `agent/.env` | Secrets (gitignored), created from `agent/.env.example` |
+| `agent/automations/` | Cron jobs, image-baked (never bind-mounted) |
+| `agent/workspace/`, `agent/skills/`, `knowledge/content/` | Seed content for the data volume |
+| `compose.yml` / `compose.dev.yml` | Production service + dev overlay |
+| `make.sh` | Thin shim over agentctl (`exec agentctl "$@"`) |
+
+## Next steps
+
+1. Fill in the personas under `agent/workspace/` (AGENTS.md, SOUL.md,
+   USER.md — the `<placeholder>` hints mark what to edit).
+2. Extend `agent/spec.json` (MCP servers, plugins, features), then run
+   `agentctl validate`.
+3. Add cron jobs under `agent/automations/` and skills under
+   `agent/skills/`.
+
+The full agent contract, including the environment contract and the
+extension checklist this scaffold follows:
+[docs/standard-agent.md](https://github.com/tankdonut/agent-base/blob/main/docs/standard-agent.md).

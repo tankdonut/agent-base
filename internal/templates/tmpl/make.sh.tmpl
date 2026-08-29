@@ -1,0 +1,6 @@
+#!/bin/sh
+# Thin shim over agentctl — every target lives there.
+# Install (agent-base is date-versioned, no semver tags — build from source):
+#   git clone https://github.com/tankdonut/agent-base && \
+#     go install ./agent-base/cmd/agentctl
+exec agentctl "$@"

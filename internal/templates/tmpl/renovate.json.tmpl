@@ -1,0 +1,12 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "packageRules": [
+    {
+      "description": "agent-base image: bump date tags and pin digests.",
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["ghcr.io/tankdonut/agent-base"],
+      "pinDigests": true
+    }
+  ]
+}

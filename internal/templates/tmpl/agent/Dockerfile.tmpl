@@ -1,0 +1,17 @@
+# {{.AgentName}} project image per docs/standard-agent.md Quick start: a
+# FROM line and five COPY lines. All boot logic (tini -> entrypoint
+# chain, spec loader, seeding, cron) is inherited from agent-base; this
+# file adds content only. Build context is the repo root (compose.yml:
+# context "."), so COPY paths are root-relative.
+FROM ghcr.io/tankdonut/agent-base:{{.BaseTag}}
+
+# The declarative boot contract (container/spec.py loads it fail-closed).
+COPY --chown=node:node agent/spec.json /opt/agent/spec.json
+
+# Cron specs: image-baked, never host-mounted.
+COPY --chown=node:node agent/automations/ /opt/agent/automations/
+
+# Seed content: workspace first boot; skills + docs every boot.
+COPY --chown=node:node agent/workspace/ /opt/seed/workspace/
+COPY --chown=node:node agent/skills/ /opt/seed/skills/
+COPY --chown=node:node knowledge/content/ /opt/seed/docs/

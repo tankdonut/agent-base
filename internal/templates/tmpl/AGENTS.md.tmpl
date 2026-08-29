@@ -1,0 +1,54 @@
+# AGENTS.md
+
+Conventions for coding agents working in {{.ProjectName}} ({{.AgentName}},
+an agent-base downstream project).
+
+## Commands
+
+Operate this repo with agentctl; `./make.sh` is a thin shim over it.
+
+| Task | Command |
+| ---- | ------- |
+| Start (production) | `agentctl up` |
+| Start (dev overlay) | `agentctl dev` |
+| Stop | `agentctl down` |
+| Logs | `agentctl logs -f` |
+| Build project images | `agentctl build-images` |
+| Restart services | `agentctl restart` |
+| Rebuild after content edits | `agentctl rebuild` |
+| Update base image | `agentctl update` |
+| Validate spec + automations | `agentctl validate` |
+| Secrets | `agentctl secrets {init\|check\|edit}` |
+| Secrets alias | `agentctl env` |
+| Worktree sharing agent/.env | `agentctl worktree {create\|remove} <branch>` |
+| Open the gateway in a browser | `agentctl open` |
+| Lint (pre-commit) | `agentctl check` |
+| Install git hooks | `agentctl hooks` |
+| Version | `agentctl version` |
+| Shim for any command above | `./make.sh <command>` |
+
+## Structure
+
+| Path | Purpose |
+| ---- | ------- |
+| `agent/spec.json` | Declarative boot contract; the loader is fail-closed |
+| `agent/Dockerfile` | Thin image over ghcr.io/tankdonut/agent-base |
+| `agent/.env` | Secrets (gitignored); created from `agent/.env.example` |
+| `agent/automations/` | Cron jobs as frontmatter-markdown files |
+| `agent/workspace/` | Persona and memory seed content |
+| `agent/skills/`, `knowledge/content/` | Skill and doc seed content |
+| `compose.yml`, `compose.dev.yml` | Production service + dev overlay |
+| `make.sh` | Thin shim delegating to agentctl |
+
+## Key conventions
+
+- The spec loader is fail-closed: an unknown key or unresolvable ref
+  aborts the boot. Run `agentctl validate` after every `spec.json` edit.
+- Secrets live only in `agent/.env` (gitignored) and `{env:NAME}` refs —
+  never as literal values in `spec.json`, never committed, never logged.
+- Automations are image-baked (`agent/automations/`), never bind-mounted:
+  writable cron prompts would be an agent self-modification surface.
+- Content under `agent/workspace/`, `agent/skills/`, and
+  `knowledge/content/` seeds the data volume: workspace first boot, skills
+  and docs replaced every boot — agent-authored files elsewhere on the
+  volume survive.

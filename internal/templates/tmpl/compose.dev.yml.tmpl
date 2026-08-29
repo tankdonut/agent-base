@@ -1,0 +1,27 @@
+# {{.ProjectName}} dev overlay, applied on top of compose.yml:
+#   agentctl dev   (compose -f compose.yml -f compose.dev.yml up -d)
+#
+# Hot-reload contract: AGENT_SKIP_SEED=1 disables content seeding (the
+# bind mounts below ARE the seed; config/MCP/plugin reconciliation still
+# runs), and the mounts shadow the image-baked copies under /opt/seed/
+# so edits to workspace/, skills/, and knowledge content reach the next
+# session without a rebuild. Automations are NEVER bind-mounted:
+# writable cron prompt files would be a self-modification surface for
+# the agent — rebuild the image instead.
+services:
+  agent:
+    # Podman: map container UID to host user so bind-mount reads/writes
+    # stay host-owned.
+    userns_mode: keep-id
+    # Rootless podman denies the container access to bind-mounted repo
+    # files under default MCS label handling; disable labeling for the
+    # dev mounts below. Safe for a local dev container.
+    security_opt:
+      - label=disable
+    environment:
+      - AGENT_SKIP_SEED=1
+    volumes:
+      - ./agent/workspace:/opt/seed/workspace:z
+      - ./agent/skills:/opt/seed/skills:z
+      - ./knowledge/content:/opt/seed/docs:z
+    restart: ""

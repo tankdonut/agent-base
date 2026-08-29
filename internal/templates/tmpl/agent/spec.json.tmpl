@@ -1,0 +1,38 @@
+{
+  "specVersion": 1,
+  "agent": {
+    "name": "{{.AgentName}}"
+  },
+  "setup": {
+    "auth_choice": "zai-coding-global"
+  },
+  "model": {
+    "fallback": "{{.Model}}"
+  },
+  "config": [{{if .Telegram}}
+    {
+      "path": "channels.telegram.dmPolicy",
+      "value": "allowlist"
+    },
+    {
+      "path": "channels.telegram.allowFrom",
+      "value": "{env:TELEGRAM_ALLOWED_USERS}",
+      "split_csv": true,
+      "if_env": ["TELEGRAM_ALLOWED_USERS"]
+    }{{end}}
+  ],
+  "channels": [{{if .Telegram}}
+    {
+      "type": "telegram"
+    }{{end}}
+  ],
+  "mcp_servers": [],
+  "plugins": [],
+  "features": {
+    "gh_auth": true,
+    "gateway_auth": true
+  },
+  "automations": {
+    "model": "{{.Model}}"
+  }
+}
