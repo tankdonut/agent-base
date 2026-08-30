@@ -67,6 +67,7 @@ Run tests: python3 -m unittest discover -s container -p "test_entrypoint.py" -v
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -447,27 +448,87 @@ def mcp_exists(name: str) -> bool:
     return names is not None and name in names
 
 
+def _read_mcp_args_marker() -> dict[str, str]:
+    """Name → args-digest map of the flags the boot last added per server.
+    Unreadable or malformed markers read as empty (every existing server
+    then converges to the spec once)."""
+    try:
+        raw = (data_dir() / "agent-mcp-args").read_text(encoding="utf-8")
+    except OSError:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    return {k: v for k, v in parsed.items() if isinstance(k, str) and isinstance(v, str)}
+
+
+def _write_mcp_args_marker(digests: Mapping[str, str]) -> None:
+    """Persist the args digests; best-effort (warn on failure, never raise)."""
+    try:
+        path = data_dir() / "agent-mcp-args"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(digests), encoding="utf-8")
+    except OSError:
+        warn("could not update agent-mcp-args marker")
+
+
+def _mcp_args_digest(args: list[str]) -> str:
+    """Stable digest of the resolved add flags. Only the one-way hash is
+    persisted — resolved flags can embed secrets ({env:...} headers) and
+    must never hit disk in the marker."""
+    return hashlib.sha256("\0".join(args).encode("utf-8")).hexdigest()
+
+
+def _mcp_add(name: str, args: list[str]) -> bool:
+    """Run `openclaw mcp add`; warn on failure (naming the server, never
+    values) and report success so callers can gate digest recording."""
+    result = run("openclaw", "mcp", "add", name, *args, check=False)
+    if result is not None and result.returncode != 0:
+        warn(f"mcp add failed: {name}")
+        return False
+    return True
+
+
 def reconcile_mcp(spec: Spec, env: Mapping[str, str]) -> None:
-    """Register each spec MCP server when missing (flags come from
-    mcp_to_cli_args; --no-probe is included by that builder). Servers whose
-    if_env guard is unsatisfied are skipped with a log line. A warn-only
-    report lists registered servers nothing in the spec accounts for.
-    Removal of de-specified managed servers runs only under
+    """Register each spec MCP server when missing, and re-register an
+    existing one when its resolved flags drift from the last boot's
+    (headers, URL, timeout — {env:...} rotation included). Drift detection
+    digests the resolved add flags and compares against the
+    {data}/agent-mcp-args marker, because `mcp list` carries no per-server
+    fields to diff; a hand-registered or pre-marker server therefore
+    converges to the spec on its next boot. A failed re-add leaves the
+    server absent and the digest stale, so the next boot retries. Flags
+    come from mcp_to_cli_args (--no-probe is included by that builder).
+    Servers whose if_env guard is unsatisfied are skipped with a log line.
+    A warn-only report lists registered servers nothing in the spec accounts
+    for. Removal of de-specified managed servers runs only under
     features.mcp_prune (default off — the ownership marker lives in
     agent-writable {data}). Failures warn and never raise."""
+    digests = _read_mcp_args_marker()
+    original = dict(digests)
     for server in spec.mcp_servers:
         if not guard_satisfied(server.if_env, env):
             log(f"MCP server '{server.name}' skipped (if_env unsatisfied)")
             continue
-        if mcp_exists(server.name):
+        args = mcp_to_cli_args(server)
+        digest = _mcp_args_digest(args)
+        if not mcp_exists(server.name):
+            log(f"Registering MCP server '{server.name}'")
+            if _mcp_add(server.name, args):
+                digests[server.name] = digest
+        elif digests.get(server.name) == digest:
             log(f"MCP server '{server.name}' already registered — skipping")
         else:
-            log(f"Registering MCP server '{server.name}'")
-            result = run(
-                "openclaw", "mcp", "add", server.name, *mcp_to_cli_args(server), check=False
-            )
+            why = "spec changed" if server.name in digests else "not yet args-tracked"
+            log(f"MCP server '{server.name}' {why} — re-registering")
+            result = run("openclaw", "mcp", "unset", server.name, check=False)
             if result is not None and result.returncode != 0:
-                warn(f"mcp add failed: {server.name}")
+                warn(f"mcp unset failed: {server.name}")
+            if _mcp_add(server.name, args):
+                digests[server.name] = digest
         for key, value in server.passthrough_config.items():
             config_set(f"mcp.servers.{server.name}.{key}", json.dumps(value), "--strict-json")
         if isinstance(server, RemoteMcpServer) and server.auth == "oauth":
@@ -480,6 +541,8 @@ def reconcile_mcp(spec: Spec, env: Mapping[str, str]) -> None:
     if spec.features.mcp_prune:
         _reconcile_managed_mcp(spec)
     _report_orphan_mcp(spec)
+    if digests != original:
+        _write_mcp_args_marker(digests)
 
 
 def _reconcile_managed_mcp(spec: Spec) -> None:

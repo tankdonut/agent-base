@@ -655,17 +655,113 @@ class ReconcileMcpMatrix(EntrypointTestCase):
             self.calls_with("openclaw", "mcp", "add")[0],
         )
 
-    def test_existing_server_skipped(self) -> None:
+    def _listing_with(self, names_json: str):
         def listing(cmd: list[str]) -> subprocess.CompletedProcess[str]:
             if cmd[:3] == ["openclaw", "mcp", "list"]:
-                return subprocess.CompletedProcess(cmd, 0, stdout='{"acme": {}}', stderr="")
+                return subprocess.CompletedProcess(cmd, 0, stdout=names_json, stderr="")
             return self._ok(cmd)
 
-        self.handler = listing
+        return listing
+
+    def test_existing_server_skipped_when_flags_unchanged(self) -> None:
         spec = self.load_spec_with(self.LOCAL_SPEC)
+        # First boot: server absent (unparsable listing counts as missing),
+        # so it registers and records its args digest.
+        self.capture(lambda: entrypoint.reconcile_mcp(spec, os.environ))
+        self.calls.clear()
+
+        self.handler = self._listing_with('{"acme": {}}')
         out, _err = self.capture(lambda: entrypoint.reconcile_mcp(spec, os.environ))
         self.assertIn("MCP server 'acme' already registered — skipping", out)
         self.assertEqual([], self.calls_with("openclaw", "mcp", "add"))
+        self.assertEqual([], self.calls_with("openclaw", "mcp", "unset"))
+
+    def test_drifted_headers_reregister_with_new_values(self) -> None:
+        spec_doc = copy.deepcopy(MINIMAL_SPEC)
+        spec_doc["mcp_servers"] = [
+            {
+                "name": "svc",
+                "url": "https://mcp.example.com/s",
+                "headers": {"Authorization": "Bearer {env:API_KEY}"},
+            }
+        ]
+        spec_old = self.load_spec_with(spec_doc, {"API_KEY": "old-key"})
+        self.capture(lambda: entrypoint.reconcile_mcp(spec_old, os.environ))
+
+        self.handler = self._listing_with('{"svc": {}}')
+        spec_new = self.load_spec_with(spec_doc, {"API_KEY": "new-key"})
+        out, _err = self.capture(lambda: entrypoint.reconcile_mcp(spec_new, os.environ))
+        self.assertIn("MCP server 'svc' spec changed — re-registering", out)
+        self.assertEqual(
+            ["openclaw", "mcp", "unset", "svc"],
+            self.calls_with("openclaw", "mcp", "unset")[0],
+        )
+        add = self.calls_with("openclaw", "mcp", "add")[-1]
+        self.assertIn("Authorization=Bearer new-key", add)
+
+    def test_reregistered_digest_never_persists_secret_values(self) -> None:
+        spec_doc = copy.deepcopy(MINIMAL_SPEC)
+        spec_doc["mcp_servers"] = [
+            {
+                "name": "svc",
+                "url": "https://mcp.example.com/s",
+                "headers": {"Authorization": "Bearer {env:API_KEY}"},
+            }
+        ]
+        self.capture(
+            lambda: entrypoint.reconcile_mcp(
+                self.load_spec_with(spec_doc, {"API_KEY": "old-key"}), os.environ
+            )
+        )
+        marker = self.data / "agent-mcp-args"
+        raw = marker.read_text(encoding="utf-8")
+        self.assertNotIn("old-key", raw)
+        self.assertNotIn("Bearer", raw)
+        recorded = json.loads(raw)
+        self.assertEqual(["svc"], list(recorded))
+        self.assertRegex(recorded["svc"], r"^[0-9a-f]{64}$")
+
+    def test_untracked_existing_server_converges_to_spec(self) -> None:
+        # Registered by an older boot (before the marker existed) or by
+        # hand: no recorded digest, so the server converges to the spec.
+        self.handler = self._listing_with('{"acme": {}}')
+        spec = self.load_spec_with(self.LOCAL_SPEC)
+        out, _err = self.capture(lambda: entrypoint.reconcile_mcp(spec, os.environ))
+        self.assertIn("MCP server 'acme' not yet args-tracked — re-registering", out)
+        self.assertTrue(self.has_call("openclaw", "mcp", "unset", "acme"))
+        self.assertTrue(self.has_call("openclaw", "mcp", "add", "acme"))
+
+    def test_failed_readd_warns_and_keeps_previous_digest(self) -> None:
+        spec_doc = copy.deepcopy(MINIMAL_SPEC)
+        spec_doc["mcp_servers"] = [
+            {
+                "name": "svc",
+                "url": "https://mcp.example.com/s",
+                "headers": {"Authorization": "Bearer {env:API_KEY}"},
+            }
+        ]
+        self.capture(
+            lambda: entrypoint.reconcile_mcp(
+                self.load_spec_with(spec_doc, {"API_KEY": "old-key"}), os.environ
+            )
+        )
+        marker_before = (self.data / "agent-mcp-args").read_text(encoding="utf-8")
+
+        def listing_and_failing_add(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+            if cmd[:3] == ["openclaw", "mcp", "add"]:
+                return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="nope")
+            if cmd[:3] == ["openclaw", "mcp", "list"]:
+                return subprocess.CompletedProcess(cmd, 0, stdout='{"svc": {}}', stderr="")
+            return self._ok(cmd)
+
+        self.handler = listing_and_failing_add
+        _out, err = self.capture(
+            lambda: entrypoint.reconcile_mcp(
+                self.load_spec_with(spec_doc, {"API_KEY": "new-key"}), os.environ
+            )
+        )
+        self.assertIn("mcp add failed: svc", err)
+        self.assertEqual(marker_before, (self.data / "agent-mcp-args").read_text(encoding="utf-8"))
 
     def test_failed_listing_counts_as_missing(self) -> None:
         def failing_list(cmd: list[str]) -> subprocess.CompletedProcess[str]:
@@ -1523,7 +1619,18 @@ class ManagedMcpRemoval(EntrypointTestCase):
             )
         return self._ok(cmd)
 
+    def _prime_args_marker(self) -> None:
+        """Simulate a prior boot that registered this spec's servers: run
+        reconcile against an unparsable (missing-everything) listing with
+        pruning off, so only the args marker is written. Tests then flip
+        the handler to a present-listing and assert on the second boot."""
+        spec_doc = copy.deepcopy(self.SPEC)
+        spec_doc.pop("features", None)
+        self.capture(lambda: entrypoint.reconcile_mcp(self.load_spec_with(spec_doc), os.environ))
+        self.calls.clear()
+
     def test_despecified_managed_server_is_unset(self) -> None:
+        self._prime_args_marker()
         self._write_marker(["kept", "guarded", "stale"])
         self.handler = self._registered
         spec = self.load_spec_with(self.SPEC)
@@ -1540,6 +1647,7 @@ class ManagedMcpRemoval(EntrypointTestCase):
     def test_prune_off_leaves_de_specified_server_alone(self) -> None:
         # Default (features.mcp_prune unset): a forged or stale marker must
         # never unset anything — the drift surfaces as the orphan warn.
+        self._prime_args_marker()
         self._write_marker(["kept", "stale"])
         self.handler = self._registered
         spec_doc = copy.deepcopy(self.SPEC)
@@ -1553,6 +1661,7 @@ class ManagedMcpRemoval(EntrypointTestCase):
     def test_if_env_guarded_server_is_never_unset(self) -> None:
         # 'guarded' is in the spec (env merely unsatisfied this boot) — it
         # must not be treated as de-specified.
+        self._prime_args_marker()
         self._write_marker(["kept", "guarded"])
         self.handler = self._registered
         spec = self.load_spec_with(self.SPEC)
@@ -1562,6 +1671,7 @@ class ManagedMcpRemoval(EntrypointTestCase):
     def test_manual_server_never_touched(self) -> None:
         # 'manual' is registered but was never base-managed (absent from
         # the marker) — removal must not consider it.
+        self._prime_args_marker()
         self._write_marker(["kept"])
         self.handler = self._registered
         spec = self.load_spec_with(self.SPEC)
@@ -1569,6 +1679,7 @@ class ManagedMcpRemoval(EntrypointTestCase):
         self.assertEqual([], self.calls_with("openclaw", "mcp", "unset"))
 
     def test_unset_failure_warns_and_keeps_marker_entry(self) -> None:
+        self._prime_args_marker()
         self._write_marker(["kept", "stale"])
 
         def failing_unset(cmd: list[str]) -> subprocess.CompletedProcess[str]:
@@ -1586,6 +1697,7 @@ class ManagedMcpRemoval(EntrypointTestCase):
         )
 
     def test_already_gone_server_dropped_from_marker_silently(self) -> None:
+        self._prime_args_marker()
         self._write_marker(["kept", "ghost"])
 
         def listing(cmd: list[str]) -> subprocess.CompletedProcess[str]:
@@ -1604,6 +1716,7 @@ class ManagedMcpRemoval(EntrypointTestCase):
         )
 
     def test_first_boot_writes_marker_with_spec_names(self) -> None:
+        self._prime_args_marker()
         self.handler = self._registered
         spec = self.load_spec_with(self.SPEC)
         self.capture(lambda: entrypoint.reconcile_mcp(spec, os.environ))
