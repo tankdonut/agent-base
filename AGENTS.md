@@ -52,15 +52,15 @@ Symbols relative to `container/`.
 
 | Symbol | Type | Location | Role |
 | ------ | ---- | -------- | ---- |
-| `main` | fn | entrypoint.py:1375 | Phase orchestration; forks post_startup then `supervise()`s the CMD — returns its exit code after graceful-shutdown drain; other int returns: `--validate-spec` (0/1) and usage (2) |
-| `supervise` / `ShutdownSupervisor` / `parse_shutdown_grace` | fn/cls | entrypoint.py:1350 / :1206 / :1187 | Graceful shutdown: CMD runs in its own process group; first SIGTERM/SIGINT forwards to the CMD pid only, the drain waits for the group to empty up to `AGENT_SHUTDOWN_GRACE` (default 600; 0 = forward + immediate force-kill), a second signal force-kills, an unprompted CMD exit kills the group (restart semantics); exit code = CMD's, 128+N when signaled |
-| `backup_before_upgrade` | fn | entrypoint.py:888 | Verified backup on `AGENT_BASE_VERSION` delta (warm volume); failure aborts — data safety beats availability for migrations |
-| `load_agent_spec` | fn | entrypoint.py:125 | Fail-closed load; `AGENT_SPEC_PATH` override |
-| `first_boot_setup` | fn | entrypoint.py:222 | One-time setup; gated on `openclaw.json` absent; snapshots base plugin installs to `{data}/agent-managed-plugins` |
-| `reconcile_config` / `reconcile_mcp` / `reconcile_plugins` | fn | entrypoint.py:302 / :333 / :402 | Idempotent reconcile; warn-never-raise; MCP entries re-register on flag drift (args-digest marker under `{data}`), removal gated on `features.mcp_prune`, plugin prune on `features.plugin_prune` (ownership markers under `{data}`); MCP + plugin orphan reports are warn-only |
-| `authenticate_gh` | fn | entrypoint.py:464 | gh auth from `AGENT_GIT_TOKEN`; every boot, non-fatal |
-| `seed_content` | fn | entrypoint.py:502 | workspace first boot only; skills + docs full replace every boot |
-| `post_startup` | fn | entrypoint.py:780 | Forked child: gateway wait ≤180s, cron seed in-process, memory reindex, doctor skills reconcile, diagnostics (doctor/security reports to `{data}/logs`, boot summary `{data}/status.json`) |
+| `main` | fn | entrypoint.py:1678 | Phase orchestration; forks post_startup then `supervise()`s the CMD — returns its exit code after graceful-shutdown drain; other int returns: `--validate-spec` (0/1) and usage (2) |
+| `supervise` / `ShutdownSupervisor` / `parse_shutdown_grace` | fn/cls | entrypoint.py:1653 / :1509 / :1490 | Graceful shutdown: CMD runs in its own process group; first SIGTERM/SIGINT forwards to the CMD pid only, the drain waits for the group to empty up to `AGENT_SHUTDOWN_GRACE` (default 600; 0 = forward + immediate force-kill), a second signal force-kills, an unprompted CMD exit kills the group (restart semantics); exit code = CMD's, 128+N when signaled |
+| `backup_before_upgrade` | fn | entrypoint.py:1427 | Verified backup on `AGENT_BASE_VERSION` delta (warm volume); failure aborts — data safety beats availability for migrations |
+| `load_agent_spec` | fn | entrypoint.py:153 | Fail-closed load; `AGENT_SPEC_PATH` override |
+| `first_boot_setup` | fn | entrypoint.py:277 | One-time setup; gated on `openclaw.json` absent; snapshots base plugin installs to `{data}/agent-managed-plugins` |
+| `reconcile_config` / `reconcile_mcp` / `reconcile_plugins` | fn | entrypoint.py:367 / :569 / :710 | Idempotent reconcile; warn-never-raise; config writes batch via `config set --batch-json` where possible (`config_set_batch`); seeds `plugins.allow` when unowned (`_seed_plugins_allow`); `features.gateway_auth` retires the legacy config pair instead of writing it (`_retire_legacy_gateway_auth_pair` — the env var is the gateway's active surface); MCP entries re-register on flag drift (args-digest marker under `{data}`), removal gated on `features.mcp_prune`, plugin prune on `features.plugin_prune` (ownership markers under `{data}`); MCP + plugin orphan reports are warn-only |
+| `authenticate_gh` | fn | entrypoint.py:835 | gh auth from `AGENT_GIT_TOKEN`; every boot, non-fatal |
+| `seed_content` | fn | entrypoint.py:884 | workspace first boot only; skills + docs full replace every boot |
+| `post_startup` | fn | entrypoint.py:1295 | Forked child: gateway wait ≤180s, cron seed in-process, memory reindex, stable doctor skills reconcile (`disable_unavailable_skills` — two-run confirmed, heals proven by re-enable + re-check, batched writes, heal retries deferred until image change via `{data}/doctor-heal-attempts`), diagnostics with per-finding detail lines (doctor/security reports to `{data}/logs`, boot summary `{data}/status.json`) |
 | `load_spec` | fn | spec.py:527 | Strict v1 loader; errors carry the JSON path |
 | `Spec` / `SpecError` | cls | spec.py | Frozen spec / `ValueError` subtype |
 | `LocalMcpServer` / `RemoteMcpServer` | cls | spec.py:114 / :132 | stdio vs HTTP MCP; exactly one of `command` / `url` |
