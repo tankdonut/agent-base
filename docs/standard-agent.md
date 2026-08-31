@@ -250,20 +250,27 @@ so a rebooting container costs one JSON read, not N CLI spawns.
 ### mcp_servers entries
 
 Local (stdio) servers run a command; remote (HTTP) servers point at a URL.
-Both reconcile idempotently: the entrypoint lists registered servers and
-adds only the missing. `no_probe` defaults to `true` (skip the startup
-probe); set `false` when you want registration to verify connectivity.
-`timeout` (seconds, local and remote) caps the startup probe. `if_env` skips the
-server when a listed variable is absent, which is the standard way to make
-an optional API-keyed server conditional. Removing an entry from the spec
-removes its registration on the next boot under `features.mcp_prune` — but
-only servers the base itself registered (tracked in
-`{data}/agent-managed-mcp`); operator-added servers are never pruned,
-`if_env`-skipped entries count as still spec'd, and anything registered
-that no spec entry accounts for warns once per boot. `command` values
-resolve `{data}` templates, but keep executable surfaces out of `{data}`
-(plugin sources and MCP commands) — that tree is agent-writable, and the
-loader cannot know your mount layout.
+Both reconcile idempotently: the entrypoint lists registered servers, adds
+the missing, and re-registers an existing one whose resolved flags (URL,
+headers, timeout — `{env:...}` rotation included) drifted from the last
+boot's. Drift is detected by digesting the resolved add flags and comparing
+against the `{data}/agent-mcp-args` marker — the listing CLI carries no
+per-server fields to diff — so a hand-registered or pre-marker server
+converges to the spec on its next boot; only the one-way digest is
+persisted, never the resolved values. A failed re-add leaves the server
+absent and the digest stale, so the next boot retries. `no_probe` defaults
+to `true` (skip the startup probe); set `false` when you want registration
+to verify connectivity. `timeout` (seconds, local and remote) caps the
+startup probe. `if_env` skips the server when a listed variable is absent,
+which is the standard way to make an optional API-keyed server conditional.
+Removing an entry from the spec removes its registration on the next boot
+under `features.mcp_prune` — but only servers the base itself registered
+(tracked in `{data}/agent-managed-mcp`); operator-added servers are never
+pruned, `if_env`-skipped entries count as still spec'd, and anything
+registered that no spec entry accounts for warns once per boot. `command`
+values resolve `{data}` templates, but keep executable surfaces out of
+`{data}` (plugin sources and MCP commands) — that tree is agent-writable,
+and the loader cannot know your mount layout.
 
 #### OAuth remote servers
 

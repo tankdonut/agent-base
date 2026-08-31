@@ -57,7 +57,7 @@ Symbols relative to `container/`.
 | `backup_before_upgrade` | fn | entrypoint.py:888 | Verified backup on `AGENT_BASE_VERSION` delta (warm volume); failure aborts — data safety beats availability for migrations |
 | `load_agent_spec` | fn | entrypoint.py:125 | Fail-closed load; `AGENT_SPEC_PATH` override |
 | `first_boot_setup` | fn | entrypoint.py:222 | One-time setup; gated on `openclaw.json` absent; snapshots base plugin installs to `{data}/agent-managed-plugins` |
-| `reconcile_config` / `reconcile_mcp` / `reconcile_plugins` | fn | entrypoint.py:302 / :333 / :402 | Idempotent reconcile; warn-never-raise; MCP removal gated on `features.mcp_prune`, plugin prune on `features.plugin_prune` (ownership markers under `{data}`); MCP + plugin orphan reports are warn-only |
+| `reconcile_config` / `reconcile_mcp` / `reconcile_plugins` | fn | entrypoint.py:302 / :333 / :402 | Idempotent reconcile; warn-never-raise; MCP entries re-register on flag drift (args-digest marker under `{data}`), removal gated on `features.mcp_prune`, plugin prune on `features.plugin_prune` (ownership markers under `{data}`); MCP + plugin orphan reports are warn-only |
 | `authenticate_gh` | fn | entrypoint.py:464 | gh auth from `AGENT_GIT_TOKEN`; every boot, non-fatal |
 | `seed_content` | fn | entrypoint.py:502 | workspace first boot only; skills + docs full replace every boot |
 | `post_startup` | fn | entrypoint.py:780 | Forked child: gateway wait ≤180s, cron seed in-process, memory reindex, doctor skills reconcile, diagnostics (doctor/security reports to `{data}/logs`, boot summary `{data}/status.json`) |
