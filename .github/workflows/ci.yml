@@ -125,11 +125,14 @@ jobs:
           runtime: docker
           registry: ghcr.io
       - name: Build (and push arch tag on releases)
+        # pull_request refs are "N/merge" and the slash is invalid in a
+        # docker tag — sanitize before tagging (no-op on branch/tag refs).
         run: |
+          TAG="${GITHUB_REF_NAME//\//-}"
           docker build --platform linux/amd64 -f container/Dockerfile \
             --build-arg AGENT_BASE_VERSION="${GITHUB_REF_NAME:-dev}" \
-            -t "$IMAGE:${GITHUB_REF_NAME}-amd64" .
-          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then docker push "$IMAGE:${GITHUB_REF_NAME}-amd64"; fi
+            -t "$IMAGE:${TAG}-amd64" .
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then docker push "$IMAGE:${TAG}-amd64"; fi
 
   image-arm64:
     needs: [agentctl, lint, test, contract, smoke]
@@ -147,11 +150,14 @@ jobs:
           runtime: docker
           registry: ghcr.io
       - name: Build (and push arch tag on releases)
+        # pull_request refs are "N/merge" and the slash is invalid in a
+        # docker tag — sanitize before tagging (no-op on branch/tag refs).
         run: |
+          TAG="${GITHUB_REF_NAME//\//-}"
           docker build --platform linux/arm64 -f container/Dockerfile \
             --build-arg AGENT_BASE_VERSION="${GITHUB_REF_NAME:-dev}" \
-            -t "$IMAGE:${GITHUB_REF_NAME}-arm64" .
-          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then docker push "$IMAGE:${GITHUB_REF_NAME}-arm64"; fi
+            -t "$IMAGE:${TAG}-arm64" .
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then docker push "$IMAGE:${TAG}-arm64"; fi
 
   image:
     # Manifest merge: assembles the multi-arch index from the per-arch
