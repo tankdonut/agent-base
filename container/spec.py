@@ -141,6 +141,12 @@ class RemoteMcpServer:
     OpenClaw's own store after a one-time ``mcp login`` — never in the
     spec); oauth carries the documented metadata sub-keys verbatim,
     never templated (they are structural, not secrets).
+
+    transport pins the remote HTTP transport: "sse" or "streamable-http"
+    (the pinned CLI's exact --transport values, verified at 2026.7.1-2).
+    None keeps the CLI default — SSE — which POST-only streamable-HTTP
+    endpoints reject (405 on the SSE GET handshake), so spec them
+    explicitly.
     """
 
     name: str
@@ -148,6 +154,7 @@ class RemoteMcpServer:
     headers: dict[str, str] = field(default_factory=dict)
     no_probe: bool = True
     timeout: int | None = None
+    transport: str | None = None
     if_env: tuple[str, ...] = ()
     passthrough_config: dict[str, JSONValue] = field(default_factory=dict)
     auth: str | None = None
@@ -220,10 +227,14 @@ def mcp_to_cli_args(server: McpServer) -> list[str]:
             if timeout is not None:
                 flags.extend(("--timeout", str(timeout)))
             return flags
-        case RemoteMcpServer(url=url, headers=headers, no_probe=no_probe, timeout=timeout):
+        case RemoteMcpServer(
+            url=url, headers=headers, no_probe=no_probe, timeout=timeout, transport=transport
+        ):
             flags = ["--url", url]
             for key, value in headers.items():
                 flags.extend(("--header", f"{key}={value}"))
+            if transport is not None:
+                flags.extend(("--transport", transport))
             if no_probe:
                 flags.append("--no-probe")
             if timeout is not None:
@@ -399,9 +410,11 @@ _MCP_ENTRY_KEYS = frozenset(
         "config",
         "auth",
         "oauth",
+        "transport",
     }
 )
 _MCP_OAUTH_KEYS = frozenset({"identity", "scope", "authProfileId"})
+_MCP_TRANSPORT_VALUES = frozenset({"sse", "streamable-http"})
 _PLUGIN_KEYS = frozenset({"name", "source"})
 _FEATURES_KEYS = frozenset({"gh_auth", "gateway_auth", "plugin_prune", "mcp_prune"})
 _AUTOMATIONS_KEYS = frozenset({"model", "default_tools"})
@@ -575,6 +588,40 @@ def _parse_mcp_auth(
     return auth, oauth
 
 
+def _parse_mcp_transport(
+    node: Mapping[str, JSONValue],
+    passthrough_config: dict[str, JSONValue],
+    base: str,
+    has_url: bool,
+) -> str | None:
+    """Parse the first-class 'transport' key of a remote mcp_servers entry.
+
+    transport must be "sse" or "streamable-http" — the pinned CLI's exact
+    --transport values (verified at 2026.7.1-2); the CLI default is SSE,
+    which POST-only streamable-HTTP endpoints reject (405 on the SSE GET
+    handshake). A passthrough config key that would overwrite it
+    ('transport') is a load error instead of a silent precedence rule, and
+    transport on a local (command) entry is a load error too — the flag is
+    HTTP-only."""
+
+    if "transport" in passthrough_config and "transport" in node:
+        _fail(
+            _join(base, "config"),
+            "key 'transport' conflicts with the first-class 'transport' entry key",
+        )
+    if "transport" not in node:
+        return None
+    if not has_url:
+        _fail(_join(base, "transport"), "'transport' applies to remote (url) servers only")
+    transport = _expect_str(node["transport"], _join(base, "transport"))
+    if transport not in _MCP_TRANSPORT_VALUES:
+        _fail(
+            _join(base, "transport"),
+            'must be "sse" or "streamable-http" (the pinned CLI\'s --transport values)',
+        )
+    return transport
+
+
 def _parse_mcp_servers(root: Mapping[str, JSONValue], env: Mapping[str, str]) -> list[McpServer]:
     servers: list[McpServer] = []
     for index, raw in enumerate(_expect_list(root.get("mcp_servers", []), "mcp_servers")):
@@ -608,6 +655,7 @@ def _parse_mcp_servers(root: Mapping[str, JSONValue], env: Mapping[str, str]) ->
                 "entry must specify exactly one of 'command' (local) or "
                 "'url' (remote), not neither",
             )
+        transport = _parse_mcp_transport(node, passthrough_config, base, has_url)
         auth, oauth = _parse_mcp_auth(node, passthrough_config, base)
         if has_command and (auth is not None or oauth):
             _fail(base, "'auth' and 'oauth' apply to remote (url) servers only")
@@ -628,6 +676,7 @@ def _parse_mcp_servers(root: Mapping[str, JSONValue], env: Mapping[str, str]) ->
                     timeout=None
                     if node.get("timeout", None) is None
                     else _expect_int(node.get("timeout"), _join(base, "timeout")),
+                    transport=transport,
                     if_env=if_env,
                     passthrough_config=passthrough_config,
                     auth=auth,

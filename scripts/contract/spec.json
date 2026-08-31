@@ -32,7 +32,8 @@
       "headers": {
         "Authorization": "Bearer {env:CONTRACT_REMOTE_TOKEN}"
       },
-      "timeout": 11
+      "timeout": 11,
+      "transport": "streamable-http"
     },
     {
       "name": "contract-local",

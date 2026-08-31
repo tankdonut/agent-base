@@ -158,6 +158,7 @@ class GoldenExampleSpec(SpecTestCase):
         self.assertIsInstance(sentiment, RemoteMcpServer)
         self.assertEqual("https://mcp.example.com/sentiment", sentiment.url)
         self.assertEqual({"Authorization": "Bearer sk-sentiment"}, sentiment.headers)
+        self.assertEqual("streamable-http", sentiment.transport)
         self.assertEqual(("SENTIMENT_API_KEY",), sentiment.if_env)
 
         self.assertEqual(
@@ -822,6 +823,52 @@ class McpOAuth(SpecTestCase):
         )
 
 
+class McpTransport(SpecTestCase):
+    """Remote-only 'transport' key: the pinned CLI's exact --transport
+    values, fail-closed on anything else. The CLI default is SSE, which
+    POST-only streamable-HTTP endpoints reject (405 on the SSE GET), so
+    the pin must be explicit and correct."""
+
+    def _remote_spec(self, **extra: object) -> dict[str, object]:
+        entry: dict[str, object] = {"name": "lunarcrush", "url": "https://lunarcrush.ai/mcp"}
+        entry.update(extra)
+        spec = copy.deepcopy(MINIMAL)
+        spec["mcp_servers"] = [entry]
+        return spec
+
+    def test_streamable_http_parses(self) -> None:
+        server = self.load(self._remote_spec(transport="streamable-http")).mcp_servers[0]
+        self.assertIsInstance(server, RemoteMcpServer)
+        self.assertEqual("streamable-http", server.transport)
+
+    def test_sse_parses(self) -> None:
+        server = self.load(self._remote_spec(transport="sse")).mcp_servers[0]
+        self.assertIsInstance(server, RemoteMcpServer)
+        self.assertEqual("sse", server.transport)
+
+    def test_invalid_value_fails_closed(self) -> None:
+        message = self.load_expect_error(
+            self._remote_spec(transport="http"), containing="mcp_servers[0].transport"
+        )
+        self.assertIn('must be "sse" or "streamable-http"', message)
+
+    def test_transport_on_local_entry_fails(self) -> None:
+        spec = copy.deepcopy(MINIMAL)
+        spec["mcp_servers"] = [{"name": "fs", "command": "run", "transport": "sse"}]
+        self.load_expect_error(spec, containing="'transport' applies to remote (url) servers only")
+
+    def test_passthrough_transport_conflicts_with_first_class(self) -> None:
+        spec = self._remote_spec(transport="sse", config={"transport": "sse"})
+        self.load_expect_error(spec, containing="key 'transport' conflicts")
+
+    def test_passthrough_transport_alone_is_the_escape_hatch(self) -> None:
+        spec = self._remote_spec(config={"transport": "streamable-http"})
+        server = self.load(spec).mcp_servers[0]
+        self.assertIsInstance(server, RemoteMcpServer)
+        self.assertIsNone(server.transport)
+        self.assertEqual({"transport": "streamable-http"}, server.passthrough_config)
+
+
 class TemplateResolution(SpecTestCase):
     def test_env_token_resolved_inline(self) -> None:
         spec = self.load(self.config_spec("Hello {env:GREETING} world"))
@@ -1126,6 +1173,28 @@ class McpCliArgs(unittest.TestCase):
         server = RemoteMcpServer(name="slow", url="https://mcp.example.com", timeout=11)
         self.assertEqual(
             ["--url", "https://mcp.example.com", "--no-probe", "--timeout", "11"],
+            mcp_to_cli_args(server),
+        )
+
+    def test_remote_transport_emitted_after_headers(self) -> None:
+        # Verified against the real CLI at the pinned base image tag
+        # (2026.7.1-2): --transport takes "streamable-http" or "sse".
+        server = RemoteMcpServer(
+            name="lunarcrush",
+            url="https://lunarcrush.ai/mcp",
+            headers={"Authorization": "Bearer k"},
+            transport="streamable-http",
+        )
+        self.assertEqual(
+            [
+                "--url",
+                "https://lunarcrush.ai/mcp",
+                "--header",
+                "Authorization=Bearer k",
+                "--transport",
+                "streamable-http",
+                "--no-probe",
+            ],
             mcp_to_cli_args(server),
         )
 

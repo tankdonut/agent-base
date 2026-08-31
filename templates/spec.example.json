@@ -59,6 +59,7 @@
       "headers": {
         "Authorization": "Bearer {env:SENTIMENT_API_KEY}"
       },
+      "transport": "streamable-http",
       "if_env": ["SENTIMENT_API_KEY"]
     },
     {
