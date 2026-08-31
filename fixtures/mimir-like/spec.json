@@ -42,14 +42,16 @@
     },
     {
       "name": "alpha-vantage",
-      "url": "https://mcp.alphavantage.co/mcp?apikey={env:ALPHAVANTAGE_API_KEY}"
+      "url": "https://mcp.alphavantage.co/mcp?apikey={env:ALPHAVANTAGE_API_KEY}",
+      "transport": "streamable-http"
     },
     {
       "name": "lunarcrush",
       "url": "https://lunarcrush.ai/mcp",
       "headers": {
         "Authorization": "Bearer {env:LUNARCRUSH_API_KEY}"
-      }
+      },
+      "transport": "streamable-http"
     },
     {
       "name": "postgres",

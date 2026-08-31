@@ -1278,6 +1278,15 @@ class ReindexRetryMatrix(EntrypointTestCase):
 
 
 class PostStartupFlow(EntrypointTestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        # The skills-reconcile settle sleep is real (DOCTOR_SETTLE_S) but
+        # must never stall the suite — record it instead.
+        self.sleeps: list[float] = []
+        sleep_patcher = mock.patch.object(entrypoint.time, "sleep", side_effect=self.sleeps.append)
+        sleep_patcher.start()
+        self.addCleanup(sleep_patcher.stop)
+
     def run_post_startup(self, env: dict[str, str] | None = None) -> tuple[str, str]:
         spec = self.load_default_spec()
         return self.capture(lambda: entrypoint.post_startup(spec, env or dict(os.environ)))
@@ -1372,18 +1381,25 @@ class PostStartupFlow(EntrypointTestCase):
 
         self.handler = doctor
         self.run_post_startup()
+        # One batched write for the confirmed finding (persisted across
+        # the settle-spaced confirm run) — not one CLI call per skill.
         self.assertEqual(
             [
                 [
                     "openclaw",
                     "config",
                     "set",
-                    "skills.entries.propose-doc-edit.enabled",
-                    "false",
+                    "--batch-json",
+                    '[{"path": "skills.entries.propose-doc-edit.enabled", "value": false}]',
                 ]
             ],
             self.calls_with("openclaw", "config", "set"),
         )
+        self.assertEqual(
+            "propose-doc-edit\n",
+            (self.data / "doctor-disabled-skills").read_text(encoding="utf-8"),
+        )
+        self.assertEqual([entrypoint.DOCTOR_SETTLE_S], self.sleeps)
 
     def test_doctor_findings_with_nonzero_exit_still_disable(self) -> None:
         # doctor --lint exits 1 iff any finding exists (verified against the
@@ -1411,8 +1427,8 @@ class PostStartupFlow(EntrypointTestCase):
                     "openclaw",
                     "config",
                     "set",
-                    "skills.entries.propose-doc-edit.enabled",
-                    "false",
+                    "--batch-json",
+                    '[{"path": "skills.entries.propose-doc-edit.enabled", "value": false}]',
                 ]
             ],
             self.calls_with("openclaw", "config", "set"),
@@ -1420,8 +1436,9 @@ class PostStartupFlow(EntrypointTestCase):
 
     def test_healed_skill_is_reenabled(self) -> None:
         # A skill the doctor disabled in an earlier boot (marker present)
-        # whose finding has cleared goes back on — the old code was a
-        # one-way ratchet.
+        # whose finding stays cleared is re-enabled — but only after the
+        # confirm run actually observed it enabled (disabled skills are
+        # never flagged, so "not flagged" alone is not proof).
         self.write_openclaw_config(
             json.dumps({"skills": {"entries": {"old-skill": {"enabled": False}}}})
         )
@@ -1434,13 +1451,162 @@ class PostStartupFlow(EntrypointTestCase):
                     "openclaw",
                     "config",
                     "set",
-                    "skills.entries.old-skill.enabled",
-                    "true",
+                    "--batch-json",
+                    '[{"path": "skills.entries.old-skill.enabled", "value": true}]',
                 ]
             ],
             self.calls_with("openclaw", "config", "set"),
         )
         self.assertFalse((self.data / "doctor-disabled-skills").exists())
+        self.assertFalse((self.data / "doctor-heal-attempts").exists())
+
+    def test_steady_state_boot_writes_nothing(self) -> None:
+        # The acceptance case: unchanged env, converged verdicts — zero
+        # config writes, zero reload churn, and no confirm run (a single
+        # doctor call feeds the reconcile and the diagnostics).
+        self.write_openclaw_config(
+            json.dumps({"skills": {"entries": {"gemini": {"enabled": False}}}})
+        )
+        self._write_doctor_marker("gemini\n")
+        (self.data / "doctor-heal-attempts").write_text('{"gemini": ""}', encoding="utf-8")
+
+        out, _err = self.run_post_startup()
+        self.assertEqual([], self.calls_with("openclaw", "config", "set"))
+        self.assertEqual(1, len(self.calls_with("openclaw", "doctor")))
+        self.assertEqual([], self.sleeps)
+        self.assertIn("deferring 1 heal re-check(s)", out)
+        self.assertEqual(
+            "gemini\n", (self.data / "doctor-disabled-skills").read_text(encoding="utf-8")
+        )
+
+    def test_transient_finding_settles_clear_and_is_never_written(self) -> None:
+        # A finding that exists only in the first doctor run (plugin
+        # pre-warm, provider reach) is noise: nothing is disabled and
+        # nothing lands in the marker.
+        findings = {
+            "findings": [
+                {
+                    "checkId": "core/doctor/skills-readiness",
+                    "path": "skills.entries.gemini.enabled",
+                }
+            ]
+        }
+
+        def doctor(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+            if "--only" in cmd:
+                return subprocess.CompletedProcess(cmd, 0, stdout='{"findings": []}', stderr="")
+            if cmd[:2] == ["openclaw", "doctor"]:
+                return subprocess.CompletedProcess(cmd, 1, stdout=json.dumps(findings), stderr="")
+            return self._ok(cmd)
+
+        self.handler = doctor
+        out, _err = self.run_post_startup()
+        self.assertEqual([], self.calls_with("openclaw", "config", "set"))
+        self.assertEqual(1, len(self.calls_with("openclaw", "doctor", "--lint", "--only")))
+        self.assertFalse((self.data / "doctor-disabled-skills").exists())
+        self.assertIn("settled clear — leaving enabled", out)
+
+    def test_unconfirmed_heal_is_redisabled_and_defers_retry(self) -> None:
+        # Re-enabling a still-unavailable skill must land back disabled
+        # in the SAME boot, and the retry defers until the image version
+        # changes — this closes the one-shot verdict's disable→heal→
+        # disable oscillation.
+        self.write_openclaw_config(
+            json.dumps({"skills": {"entries": {"gemini": {"enabled": False}}}})
+        )
+        self._write_doctor_marker("gemini\n")
+        findings = {
+            "findings": [
+                {
+                    "checkId": "core/doctor/skills-readiness",
+                    "path": "skills.entries.gemini.enabled",
+                }
+            ]
+        }
+
+        def doctor(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+            if "--only" in cmd:
+                return subprocess.CompletedProcess(cmd, 1, stdout=json.dumps(findings), stderr="")
+            return self._ok(cmd)
+
+        self.handler = doctor
+        out, _err = self.run_post_startup()
+        self.assertIn("still unavailable after re-enable", out)
+        self.assertEqual(
+            "gemini\n", (self.data / "doctor-disabled-skills").read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            {"gemini": ""},
+            json.loads((self.data / "doctor-heal-attempts").read_text(encoding="utf-8")),
+        )
+
+        # Second boot, same image version: fully quiet.
+        self.calls.clear()
+        out2, _err2 = self.run_post_startup()
+        self.assertEqual([], self.calls_with("openclaw", "config", "set"))
+        self.assertEqual(1, len(self.calls_with("openclaw", "doctor")))
+        self.assertIn("deferring 1 heal re-check(s)", out2)
+
+    def test_confirm_run_failure_applies_first_run_verdict(self) -> None:
+        findings = {
+            "findings": [
+                {
+                    "checkId": "core/doctor/skills-readiness",
+                    "path": "skills.entries.gemini.enabled",
+                }
+            ]
+        }
+
+        def doctor(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+            if "--only" in cmd:
+                return subprocess.CompletedProcess(cmd, 1, stdout="not json", stderr="")
+            if cmd[:2] == ["openclaw", "doctor"]:
+                return subprocess.CompletedProcess(cmd, 1, stdout=json.dumps(findings), stderr="")
+            return self._ok(cmd)
+
+        self.handler = doctor
+        _out, err = self.run_post_startup()
+        self.assertEqual(
+            [
+                [
+                    "openclaw",
+                    "config",
+                    "set",
+                    "--batch-json",
+                    '[{"path": "skills.entries.gemini.enabled", "value": false}]',
+                ]
+            ],
+            self.calls_with("openclaw", "config", "set"),
+        )
+        self.assertIn("doctor confirm run failed", err)
+
+    def test_operator_disabled_flagged_skill_is_not_rewritten(self) -> None:
+        # enabled=false WITHOUT the marker is operator intent; a flag on
+        # it records marker ownership but rewrites nothing (the batch
+        # no-op filter, mirroring config_set's fast path).
+        self.write_openclaw_config(
+            json.dumps({"skills": {"entries": {"op-skill": {"enabled": False}}}})
+        )
+        findings = {
+            "findings": [
+                {
+                    "checkId": "core/doctor/skills-readiness",
+                    "path": "skills.entries.op-skill.enabled",
+                }
+            ]
+        }
+
+        def doctor(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+            if cmd[:2] == ["openclaw", "doctor"]:
+                return subprocess.CompletedProcess(cmd, 1, stdout=json.dumps(findings), stderr="")
+            return self._ok(cmd)
+
+        self.handler = doctor
+        self.run_post_startup()
+        self.assertEqual([], self.calls_with("openclaw", "config", "set"))
+        self.assertEqual(
+            "op-skill\n", (self.data / "doctor-disabled-skills").read_text(encoding="utf-8")
+        )
 
     def test_operator_disabled_skill_is_never_reenabled(self) -> None:
         # enabled=false WITHOUT the doctor marker is operator intent
@@ -1915,59 +2081,163 @@ class McpOAuthApply(EntrypointTestCase):
 
 
 class FeaturesGatewayAuth(EntrypointTestCase):
-    """X6: features.gateway_auth replaces the gateway-auth + secrets-provider
-    pair both consumers hand-rolled. The base emits the pair (guarded on
-    OPENCLAW_GATEWAY_TOKEN) after the spec's own entries."""
+    """X6: features.gateway_auth arms gateway token auth through
+    OPENCLAW_GATEWAY_TOKEN alone — the gateway reads the env var natively
+    and it WINS over any config secretRef (verified in the pinned
+    gateway's credential-plan source, which marks the config surface
+    inactive with "gateway token env var is configured"). The legacy
+    config pair is therefore no longer written, and stale copies older
+    images wrote are retired so the per-reload SECRETS_GATEWAY_AUTH_SURFACE
+    warnings stop."""
 
     SPEC_WITH_FLAG: dict[str, object] = {
         **copy.deepcopy(MINIMAL_SPEC),
         "features": {"gateway_auth": True},
     }
 
-    def test_flag_plus_token_applies_the_pair(self) -> None:
-        spec = self.load_spec_with(self.SPEC_WITH_FLAG, {"OPENCLAW_GATEWAY_TOKEN": "gw-1"})
+    def _reconcile_with_token(self, spec_dict: dict[str, object] | None = None) -> tuple[str, str]:
+        spec = self.load_spec_with(
+            spec_dict if spec_dict is not None else self.SPEC_WITH_FLAG,
+            {"OPENCLAW_GATEWAY_TOKEN": "gw-1"},
+        )
         env = dict(os.environ)
         env["OPENCLAW_GATEWAY_TOKEN"] = "gw-1"
-        self.capture(lambda: entrypoint.reconcile_config(spec, env))
+        return self.capture(lambda: entrypoint.reconcile_config(spec, env))
+
+    def test_flag_plus_token_writes_no_pair(self) -> None:
+        out, _err = self._reconcile_with_token()
         sets = self.calls_with("openclaw", "config", "set")
-        paths = [c[3] for c in sets]
-        self.assertIn("secrets.providers.default", paths)
-        self.assertIn("gateway.auth.token", paths)
-        token_call = next(c for c in sets if c[3] == "gateway.auth.token")
-        self.assertEqual(
-            '{"source": "env", "provider": "default", "id": "OPENCLAW_GATEWAY_TOKEN"}',
-            token_call[4],
+        paths = [c[3] for c in sets if len(c) > 3]
+        self.assertNotIn("gateway.auth.token", paths)
+        self.assertNotIn("secrets.providers.default", paths)
+        self.assertEqual([], self.calls_with("openclaw", "config", "unset"))
+        self.assertIn("Gateway auth armed by OPENCLAW_GATEWAY_TOKEN", out)
+
+    def test_legacy_pair_retired_on_warm_volume(self) -> None:
+        self.write_openclaw_config(
+            json.dumps(
+                {
+                    "gateway": {
+                        "auth": {
+                            "token": {
+                                "source": "env",
+                                "provider": "default",
+                                "id": "OPENCLAW_GATEWAY_TOKEN",
+                            }
+                        }
+                    },
+                    "secrets": {"providers": {"default": {"source": "env"}}},
+                }
+            )
         )
-        self.assertIn("--strict-json", token_call)
+        out, _err = self._reconcile_with_token()
+        self.assertEqual(
+            [
+                ["openclaw", "config", "unset", "gateway.auth.token"],
+                ["openclaw", "config", "unset", "secrets.providers.default"],
+            ],
+            self.calls_with("openclaw", "config", "unset"),
+        )
+        self.assertIn("retired legacy gateway-auth key", out)
+
+    def test_operator_owned_values_are_never_retired(self) -> None:
+        self.write_openclaw_config(
+            json.dumps(
+                {
+                    "gateway": {"auth": {"token": {"source": "env", "id": "OTHER_VAR"}}},
+                    "secrets": {"providers": {"default": {"source": "file"}}},
+                }
+            )
+        )
+        _out, _err = self._reconcile_with_token()
+        self.assertEqual([], self.calls_with("openclaw", "config", "unset"))
+
+    def test_spec_entry_owning_one_path_blocks_only_that_retirement(self) -> None:
+        self.write_openclaw_config(
+            json.dumps(
+                {
+                    "gateway": {
+                        "auth": {
+                            "token": {
+                                "source": "env",
+                                "provider": "default",
+                                "id": "OPENCLAW_GATEWAY_TOKEN",
+                            }
+                        }
+                    },
+                    "secrets": {"providers": {"default": {"source": "env"}}},
+                }
+            )
+        )
+        spec_dict = copy.deepcopy(self.SPEC_WITH_FLAG)
+        spec_dict["config"] = [
+            {
+                "path": "gateway.auth.token",
+                "value": {
+                    "source": "env",
+                    "provider": "default",
+                    "id": "OPENCLAW_GATEWAY_TOKEN",
+                },
+            }
+        ]
+        _out, _err = self._reconcile_with_token(spec_dict)
+        self.assertEqual(
+            [["openclaw", "config", "unset", "secrets.providers.default"]],
+            self.calls_with("openclaw", "config", "unset"),
+        )
+
+    def test_retirement_requires_the_flag(self) -> None:
+        self.write_openclaw_config(
+            json.dumps(
+                {
+                    "gateway": {
+                        "auth": {
+                            "token": {
+                                "source": "env",
+                                "provider": "default",
+                                "id": "OPENCLAW_GATEWAY_TOKEN",
+                            }
+                        }
+                    }
+                }
+            )
+        )
+        env = dict(os.environ)
+        env["OPENCLAW_GATEWAY_TOKEN"] = "gw-1"
+        spec = self.load_default_spec()
+        self.capture(lambda: entrypoint.reconcile_config(spec, env))
+        self.assertEqual([], self.calls_with("openclaw", "config", "unset"))
 
     def test_flag_without_token_sets_nothing_extra(self) -> None:
         with mock.patch.dict(os.environ):
             os.environ.pop("OPENCLAW_GATEWAY_TOKEN", None)
             spec = self.load_spec_with(self.SPEC_WITH_FLAG)
             self.capture(lambda: entrypoint.reconcile_config(spec, os.environ))
-        paths = [c[3] for c in self.calls_with("openclaw", "config", "set")]
+        paths = [c[3] for c in self.calls_with("openclaw", "config", "set") if len(c) > 3]
         self.assertNotIn("gateway.auth.token", paths)
         self.assertNotIn("secrets.providers.default", paths)
+        self.assertEqual([], self.calls_with("openclaw", "config", "unset"))
 
-    def test_flag_without_token_warns_and_never_logs_apply(self) -> None:
-        # The skip must be loud and the "Applying" line must not fire — an
-        # operator reading "Applying gateway auth pair" with no follow-up
-        # believes auth is armed when it is not.
+    def test_flag_without_token_warns_and_never_logs_armed(self) -> None:
+        # The skip must be loud and the "armed" line must not fire — an
+        # operator reading it with no follow-up believes auth is set up
+        # when it is not.
         with mock.patch.dict(os.environ):
             os.environ.pop("OPENCLAW_GATEWAY_TOKEN", None)
             spec = self.load_spec_with(self.SPEC_WITH_FLAG)
             out, err = self.capture(lambda: entrypoint.reconcile_config(spec, os.environ))
         self.assertIn("OPENCLAW_GATEWAY_TOKEN absent", err)
-        self.assertIn("NOT applied", err)
-        self.assertNotIn("Applying gateway auth pair", out)
+        self.assertIn("NOT armed", err)
+        self.assertNotIn("Gateway auth armed", out)
 
     def test_flag_absent_sets_nothing_extra(self) -> None:
         env = dict(os.environ)
         env["OPENCLAW_GATEWAY_TOKEN"] = "gw-1"
         spec = self.load_default_spec()
         self.capture(lambda: entrypoint.reconcile_config(spec, env))
-        paths = [c[3] for c in self.calls_with("openclaw", "config", "set")]
+        paths = [c[3] for c in self.calls_with("openclaw", "config", "set") if len(c) > 3]
         self.assertNotIn("gateway.auth.token", paths)
+        self.assertEqual([], self.calls_with("openclaw", "config", "unset"))
 
 
 class ToolsDenyDefault(EntrypointTestCase):
@@ -2035,6 +2305,78 @@ class ToolsDenyDefault(EntrypointTestCase):
         self.capture(lambda: entrypoint.post_startup(spec, os.environ))
         self.assertEqual(1, len(self.automation_argv))
         self.assertNotIn("--default-tools", self.automation_argv[0])
+
+
+class PluginsAllowSeed(EntrypointTestCase):
+    """The base seeds plugins.allow from its own plugin footprint so the
+    gateway's empty-allowlist warning ("discovered non-bundled plugins
+    may auto-load") never fires for consumers that did not configure one.
+    Anything the operator already owns — a stored value or an env-active
+    spec entry — is never clobbered."""
+
+    def _write_plugin_marker(self, payload: str) -> None:
+        self.data.mkdir(parents=True, exist_ok=True)
+        (self.data / "agent-managed-plugins").write_text(payload, encoding="utf-8")
+
+    def _allow_calls(self) -> list[list[str]]:
+        return self.calls_with("openclaw", "config", "set", "plugins.allow")
+
+    def test_seeds_from_snapshot_union_spec_plugins(self) -> None:
+        self._write_plugin_marker('["llama-cpp"]')
+        spec_dict = copy.deepcopy(MINIMAL_SPEC)
+        spec_dict["plugins"] = [{"name": "grow-approval-gate"}]
+        spec = self.load_spec_with(spec_dict)
+        out, _err = self.capture(lambda: entrypoint.reconcile_config(spec, os.environ))
+        self.assertEqual(
+            [
+                [
+                    "openclaw",
+                    "config",
+                    "set",
+                    "plugins.allow",
+                    '["grow-approval-gate", "llama-cpp"]',
+                    "--strict-json",
+                ]
+            ],
+            self._allow_calls(),
+        )
+        self.assertIn("Seeding plugins.allow", out)
+
+    def test_existing_allow_is_never_clobbered(self) -> None:
+        self._write_plugin_marker('["llama-cpp"]')
+        self.write_openclaw_config(json.dumps({"plugins": {"allow": ["custom"]}}))
+        spec = self.load_default_spec()
+        self.capture(lambda: entrypoint.reconcile_config(spec, os.environ))
+        self.assertEqual([], self._allow_calls())
+
+    def test_spec_entry_owns_the_path(self) -> None:
+        self._write_plugin_marker('["llama-cpp"]')
+        spec_dict = copy.deepcopy(MINIMAL_SPEC)
+        spec_dict["config"] = [{"path": "plugins.allow", "value": ["x"]}]
+        spec = self.load_spec_with(spec_dict)
+        self.capture(lambda: entrypoint.reconcile_config(spec, os.environ))
+        # exactly the spec entry's own set — no additional seed call
+        self.assertEqual(1, len(self._allow_calls()))
+        self.assertEqual('["x"]', self._allow_calls()[0][4])
+
+    def test_unsatisfied_guard_entry_does_not_own_the_path(self) -> None:
+        self._write_plugin_marker('["llama-cpp"]')
+        spec_dict = copy.deepcopy(MINIMAL_SPEC)
+        spec_dict["config"] = [{"path": "plugins.allow", "value": ["x"], "if_env": ["NEVER_SET"]}]
+        spec = self.load_spec_with(spec_dict)
+        self.capture(lambda: entrypoint.reconcile_config(spec, os.environ))
+        self.assertEqual('["llama-cpp"]', self._allow_calls()[-1][4])
+
+    def test_no_snapshot_seeds_nothing(self) -> None:
+        spec = self.load_default_spec()
+        self.capture(lambda: entrypoint.reconcile_config(spec, os.environ))
+        self.assertEqual([], self._allow_calls())
+
+    def test_empty_snapshot_and_no_spec_plugins_seeds_nothing(self) -> None:
+        self._write_plugin_marker("[]")
+        spec = self.load_default_spec()
+        self.capture(lambda: entrypoint.reconcile_config(spec, os.environ))
+        self.assertEqual([], self._allow_calls())
 
 
 class PostStartupDiagnostics(PostStartupFlow):
@@ -2126,6 +2468,30 @@ class PostStartupDiagnostics(PostStartupFlow):
         self.run_post_startup()
         status = json.loads((self.data / "status.json").read_text(encoding="utf-8"))
         self.assertEqual(0, status["warnings"])
+
+    def test_doctor_findings_log_bounded_detail_lines(self) -> None:
+        findings = [
+            {"checkId": f"core/doctor/check-{i}", "path": f"skills.entries.s{i}.enabled"}
+            for i in range(12)
+        ]
+        self.handler = self._doctor(findings)
+        out, _err = self.run_post_startup()
+        self.assertIn("doctor: 12 finding(s), 24 checks run", out)
+        self.assertIn("doctor finding: core/doctor/check-0 skills.entries.s0.enabled", out)
+        self.assertIn("doctor finding: core/doctor/check-9 skills.entries.s9.enabled", out)
+        self.assertNotIn("core/doctor/check-10", out)
+        self.assertIn("doctor: 2 more finding(s) in the persisted report", out)
+
+    def test_security_findings_log_bounded_detail_lines(self) -> None:
+        def handler(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+            if cmd[:2] == ["openclaw", "security"]:
+                payload = [{"checkId": "gateway.trusted_proxies_missing", "path": "gateway"}]
+                return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(payload), stderr="")
+            return self._doctor([])(cmd)
+
+        self.handler = handler
+        out, _err = self.run_post_startup()
+        self.assertIn("security finding: gateway.trusted_proxies_missing gateway", out)
 
     def test_unparseable_security_output_is_inert(self) -> None:
         def handler(cmd: list[str]) -> subprocess.CompletedProcess[str]:
@@ -2540,6 +2906,8 @@ class FixtureBoots(EntrypointTestCase):
                 "alpha-vantage",
                 "--url",
                 "https://mcp.alphavantage.co/mcp?apikey=av-key",
+                "--transport",
+                "streamable-http",
                 "--no-probe",
             ],
             self.calls_with("openclaw", "mcp", "add", "alpha-vantage")[0],
@@ -2554,6 +2922,8 @@ class FixtureBoots(EntrypointTestCase):
                 "https://lunarcrush.ai/mcp",
                 "--header",
                 "Authorization=Bearer lc-key",
+                "--transport",
+                "streamable-http",
                 "--no-probe",
             ],
             self.calls_with("openclaw", "mcp", "add", "lunarcrush")[0],

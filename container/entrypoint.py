@@ -82,7 +82,6 @@ from pathlib import Path
 
 import seed_automations
 from spec import (
-    ConfigEntry,
     RemoteMcpServer,
     Spec,
     SpecError,
@@ -239,6 +238,33 @@ def config_set(key: str, value: str, *extra: str) -> None:
         warn(f"config set failed: {key}")
 
 
+def config_set_batch(ops: list[tuple[str, object]], *, force: bool = False) -> None:
+    """Set several config keys in ONE ``openclaw config set --batch-json``
+    call. Ops whose stored value already matches are dropped first (the
+    same fast path as config_set — a batch of no-ops shells out zero
+    times); a batch that survives the filter costs one openclaw.json
+    write and one gateway reload evaluation instead of one per key.
+    force skips the no-op filter for keys the caller itself set moments
+    ago — their on-disk state is known-changed, so filtering against a
+    possibly-stale snapshot is wrong. Values are JSON-typed. Failure
+    warns (naming the paths only — values may carry secrets) and never
+    raises; the next boot retries."""
+    config = read_openclaw_config() if not force else None
+    pending: list[dict[str, object]] = []
+    for path, value in ops:
+        if config is not None:
+            current = lookup_config_path(config, path)
+            if config_value_matches(current, value, json.dumps(value)):
+                continue
+        pending.append({"path": path, "value": value})
+    if not pending:
+        return
+    config_reconcile_stats["applied"] += len(pending)
+    result = run("openclaw", "config", "set", "--batch-json", json.dumps(pending), check=False)
+    if result is not None and result.returncode != 0:
+        warn(f"config set batch failed: {', '.join(str(op['path']) for op in pending)}")
+
+
 def guard_satisfied(if_env: tuple[str, ...], env: Mapping[str, str]) -> bool:
     """True iff every name in if_env is present in env; an empty guard
     always passes (mirrors ConfigEntry.env_guard_satisfied)."""
@@ -367,45 +393,93 @@ def reconcile_config(spec: Spec, env: Mapping[str, str]) -> None:
         log("Applying base tools.deny default (agent tool policy unconfigured)")
         config_set("tools.deny", json.dumps(list(TOOLS_DENY_DEFAULT)), "--strict-json")
 
+    _seed_plugins_allow(spec, env)
+
     if spec.features.gateway_auth:
-        pair = _gateway_auth_entries()
-        if not all(synthetic.env_guard_satisfied(env) for synthetic in pair):
+        if "OPENCLAW_GATEWAY_TOKEN" not in env:
             warn(
                 "features.gateway_auth set but OPENCLAW_GATEWAY_TOKEN absent — "
-                "gateway auth pair NOT applied"
+                "gateway auth NOT armed"
             )
         else:
-            log("Applying gateway auth pair (features.gateway_auth)")
-            for synthetic in pair:
-                if synthetic.use_strict_json:
-                    config_set(synthetic.path, synthetic.cli_value, "--strict-json")
-                else:
-                    config_set(synthetic.path, synthetic.cli_value)
+            log("Gateway auth armed by OPENCLAW_GATEWAY_TOKEN (features.gateway_auth)")
+            _retire_legacy_gateway_auth_pair(spec, env)
 
 
-def _gateway_auth_entries() -> list[ConfigEntry]:
-    """The gateway-token auth pair both consumers hand-rolled before
-    features.gateway_auth; guarded on OPENCLAW_GATEWAY_TOKEN (absent token
-    → both skipped)."""
-    pair_value = {"source": "env", "provider": "default", "id": "OPENCLAW_GATEWAY_TOKEN"}
-    return [
-        ConfigEntry(
-            path="secrets.providers.default",
-            raw_value={"source": "env"},
-            resolved_value={"source": "env"},
-            cli_value=json.dumps({"source": "env"}),
-            use_strict_json=True,
-            if_env=("OPENCLAW_GATEWAY_TOKEN",),
-        ),
-        ConfigEntry(
-            path="gateway.auth.token",
-            raw_value=pair_value,
-            resolved_value=pair_value,
-            cli_value=json.dumps(pair_value),
-            use_strict_json=True,
-            if_env=("OPENCLAW_GATEWAY_TOKEN",),
-        ),
-    ]
+LEGACY_GATEWAY_AUTH_PAIR = (
+    (
+        "gateway.auth.token",
+        {"source": "env", "provider": "default", "id": "OPENCLAW_GATEWAY_TOKEN"},
+    ),
+    ("secrets.providers.default", {"source": "env"}),
+)
+
+
+def _retire_legacy_gateway_auth_pair(spec: Spec, env: Mapping[str, str]) -> None:
+    """Remove the gateway-auth config pair older base images wrote.
+
+    The gateway reads OPENCLAW_GATEWAY_TOKEN natively and that env surface
+    WINS (verified in the pinned gateway source: the credential plan
+    marks the config surface inactive with "gateway token env var is
+    configured"), so a secretRef under gateway.auth.token is by
+    construction inactive — the gateway logs SECRETS_GATEWAY_AUTH_SURFACE
+    and SECRETS_REF_IGNORED_INACTIVE_SURFACE on every reload evaluation
+    while it sits there. Only keys whose stored value exactly matches the
+    legacy pair are unset, and only when no env-active spec entry owns
+    the path — operator-configured values are never touched. Failures
+    warn and never raise."""
+    spec_paths = {entry.path for entry in spec.config_entries if entry.env_guard_satisfied(env)}
+    config = read_openclaw_config()
+    if config is None:
+        return
+    for path, legacy in sorted(LEGACY_GATEWAY_AUTH_PAIR):
+        if path in spec_paths:
+            continue
+        if lookup_config_path(config, path) != legacy:
+            continue
+        result = run("openclaw", "config", "unset", path, check=False)
+        if result is not None and result.returncode != 0:
+            warn(f"config unset failed: {path}")
+        else:
+            log(f"retired legacy gateway-auth key '{path}' (env var is the active surface)")
+
+
+PLUGINS_ALLOW_PATH = "plugins.allow"
+
+
+def _seed_plugins_allow(spec: Spec, env: Mapping[str, str]) -> None:
+    """Seed plugins.allow from the base's own plugin footprint so the
+    gateway's empty-allowlist warning ("discovered non-bundled plugins
+    may auto-load") never fires for a consumer that did not configure
+    one. Seeded once: any existing plugins.allow — or an env-active spec
+    entry for it — is the operator's and is never clobbered. The seed is
+    the first-boot base-plugin snapshot ({data}/agent-managed-plugins)
+    plus the spec's own plugin names; no snapshot (pre-marker volume or
+    failed first boot) seeds nothing, mirroring the plugin orphan
+    report's disable rule. Failures warn via config_set and never
+    raise."""
+    if any(
+        entry.path == PLUGINS_ALLOW_PATH and entry.env_guard_satisfied(env)
+        for entry in spec.config_entries
+    ):
+        return
+    config = read_openclaw_config()
+    if config is not None and lookup_config_path(config, PLUGINS_ALLOW_PATH) is not _MISSING:
+        return
+    try:
+        snapshot = json.loads((data_dir() / "agent-managed-plugins").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+    if not isinstance(snapshot, list):
+        return
+    allow = sorted(
+        {name for name in snapshot if isinstance(name, str)}
+        | {plugin.name for plugin in spec.plugins}
+    )
+    if not allow:
+        return
+    log(f"Seeding plugins.allow with the base default ({', '.join(allow)})")
+    config_set(PLUGINS_ALLOW_PATH, json.dumps(allow), "--strict-json")
 
 
 def _mcp_listing_names() -> set[str] | None:
@@ -997,18 +1071,102 @@ def _parse_doctor_stdout(result: subprocess.CompletedProcess[str]) -> dict | Non
     return data if isinstance(data, dict) else None
 
 
-def disable_unavailable_skills(data: dict | None = None) -> None:
-    """Reconcile skill enablement against `openclaw doctor --lint`.
+DOCTOR_SKILLS_CHECK = "core/doctor/skills-readiness"
+DOCTOR_DISABLED_MARKER = "doctor-disabled-skills"
+DOCTOR_HEAL_ATTEMPTS_MARKER = "doctor-heal-attempts"
+DOCTOR_SETTLE_S = 30
 
-    Every skills-readiness finding maps to skills.entries.<name>.enabled=
-    false; a skill this reconcile disabled in an earlier boot (tracked in
-    {data}/doctor-disabled-skills) whose finding has cleared is re-enabled.
+
+def _skills_readiness_flagged(data: dict) -> set[str]:
+    """Skill names flagged by the skills-readiness check in parsed doctor
+    output (findings carry path ``skills.entries.<name>.enabled``)."""
+    prefix = "skills.entries."
+    suffix = ".enabled"
+    flagged: set[str] = set()
+    for finding in data.get("findings", []):
+        if finding.get("checkId") != DOCTOR_SKILLS_CHECK:
+            continue
+        path = finding.get("path", "")
+        if path.startswith(prefix) and path.endswith(suffix):
+            name = path[len(prefix) : -len(suffix)]
+            if name:
+                flagged.add(name)
+    return flagged
+
+
+def _confirm_skills_flagged() -> set[str] | None:
+    """Second, settle-spaced doctor run scoped to the skills check
+    (``doctor --lint --only core/doctor/skills-readiness``). Returns the
+    flagged set, or None when the run fails or will not parse — the
+    caller then falls back to the first verdict."""
+    result = run(
+        "openclaw", "doctor", "--lint", "--only", DOCTOR_SKILLS_CHECK, check=False, capture=True
+    )
+    if result is None:
+        return None
+    data = _parse_doctor_stdout(result)
+    return None if data is None else _skills_readiness_flagged(data)
+
+
+def _read_heal_attempts() -> dict[str, str]:
+    """Skill name → image version of its last failed heal attempt, from
+    {data}/doctor-heal-attempts. Unreadable/malformed markers read as
+    empty (heal retries are simply no longer deferred)."""
+    try:
+        parsed = json.loads((data_dir() / DOCTOR_HEAL_ATTEMPTS_MARKER).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    return {k: v for k, v in parsed.items() if isinstance(k, str) and isinstance(v, str)}
+
+
+def _write_heal_attempts(attempts: Mapping[str, str]) -> None:
+    """Persist the heal-attempts map; best-effort (warn on failure)."""
+    try:
+        path = data_dir() / DOCTOR_HEAL_ATTEMPTS_MARKER
+        if attempts:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(dict(sorted(attempts.items()))), encoding="utf-8")
+        else:
+            path.unlink(missing_ok=True)
+    except OSError:
+        warn("could not update doctor-heal-attempts marker")
+
+
+def disable_unavailable_skills(data: dict | None = None) -> None:
+    """Reconcile skill enablement against `openclaw doctor --lint`,
+    stably.
+
+    The check only examines ENABLED skills ("allowed skills are usable"),
+    so a skill this reconcile disabled is never flagged on the next boot —
+    a cleared finding on a disabled skill is NOT proof of recovery. The
+    old one-shot verdict therefore oscillated: disable → finding cleared
+    (because disabled) → re-enable → flagged again, one write per skill
+    per boot.
+
+    Stability rules:
+    - A disable requires the finding to persist across TWO doctor runs
+      (the second is settle-spaced to ride out plugin/MCP pre-warm and
+      skill-snapshot reload); transient findings settle clear and are
+      never written.
+    - A heal is PROVEN, not assumed: candidates are re-enabled first so
+      the confirm run can actually observe them, then any that re-flag
+      are disabled again in the same boot. Failed heals defer their retry
+      until AGENT_BASE_VERSION changes ({data}/doctor-heal-attempts) —
+      requirements arrive with image bumps; delete the marker to force a
+      retry.
+    - Every phase writes through one `config set --batch-json` call, so a
+      transition boot costs at most two CLI writes and a steady-state
+      boot (unchanged env, converged verdicts) writes nothing at all.
+
     Operator intent is never overridden: enabled=false without the marker
     (spec config entry, hand-managed openclaw.json) stays off. `doctor
-    --lint` exits 1 iff any finding exists, so stdout is authoritative and
-    the exit code is ignored. Never raises. Pass the parsed doctor output
-    to share a single doctor run with the post-startup diagnostics; the
-    skills reconcile itself runs doctor only when not given one."""
+    --lint` exits 1 iff any finding exists, so stdout is authoritative
+    and the exit code is ignored. Never raises. Pass the parsed doctor
+    output to share a single doctor run with the post-startup
+    diagnostics; the skills reconcile itself runs doctor only when not
+    given one."""
     if data is None:
         result = run("openclaw", "doctor", "--lint", check=False, capture=True)
         if result is None:
@@ -1017,19 +1175,8 @@ def disable_unavailable_skills(data: dict | None = None) -> None:
         if data is None:
             return
 
-    prefix = "skills.entries."
-    suffix = ".enabled"
-    flagged: set[str] = set()
-    for finding in data.get("findings", []):
-        if finding.get("checkId") != "core/doctor/skills-readiness":
-            continue
-        path = finding.get("path", "")
-        if path.startswith(prefix) and path.endswith(suffix):
-            name = path[len(prefix) : -len(suffix)]
-            if name:
-                flagged.add(name)
-
-    marker = data_dir() / "doctor-disabled-skills"
+    flagged_first = _skills_readiness_flagged(data)
+    marker = data_dir() / DOCTOR_DISABLED_MARKER
     try:
         previously_disabled = {
             line for line in marker.read_text(encoding="utf-8").splitlines() if line
@@ -1037,31 +1184,92 @@ def disable_unavailable_skills(data: dict | None = None) -> None:
     except OSError:
         previously_disabled = set()
 
-    for name in sorted(flagged):
-        if name not in previously_disabled:
-            log(f"disabling unavailable skill '{name}' (doctor skills-readiness)")
-        config_set(f"skills.entries.{name}.enabled", "false")
-
     # Absent openclaw.json means skills come back enabled-by-default —
     # stale marker entries drop. Only a present-but-corrupt file (read
     # fails) conserves the marker.
     config = read_openclaw_config()
     can_verify = config is not None or not (data_dir() / "openclaw.json").exists()
-    healed: set[str] = set()
+
+    fresh_disables = flagged_first - previously_disabled
+    heal_candidates: set[str] = set()
     stale: set[str] = set()
-    for name in sorted(previously_disabled - flagged):
+    attempts = _read_heal_attempts()
+    image_version = os.environ.get("AGENT_BASE_VERSION", "")
+    deferred_heals: set[str] = set()
+    for name in sorted(previously_disabled - flagged_first):
         entry = lookup_config_path(config, f"skills.entries.{name}") if config else _MISSING
         if isinstance(entry, dict) and entry.get("enabled") is False:
-            config_set(f"skills.entries.{name}.enabled", "true")
-            log(f"re-enabling skill '{name}' (skills-readiness finding cleared)")
-            healed.add(name)
+            if attempts.get(name) == image_version:
+                deferred_heals.add(name)
+            else:
+                heal_candidates.add(name)
         elif can_verify:
             stale.add(name)
 
-    remaining = (previously_disabled | flagged) - healed - stale
+    healed: set[str] = set()
+    confirmed_disables: set[str] = set()
+    reflagged: set[str] = set()
+
+    if fresh_disables or heal_candidates:
+        if heal_candidates:
+            for name in sorted(heal_candidates):
+                log(f"re-enabling skill '{name}' for doctor confirmation")
+            config_set_batch(
+                [(f"skills.entries.{name}.enabled", True) for name in sorted(heal_candidates)]
+            )
+        time.sleep(DOCTOR_SETTLE_S)
+        confirmed = _confirm_skills_flagged()
+        if confirmed is None:
+            warn("doctor confirm run failed — applying first-run verdicts")
+            confirmed = flagged_first
+
+        reflagged = heal_candidates & confirmed
+        healed = heal_candidates - confirmed - reflagged
+        confirmed_disables = fresh_disables & confirmed
+        transient = fresh_disables - confirmed
+
+        disable_ops = sorted(reflagged | confirmed_disables)
+        if disable_ops:
+            for name in sorted(confirmed_disables):
+                log(f"disabling unavailable skill '{name}' (doctor skills-readiness)")
+            for name in sorted(reflagged):
+                log(f"re-disabling skill '{name}' (still unavailable after re-enable)")
+            config_set_batch(
+                [(f"skills.entries.{name}.enabled", False) for name in sorted(confirmed_disables)]
+            )
+            config_set_batch(
+                [(f"skills.entries.{name}.enabled", False) for name in sorted(reflagged)],
+                force=True,
+            )
+        for name in sorted(healed):
+            log(f"skill '{name}' re-enable confirmed (skills-readiness finding cleared)")
+        for name in sorted(transient):
+            log(f"skill '{name}' doctor finding settled clear — leaving enabled")
+
+    if deferred_heals:
+        log(
+            f"deferring {len(deferred_heals)} heal re-check(s) until the image version "
+            f"changes (remove {{data}}/{DOCTOR_HEAL_ATTEMPTS_MARKER} to force)"
+        )
+
+    # Failed/unconfirmed heals retry only on an image change; every name
+    # this boot disabled records its version so the next boot defers
+    # instead of re-entering the enable→re-flag→disable cycle.
+    remaining_names = (previously_disabled - healed - stale) | confirmed_disables | reflagged
+    attempts_out = {
+        name: image_version
+        for name, version in attempts.items()
+        if name in remaining_names and name not in healed
+    }
+    for name in sorted(reflagged | confirmed_disables):
+        attempts_out[name] = image_version
+    if attempts_out != attempts:
+        _write_heal_attempts(attempts_out)
+
+    remaining = sorted(remaining_names)
     try:
         if remaining:
-            marker.write_text("\n".join(sorted(remaining)) + "\n", encoding="utf-8")
+            marker.write_text("\n".join(remaining) + "\n", encoding="utf-8")
         else:
             marker.unlink(missing_ok=True)
     except OSError:
@@ -1131,6 +1339,28 @@ def post_startup(spec: Spec, env: Mapping[str, str]) -> None:
     _write_boot_status()
 
 
+def _log_finding_details(kind: str, findings: list[object], limit: int = 10) -> None:
+    """Bounded per-finding detail after a count line: checkId (or id) plus
+    path — never the message text, which may quote secret values. First
+    `limit` findings only; the full report is already persisted under
+    {data}/logs for the rest."""
+    shown = 0
+    for finding in findings:
+        if shown >= limit:
+            break
+        if not isinstance(finding, dict):
+            continue
+        check = finding.get("checkId", finding.get("id"))
+        if not isinstance(check, str):
+            check = "?"
+        path = finding.get("path")
+        suffix = f" {path}" if isinstance(path, str) and path else ""
+        log(f"{kind} finding: {check}{suffix}")
+        shown += 1
+    if len(findings) > limit:
+        log(f"{kind}: {len(findings) - limit} more finding(s) in the persisted report")
+
+
 def _surface_doctor(result: subprocess.CompletedProcess[str] | None, data: dict | None) -> None:
     """Log the doctor summary and persist the full report when findings
     exist ({data}/logs/doctor-report.json). Clean boots leave no file."""
@@ -1142,6 +1372,7 @@ def _surface_doctor(result: subprocess.CompletedProcess[str] | None, data: dict 
     if not isinstance(findings, list) or not findings:
         return
     log(f"doctor: {len(findings)} finding(s), {data.get('checksRun', '?')} checks run")
+    _log_finding_details("doctor", findings)
     _persist_report("doctor-report.json", data)
 
 
@@ -1164,6 +1395,7 @@ def _run_security_audit() -> None:
         return
     if findings:
         log(f"security audit: {len(findings)} finding(s)")
+        _log_finding_details("security", findings)
         _persist_report("security-report.json", {"findings": findings})
 
 
