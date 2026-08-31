@@ -190,9 +190,9 @@ and every error message starts with the JSON path of the offending node
 | `config` | `path`, `value`, `strict`, `if_env`, `split_csv` | `path` and `value` required; the rest are optional booleans / string lists. Applied in spec order. `path` accepts `{env:...}` tokens (chat IDs stop being baked into git); resolution mirrors `value`, including the guard deferral above. An item may instead be exactly `{"include": "<preset>"}` — see `presets`. |
 | `presets` | name → list of config entries | Named groups spliced into `config` in place via `{"include": ...}`. Names are `lowercase-identifier-ish`. Fail-closed: unknown names, nesting (include inside a preset), and malformed shapes are load errors. Spliced entries behave identically to inline ones (templating, guard deferral, split_csv). |
 | `channels` | `type`, `use_env` | `type` required. `use_env` (default `true`) feeds the channel credentials from the environment. |
-| `mcp_servers` | `name`, `command` or `url`, `args`, `env`, `headers`, `no_probe`, `timeout`, `if_env`, `config`, `auth`, `oauth` | Exactly one of `command` (local stdio) and `url` (remote HTTP); specifying both or neither is an error. `auth: "oauth"` + `oauth: {identity, scope, authProfileId}` is the first-class MCP OAuth surface (see "OAuth remote servers" below). `config` is the per-server escape hatch: an object of arbitrary knobs (`requestTimeoutMs`, `toolFilter`, …) applied every boot as `mcp.servers.<name>.<key>` via `config set --strict-json` — values templated, guard deferral applies. Key validity is the operator's responsibility: the runtime does not reject unknown `mcp.servers.*` keys at the pinned tag (verified), so a typo'd knob lands silently inert. |
-| `plugins` | `name`, `source` | `source` absent means install `name` from the registry; present means a local plugin directory and must be an absolute path. |
-| `features` | `gh_auth`, `gateway_auth`, `plugin_prune`, `mcp_prune` | All default `false`. `gh_auth`: see Quick start. `gateway_auth`: the base installs the gateway-token auth pair (`secrets.providers.default` + `gateway.auth.token` from `OPENCLAW_GATEWAY_TOKEN`) — replaces the hand-rolled entries; when the token is absent the pair is skipped with a warning naming the env var. `plugin_prune`: de-specified plugins the base installed are uninstalled on the next boot (ownership: `{data}/agent-managed-spec-plugins`; operator installs never touched; enabling the flag later catches up on everything recorded while it was on). `mcp_prune`: the same contract for MCP servers (ownership: `{data}/agent-managed-mcp`); default-off because that marker is agent-writable — without the flag, de-specified or foreign servers surface as per-boot orphan warnings instead of being unset. |
+| `mcp_servers` | `name`, `command` or `url`, `args`, `env`, `headers`, `no_probe`, `timeout`, `if_env`, `config`, `auth`, `oauth`, `transport` | Exactly one of `command` (local stdio) and `url` (remote HTTP); specifying both or neither is an error. `auth: "oauth"` + `oauth: {identity, scope, authProfileId}` is the first-class MCP OAuth surface (see "OAuth remote servers" below). `transport` (remote only) pins the HTTP transport — `"sse"` or `"streamable-http"`, the pinned CLI's exact `--transport` values; the CLI default is SSE, which POST-only streamable-HTTP endpoints reject (405 on the SSE GET), so spec such endpoints explicitly (see "mcp_servers entries"). `config` is the per-server escape hatch: an object of arbitrary knobs (`requestTimeoutMs`, `toolFilter`, …) applied every boot as `mcp.servers.<name>.<key>` via `config set --strict-json` — values templated, guard deferral applies. Key validity is the operator's responsibility: the runtime does not reject unknown `mcp.servers.*` keys at the pinned tag (verified), so a typo'd knob lands silently inert. |
+| `plugins` | `name`, `source` | `source` absent means install `name` from the registry; present means a local plugin directory and must be an absolute path. On reconcile the base seeds `plugins.allow` (its first-boot plugin snapshot ∪ the spec's plugin names — e.g. `["llama-cpp"]` for a plugin-less spec) when neither an existing config value nor an env-active spec entry owns the path, so the gateway's empty-allowlist warning ("discovered non-bundled plugins may auto-load") never fires for an unconfigured consumer; an operator-provided list is never clobbered. |
+| `features` | `gh_auth`, `gateway_auth`, `plugin_prune`, `mcp_prune` | All default `false`. `gh_auth`: see Quick start. `gateway_auth`: asserts the deployment arms gateway token auth via `OPENCLAW_GATEWAY_TOKEN` — the gateway reads that env var natively and the env surface WINS over any config reference (verified in the pinned gateway's credential-plan source), so the base writes no config pair; with the flag on and the token present, keys older base images wrote (`gateway.auth.token` + `secrets.providers.default`) are unset on the next boot when they exactly match the legacy pair and no env-active spec entry owns the path; when the token is absent the flag warns naming the env var. `plugin_prune`: de-specified plugins the base installed are uninstalled on the next boot (ownership: `{data}/agent-managed-spec-plugins`; operator installs never touched; enabling the flag later catches up on everything recorded while it was on). `mcp_prune`: the same contract for MCP servers (ownership: `{data}/agent-managed-mcp`); default-off because that marker is agent-writable — without the flag, de-specified or foreign servers surface as per-boot orphan warnings instead of being unset. |
 
 ### Templating
 
@@ -250,6 +250,16 @@ so a rebooting container costs one JSON read, not N CLI spawns.
 ### mcp_servers entries
 
 Local (stdio) servers run a command; remote (HTTP) servers point at a URL.
+Remote entries default to the CLI's SSE transport — endpoints that only
+speak streamable HTTP (POST-only MCP; LunarCrush and Alpha Vantage are
+the known cases) reject the SSE GET handshake, and
+`bundle-mcp: SSE error: Non-200 status code (405/400)` at boot is the
+signature. Pin such entries with `"transport": "streamable-http"`: the
+value is validated fail-closed against the pinned CLI's `--transport`
+choices (`sse` | `streamable-http`), applies to remote (`url`) entries
+only, and participates in the args-digest drift marker like every other
+flag — changing it re-registers the server on the next boot.
+
 Both reconcile idempotently: the entrypoint lists registered servers, adds
 the missing, and re-registers an existing one whose resolved flags (URL,
 headers, timeout — `{env:...}` rotation included) drifted from the last
@@ -405,15 +415,29 @@ wrapper entrypoint.
      skip. Three attempts with 10s backoff; a degraded success
      (`chunks_vec not updated` on stderr, vectors skipped) counts as
      retryable because it is the memory-search-offline case.
-   - Disable skills flagged by `openclaw doctor --lint` as not ready, and
-     re-enable skills this reconcile disabled earlier once their finding
-     clears (tracked in `{data}/doctor-disabled-skills`; skills the
-     operator disabled by other means are never touched).
+   - Reconcile skill enablement against `openclaw doctor --lint`,
+     stably. The check only examines *enabled* skills, so a disabled
+     skill never re-flags — a cleared finding on a disabled skill is not
+     proof of recovery. Disables therefore require the finding to
+     persist across two doctor runs (the second is settle-spaced to ride
+     out plugin/MCP pre-warm); heals are proven by re-enabling first
+     and re-checking, with still-unavailable skills disabled again in
+     the same boot and their retry deferred until the image version
+     changes (`{data}/doctor-heal-attempts`; delete the file to force a
+     retry). Writes are batched (`config set --batch-json`): a
+     transition boot costs at most two CLI writes, and a steady-state
+     boot — unchanged env, converged verdicts — writes nothing and runs
+     doctor exactly once. Skills the operator disabled by other means
+     (no `{data}/doctor-disabled-skills` marker entry) are never
+     touched.
    - Diagnostics (warn-only, never gates): the shared doctor run's
-     summary is logged (`doctor: N finding(s)`), the full report
+     summary is logged (`doctor: N finding(s)`) followed by up to ten
+     per-finding lines (`doctor finding: <checkId> <path>` — message
+     text is never logged, it may quote values); the full report
      persists to `{data}/logs/doctor-report.json` when findings exist,
      `openclaw security audit --json` runs and persists
-     `{data}/logs/security-report.json` the same way, and a boot summary
+     `{data}/logs/security-report.json` the same way (same bounded
+     detail lines), and a boot summary
      (`{data}/status.json`: image version, warning count, completion
      time) closes post-startup. Warning text never reaches disk — the
      status file carries counts only.
@@ -789,13 +813,10 @@ boot; `make.sh secrets check` enforces exactly that set:
       "if_env": ["TELEGRAM_CHAT_ID", "TELEGRAM_TOPIC_APPROVALS"]
     },
     { "path": "channels.telegram.execApprovals.approvers", "value": "{env:TELEGRAM_APPROVERS}", "split_csv": true, "if_env": ["TELEGRAM_APPROVERS"] },
-    { "path": "plugins.allow", "value": ["grow-approval-gate", "llama-cpp"] },
     { "path": "plugins.entries.grow-approval-gate.enabled", "value": true },
     { "path": "plugins.entries.grow-approval-gate.hooks.allowConversationAccess", "value": true },
     { "path": "plugins.entries.grow-approval-gate.config.gatedTools", "value": ["set_port_mode", "set_stage_thresholds", "calibrate_sensor"] },
-    { "path": "plugins.entries.grow-approval-gate.config.agentName", "value": "Freya", "strict": true },
-    { "path": "secrets.providers.default", "value": { "source": "env" }, "if_env": ["OPENCLAW_GATEWAY_TOKEN"] },
-    { "path": "gateway.auth.token", "value": { "source": "env", "provider": "default", "id": "OPENCLAW_GATEWAY_TOKEN" }, "if_env": ["OPENCLAW_GATEWAY_TOKEN"] }
+    { "path": "plugins.entries.grow-approval-gate.config.agentName", "value": "Freya", "strict": true }
   ],
   "channels": [
     { "type": "telegram" }
@@ -819,7 +840,7 @@ boot; `make.sh secrets check` enforces exactly that set:
   "plugins": [
     { "name": "grow-approval-gate", "source": "/opt/seed/plugins/grow-approval-gate" }
   ],
-  "features": { "gh_auth": true },
+  "features": { "gh_auth": true, "gateway_auth": true },
   "automations": { "model": "zai/glm-4.7" }
 }
 ```
@@ -827,7 +848,12 @@ boot; `make.sh secrets check` enforces exactly that set:
 Replace `-1001234567890` with the real supergroup ID. The approvals target
 always carries `threadId` (Freya's deployment uses forum topics); deployments
 without the approvals topic delete that field and the
-`TELEGRAM_TOPIC_APPROVALS` references.
+`TELEGRAM_TOPIC_APPROVALS` references. No `plugins.allow` entry and no
+`gateway.auth.token`/`secrets.providers.default` pair: the base seeds the
+allowlist from its plugin footprint (snapshot ∪ spec plugins) when nothing
+owns it, and gateway auth arms natively from `OPENCLAW_GATEWAY_TOKEN` — a
+hand-written pair is an inactive surface the gateway warns about on every
+reload.
 
 #### 4. Env and secret changes
 
@@ -1043,9 +1069,7 @@ COPY --chown=node:node knowledge/content/  /opt/seed/docs/
     { "path": "tools.web.search.provider", "value": "duckduckgo" },
     { "path": "agents.defaults.memorySearch.enabled", "value": true },
     { "path": "agents.defaults.memorySearch.provider", "value": "local" },
-    { "path": "agents.defaults.memorySearch.extraPaths", "value": ["{data}/workspace/docs", "{data}/workspace/journal"] },
-    { "path": "secrets.providers.default", "value": { "source": "env" }, "if_env": ["OPENCLAW_GATEWAY_TOKEN"] },
-    { "path": "gateway.auth.token", "value": { "source": "env", "provider": "default", "id": "OPENCLAW_GATEWAY_TOKEN" }, "if_env": ["OPENCLAW_GATEWAY_TOKEN"] }
+    { "path": "agents.defaults.memorySearch.extraPaths", "value": ["{data}/workspace/docs", "{data}/workspace/journal"] }
   ],
   "channels": [
     { "type": "telegram" }
@@ -1054,11 +1078,12 @@ COPY --chown=node:node knowledge/content/  /opt/seed/docs/
     { "name": "trade-agent", "url": "http://mcp:9090" },
     { "name": "defillama", "url": "https://mcp.defillama.com/mcp" },
     { "name": "tradingview", "command": "npx", "args": ["-y", "tradingview-mcp-server"] },
-    { "name": "alpha-vantage", "url": "https://mcp.alphavantage.co/mcp?apikey={env:ALPHAVANTAGE_API_KEY}" },
+    { "name": "alpha-vantage", "url": "https://mcp.alphavantage.co/mcp?apikey={env:ALPHAVANTAGE_API_KEY}", "transport": "streamable-http" },
     {
       "name": "lunarcrush",
       "url": "https://lunarcrush.ai/mcp",
-      "headers": { "Authorization": "Bearer {env:LUNARCRUSH_API_KEY}" }
+      "headers": { "Authorization": "Bearer {env:LUNARCRUSH_API_KEY}" },
+      "transport": "streamable-http"
     },
     {
       "name": "postgres",
