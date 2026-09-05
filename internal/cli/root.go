@@ -15,7 +15,7 @@ import (
 
 // Version is the single agentctl version constant, date-versioned in the
 // same YYYY.MM.DD[.N] scheme as the agent-base image tags.
-const Version = "2026.08.31"
+const Version = "2026.09.05"
 
 // NewRootCommand builds the full agentctl command tree.
 func NewRootCommand() *cobra.Command {
