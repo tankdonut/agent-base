@@ -27,12 +27,16 @@ Standard agent contract (union of the freya and mimir originals):
                          run without Telegram delivery).
   TELEGRAM_TOPIC_*       Telegram forum topic IDs per job (via topic-env).
   --model / AUTOMATION_MODEL
-                         Model for cron agent turns. There is deliberately
-                         no baked default — a default would silently drift
-                         models between agents sharing this image. --model
-                         (the entrypoint passes spec.automations.model)
-                         wins over AUTOMATION_MODEL; when neither is set
-                         the run aborts before any mutation.
+                         Global model for cron agent turns (the
+                         entrypoint passes spec.automations.model). There
+                         is deliberately no baked default — a default
+                         would silently drift models between agents
+                         sharing this image. --model wins over
+                         AUTOMATION_MODEL; when neither is set the run
+                         aborts before any mutation. A job's ``model:``
+                         header overrides the global model for that job
+                         alone (stored as the per-job model override on
+                         the agentTurn payload).
 
 Schedule comparison: a stored kind-dict (``{'kind': 'every', 'everyMs':
 <int>}`` or ``{'kind': 'cron', 'expr': <str>}``) is compared precisely —
@@ -92,7 +96,7 @@ TOKEN_RE = re.compile(r"\{\{\s*([A-Z][A-Z_]*)\s*\}\}")
 NAME_RE = re.compile(r"[a-z0-9][a-z0-9-]*")
 ENV_NAME_RE = re.compile(r"[A-Z][A-Z0-9_]*")
 
-HEADER_KEYS = frozenset({"name", "every", "cron", "deliver", "topic-env", "tools"})
+HEADER_KEYS = frozenset({"name", "every", "cron", "deliver", "topic-env", "tools", "model"})
 DELIVER_MODES = frozenset({"announce", "no-deliver"})
 
 # Bounded tool allow-list for seeded jobs (overridden per job via `tools:`
@@ -153,6 +157,14 @@ class JobSpec:
     deliver: str
     tools: tuple[str, ...] = DEFAULT_JOB_TOOLS
     tools_declared: bool = False
+    # Per-job `model:` header — "" means undeclared (global model applies).
+    model: str = ""
+
+
+def _effective_model(spec: JobSpec, fallback: str) -> str:
+    """Resolve a job's model: a declared `model:` header wins over the
+    global model (--model / AUTOMATION_MODEL)."""
+    return spec.model or fallback
 
 
 def resolve_model(cli_model: str | None) -> str:
@@ -265,6 +277,10 @@ def _load_spec(path: Path) -> JobSpec:
     else:
         tools = DEFAULT_JOB_TOOLS
 
+    model = header.get("model", "")
+    if "model" in header and not model:
+        raise AutomationSpecError(f"{path.name}: model value is empty")
+
     prompt = _render_prompt(body, path)
     if not prompt:
         raise AutomationSpecError(f"{path.name}: prompt body is empty")
@@ -278,6 +294,7 @@ def _load_spec(path: Path) -> JobSpec:
         deliver=deliver,
         tools=tools,
         tools_declared=tools_declared,
+        model=model,
     )
 
 
@@ -444,23 +461,27 @@ def _schedule_is_current(job: dict, spec: JobSpec) -> bool:
     return literal == _collapse_ws(spec.schedule_value)
 
 
-def _job_is_current(job: dict, spec: JobSpec) -> bool:
-    """Current requires message, threadId (when the spec has a topic),
-    delivery.to (when CHAT is set), schedule, and tool policy to match.
-    A stored job with no toolsAllow is unrestricted: current only when
-    the spec explicitly opts back to `*`."""
+def _job_is_current(job: dict, spec: JobSpec, model: str) -> bool:
+    """Current requires message, model, threadId (when the spec has a
+    topic), delivery.to (when CHAT is set), schedule, and tool policy to
+    match. A stored job with no toolsAllow is unrestricted: current only
+    when the spec explicitly opts back to `*`."""
     msg = ""
+    stored_model = ""
     payload = job.get("payload") or {}
     if isinstance(payload, dict) and payload.get("kind") == "agentTurn":
         msg = payload.get("message", "") or ""
+        stored_model = str(payload.get("model") or "")
     delivery = job.get("delivery") or {}
     stored_thread = delivery.get("threadId") if isinstance(delivery, dict) else None
     stored_to = delivery.get("to") if isinstance(delivery, dict) else None
     msg_match = msg == spec.prompt
+    model_match = stored_model == _effective_model(spec, model)
     thread_match = spec.topic == "" or str(stored_thread) == str(spec.topic)
     chat_match = CHAT == "" or str(stored_to) == str(CHAT)
     return (
         msg_match
+        and model_match
         and thread_match
         and chat_match
         and _schedule_is_current(job, spec)
@@ -510,8 +531,10 @@ def cron_add_argv(
     """Argv for `openclaw cron add`. Tool policy: `*` omits --tools
     (unrestricted, explicit opt-out). Otherwise: a job-declared `tools:`
     header wins; jobs without one take default_tools, else
-    DEFAULT_JOB_TOOLS."""
+    DEFAULT_JOB_TOOLS. Model policy mirrors tools: a job-declared
+    `model:` header wins over the passed global model."""
     tools = spec.tools if spec.tools_declared or default_tools is None else default_tools
+    model = _effective_model(spec, model)
     argv = [
         "cron",
         "add",
@@ -534,9 +557,11 @@ def cron_add_argv(
     return argv
 
 
-def cron_edit_argv(spec: JobSpec, job_id: str, flags: list[str]) -> list[str]:
-    """Argv for `openclaw cron edit` (message, schedule, delivery, tools,
-    failure-alert config)."""
+def cron_edit_argv(spec: JobSpec, job_id: str, flags: list[str], model: str) -> list[str]:
+    """Argv for `openclaw cron edit` (message, schedule, model, delivery,
+    tools, failure-alert config). Model rides along so both per-job
+    `model:` header drift and global automations.model drift heal with
+    one idempotent edit."""
     argv = [
         "cron",
         "edit",
@@ -545,6 +570,8 @@ def cron_edit_argv(spec: JobSpec, job_id: str, flags: list[str]) -> list[str]:
         spec.prompt,
         spec.schedule_flag,
         spec.schedule_value,
+        "--model",
+        _effective_model(spec, model),
     ]
     if spec.tools != ("*",):
         argv.extend(("--tools", ",".join(spec.tools)))
@@ -609,14 +636,14 @@ def reconcile(
         return
 
     job = matches[0]
-    if _job_is_current(job, spec):
+    if _job_is_current(job, spec, model):
         log(f"'{spec.name}' already current — skipping")
         return
 
     job_id = job.get("id", "")
     log(f"updating '{spec.name}'")
     flags = delivery_flags(spec)
-    result = openclaw(cron_edit_argv(spec, job_id, flags))
+    result = openclaw(cron_edit_argv(spec, job_id, flags, model))
     if result.returncode != 0:
         warn(f"cron edit failed: {spec.name}: {result.stderr.strip()}")
 

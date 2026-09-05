@@ -11,6 +11,10 @@ Union of the freya and mimir suites, rebased onto the standard contract:
   canonical rendering. All against throwaway temp directories.
 - ModelResolution — the --model / AUTOMATION_MODEL ladder with no baked
   default (silent model drift forbidden); neither source aborts.
+- JobModelPolicy — the per-job `model:` header: overrides the global
+  model on `cron add`; empty declaration fails closed; stored-model
+  drift (payload.model, source-verified shape at the pinned base tag)
+  heals via `cron edit --model`.
 - EnvContract — the standard env names: AGENT_AUTOMATIONS_DIR override
   (default <script dir>/automations) and TELEGRAM_CHAT_ID.
 - DurationParsing — unit/compound/bare-ms forms and rejections.
@@ -72,6 +76,7 @@ def make_spec(
     prompt: str = "do things",
     topic: str = "",
     deliver: str = "announce",
+    model: str = "",
 ) -> seed_automations.JobSpec:
     return seed_automations.JobSpec(
         name="test-job",
@@ -80,17 +85,21 @@ def make_spec(
         prompt=prompt,
         topic=topic,
         deliver=deliver,
+        model=model,
     )
 
 
-def stored_job(schedule: object, message: str = "do things", **overrides: object) -> dict:
+def stored_job(
+    schedule: object, message: str = "do things", model: str = "m", **overrides: object
+) -> dict:
     job: dict = {
         "id": "job-1",
         "name": "test-job",
         "schedule": schedule,
-        "payload": {"kind": "agentTurn", "message": message},
+        "payload": {"kind": "agentTurn", "message": message, "model": model},
         "delivery": {},
-        # Currency now includes tool policy: the default-bounded fixture.
+        # Currency now includes tool policy and model: the default-bounded
+        # fixture carrying the default global model.
         "toolsAllow": list(seed_automations.DEFAULT_JOB_TOOLS),
     }
     job.update(overrides)
@@ -402,6 +411,43 @@ class JobToolsPolicy(TempSpecDir):
         self.assertEqual("web_search", argv[argv.index("--tools") + 1])
 
 
+class JobModelPolicy(TempSpecDir):
+    """X4: per-job `model:` header overrides the global automation model
+    (--model / AUTOMATION_MODEL) on `cron add`; empty declarations fail
+    closed like every other header violation."""
+
+    def test_job_model_header_parses(self) -> None:
+        spec_text = VALID_SPEC.replace("deliver: announce", "deliver: announce\nmodel: zai/mini")
+        self.write("test-job.md", spec_text)
+        self.assertEqual("zai/mini", self.load()[0].model)
+
+    def test_model_absent_means_undeclared(self) -> None:
+        self.write("test-job.md", VALID_SPEC)
+        self.assertEqual("", self.load()[0].model)
+
+    def test_empty_model_fails_closed(self) -> None:
+        for bad in ("", " "):
+            with self.subTest(model=bad):
+                spec_text = VALID_SPEC.replace(
+                    "deliver: announce", f"deliver: announce\nmodel: {bad}"
+                )
+                self.write("test-job.md", spec_text)
+                with self.assertRaises(seed_automations.AutomationSpecError) as ctx:
+                    self.load()
+                self.assertIn("model", str(ctx.exception))
+
+    def test_add_uses_job_model_over_global(self) -> None:
+        spec_text = VALID_SPEC.replace("deliver: announce", "deliver: announce\nmodel: zai/mini")
+        self.write("test-job.md", spec_text)
+        argv = seed_automations.cron_add_argv(self.load()[0], "global/model", [])
+        self.assertEqual("zai/mini", argv[argv.index("--model") + 1])
+
+    def test_add_falls_back_to_global_model(self) -> None:
+        self.write("test-job.md", VALID_SPEC)
+        argv = seed_automations.cron_add_argv(self.load()[0], "global/model", [])
+        self.assertEqual("global/model", argv[argv.index("--model") + 1])
+
+
 class FailureAlerts(unittest.TestCase):
     """X3: seeded jobs alert on failed/skipped runs when a chat target
     exists. `cron add` has no alert flags at the pinned tag — alerts attach
@@ -451,7 +497,7 @@ class FailureAlerts(unittest.TestCase):
     def test_matching_job_without_alerts_is_drift_and_edited(self) -> None:
         job = stored_job({"kind": "every", "everyMs": 900000})
         with mock.patch.object(seed_automations, "CHAT", "-100"):
-            self.assertFalse(seed_automations._job_is_current(job, make_spec()))
+            self.assertFalse(seed_automations._job_is_current(job, make_spec(), "m"))
 
     def test_matching_job_with_alerts_is_current(self) -> None:
         job = stored_job(
@@ -460,12 +506,12 @@ class FailureAlerts(unittest.TestCase):
             failureAlert={"enabled": True, "channel": "telegram", "to": "-100"},
         )
         with mock.patch.object(seed_automations, "CHAT", "-100"):
-            self.assertTrue(seed_automations._job_is_current(job, make_spec()))
+            self.assertTrue(seed_automations._job_is_current(job, make_spec(), "m"))
 
     def test_alerts_ignored_when_chat_unset(self) -> None:
         job = stored_job({"kind": "every", "everyMs": 900000})
         with mock.patch.object(seed_automations, "CHAT", ""):
-            self.assertTrue(seed_automations._job_is_current(job, make_spec()))
+            self.assertTrue(seed_automations._job_is_current(job, make_spec(), "m"))
 
 
 class ScheduleValidation(TempSpecDir):
@@ -574,20 +620,20 @@ class ScheduleCurrent(unittest.TestCase):
 
     def test_every_job_matching_every_ms_is_current(self) -> None:
         job = stored_job({"kind": "every", "everyMs": 900000, "anchorMs": 1755734400000})
-        self.assertTrue(seed_automations._job_is_current(job, make_spec()))
+        self.assertTrue(seed_automations._job_is_current(job, make_spec(), "m"))
 
     def test_every_job_drifted_every_ms_is_drift(self) -> None:
         job = stored_job({"kind": "every", "everyMs": 600000})
-        self.assertFalse(seed_automations._job_is_current(job, make_spec(value="15m")))
+        self.assertFalse(seed_automations._job_is_current(job, make_spec(value="15m"), "m"))
 
     def test_every_spec_vs_stored_cron_kind_is_drift(self) -> None:
         job = stored_job({"kind": "cron", "expr": "2 9 * * *"})
-        self.assertFalse(seed_automations._job_is_current(job, make_spec()))
+        self.assertFalse(seed_automations._job_is_current(job, make_spec(), "m"))
 
     def test_cron_spec_vs_stored_every_kind_is_drift(self) -> None:
         job = stored_job({"kind": "every", "everyMs": 900000})
         spec = make_spec(flag="--cron", value="2 9 * * *")
-        self.assertFalse(seed_automations._job_is_current(job, spec))
+        self.assertFalse(seed_automations._job_is_current(job, spec, "m"))
 
     def test_cron_job_matching_expr_is_current(self) -> None:
         schedule = {
@@ -597,17 +643,17 @@ class ScheduleCurrent(unittest.TestCase):
             "staggerMs": 30000,
         }
         spec = make_spec(flag="--cron", value="2 9 * * *")
-        self.assertTrue(seed_automations._job_is_current(stored_job(schedule), spec))
+        self.assertTrue(seed_automations._job_is_current(stored_job(schedule), spec, "m"))
 
     def test_cron_expr_whitespace_variants_match(self) -> None:
         job = stored_job({"kind": "cron", "expr": "2  9 *   * *"})
         spec = make_spec(flag="--cron", value="2 9 * * *")
-        self.assertTrue(seed_automations._job_is_current(job, spec))
+        self.assertTrue(seed_automations._job_is_current(job, spec, "m"))
 
     def test_cron_expr_drift_is_drift(self) -> None:
         job = stored_job({"kind": "cron", "expr": "3 9 * * *"})
         spec = make_spec(flag="--cron", value="2 9 * * *")
-        self.assertFalse(seed_automations._job_is_current(job, spec))
+        self.assertFalse(seed_automations._job_is_current(job, spec, "m"))
 
     def test_unreadable_schedules_are_drift(self) -> None:
         for schedule in (
@@ -622,12 +668,12 @@ class ScheduleCurrent(unittest.TestCase):
         ):
             with self.subTest(schedule=schedule):
                 self.assertFalse(
-                    seed_automations._job_is_current(stored_job(schedule), make_spec())
+                    seed_automations._job_is_current(stored_job(schedule), make_spec(), "m")
                 )
 
     def test_unparseable_spec_duration_fails_open_to_drift(self) -> None:
         job = stored_job({"kind": "every", "everyMs": 900000})
-        self.assertFalse(seed_automations._job_is_current(job, make_spec(value="15x")))
+        self.assertFalse(seed_automations._job_is_current(job, make_spec(value="15x"), "m"))
 
 
 class TolerantStoredShapes(unittest.TestCase):
@@ -700,8 +746,9 @@ class TolerantStoredShapes(unittest.TestCase):
 
 
 class JobCurrency(unittest.TestCase):
-    """_job_is_current requires message, threadId (when the spec has a
-    topic), delivery.to (when CHAT is set), and schedule to all match."""
+    """_job_is_current requires message, model, threadId (when the spec
+    has a topic), delivery.to (when CHAT is set), and schedule to all
+    match."""
 
     def setUp(self) -> None:
         patcher = mock.patch.object(seed_automations, "CHAT", "")
@@ -710,28 +757,38 @@ class JobCurrency(unittest.TestCase):
 
     def test_fully_matching_job_is_current(self) -> None:
         job = stored_job({"kind": "every", "everyMs": 900000})
-        self.assertTrue(seed_automations._job_is_current(job, make_spec()))
+        self.assertTrue(seed_automations._job_is_current(job, make_spec(), "m"))
 
     def test_message_drift_is_not_current(self) -> None:
         job = stored_job({"kind": "every", "everyMs": 900000}, message="old prompt")
-        self.assertFalse(seed_automations._job_is_current(job, make_spec()))
+        self.assertFalse(seed_automations._job_is_current(job, make_spec(), "m"))
 
     def test_thread_drift_is_not_current_when_spec_has_topic(self) -> None:
         job = stored_job({"kind": "every", "everyMs": 900000}, delivery={"threadId": "41"})
-        self.assertFalse(seed_automations._job_is_current(job, make_spec(topic="42")))
+        self.assertFalse(seed_automations._job_is_current(job, make_spec(topic="42"), "m"))
 
     def test_thread_ignored_when_spec_has_no_topic(self) -> None:
         job = stored_job({"kind": "every", "everyMs": 900000}, delivery={"threadId": "41"})
-        self.assertTrue(seed_automations._job_is_current(job, make_spec()))
+        self.assertTrue(seed_automations._job_is_current(job, make_spec(), "m"))
 
     def test_chat_drift_is_not_current_when_chat_set(self) -> None:
         job = stored_job({"kind": "every", "everyMs": 900000}, delivery={"to": "-111"})
         with mock.patch.object(seed_automations, "CHAT", "-100"):
-            self.assertFalse(seed_automations._job_is_current(job, make_spec()))
+            self.assertFalse(seed_automations._job_is_current(job, make_spec(), "m"))
 
     def test_chat_ignored_when_chat_unset(self) -> None:
         job = stored_job({"kind": "every", "everyMs": 900000}, delivery={"to": "-111"})
-        self.assertTrue(seed_automations._job_is_current(job, make_spec()))
+        self.assertTrue(seed_automations._job_is_current(job, make_spec(), "m"))
+
+    def test_model_drift_is_not_current(self) -> None:
+        job = stored_job({"kind": "every", "everyMs": 900000}, model="old/model")
+        self.assertFalse(seed_automations._job_is_current(job, make_spec(), "m"))
+
+    def test_job_model_wins_over_global_for_currency(self) -> None:
+        job = stored_job({"kind": "every", "everyMs": 900000}, model="zai/mini")
+        self.assertTrue(
+            seed_automations._job_is_current(job, make_spec(model="zai/mini"), "global/model")
+        )
 
 
 class DeliveryFlags(unittest.TestCase):
@@ -828,7 +885,7 @@ class ReconcileContract(unittest.TestCase):
         job = stored_job({"kind": "every", "everyMs": 900000})
         seed_automations.reconcile(spec, [job], "m")
         self.oc.assert_called_once_with(
-            ["cron", "edit", "job-1", "--message", "do things", "--every", "10m"]
+            ["cron", "edit", "job-1", "--message", "do things", "--every", "10m", "--model", "m"]
             + ["--tools", ",".join(seed_automations.DEFAULT_JOB_TOOLS)]
         )
 
@@ -837,7 +894,17 @@ class ReconcileContract(unittest.TestCase):
         job = stored_job({"kind": "cron", "expr": "3 9 * * *"})
         seed_automations.reconcile(spec, [job], "m")
         self.oc.assert_called_once_with(
-            ["cron", "edit", "job-1", "--message", "do things", "--cron", "2 9 * * *"]
+            [
+                "cron",
+                "edit",
+                "job-1",
+                "--message",
+                "do things",
+                "--cron",
+                "2 9 * * *",
+                "--model",
+                "m",
+            ]
             + ["--tools", ",".join(seed_automations.DEFAULT_JOB_TOOLS)]
         )
 
@@ -849,7 +916,7 @@ class ReconcileContract(unittest.TestCase):
         job = stored_job({"kind": "cron", "expr": "*/15 * * * *"})
         seed_automations.reconcile(spec, [job], "m")
         self.oc.assert_called_once_with(
-            ["cron", "edit", "job-1", "--message", "do things", "--every", "15m"]
+            ["cron", "edit", "job-1", "--message", "do things", "--every", "15m", "--model", "m"]
             + ["--tools", ",".join(seed_automations.DEFAULT_JOB_TOOLS)]
         )
 
@@ -858,9 +925,43 @@ class ReconcileContract(unittest.TestCase):
         job = stored_job({"kind": "every", "everyMs": 900000}, message="old prompt")
         seed_automations.reconcile(spec, [job], "m")
         self.oc.assert_called_once_with(
-            ["cron", "edit", "job-1", "--message", "do things", "--every", "15m"]
+            ["cron", "edit", "job-1", "--message", "do things", "--every", "15m", "--model", "m"]
             + ["--tools", ",".join(seed_automations.DEFAULT_JOB_TOOLS)]
         )
+
+    def test_job_model_drift_edits_with_job_model(self) -> None:
+        spec = make_spec(model="zai/mini")
+        job = stored_job({"kind": "every", "everyMs": 900000}, model="old/model")
+        seed_automations.reconcile(spec, [job], "global/model")
+        self.oc.assert_called_once_with(
+            [
+                "cron",
+                "edit",
+                "job-1",
+                "--message",
+                "do things",
+                "--every",
+                "15m",
+                "--model",
+                "zai/mini",
+            ]
+            + ["--tools", ",".join(seed_automations.DEFAULT_JOB_TOOLS)]
+        )
+
+    def test_global_model_drift_edits_with_global_model(self) -> None:
+        spec = make_spec()
+        job = stored_job({"kind": "every", "everyMs": 900000}, model="old/model")
+        seed_automations.reconcile(spec, [job], "m")
+        self.oc.assert_called_once_with(
+            ["cron", "edit", "job-1", "--message", "do things", "--every", "15m", "--model", "m"]
+            + ["--tools", ",".join(seed_automations.DEFAULT_JOB_TOOLS)]
+        )
+
+    def test_matching_job_model_skips_edit(self) -> None:
+        spec = make_spec(model="zai/mini")
+        job = stored_job({"kind": "every", "everyMs": 900000}, model="zai/mini")
+        seed_automations.reconcile(spec, [job], "global/model")
+        self.oc.assert_not_called()
 
     def test_chat_drift_edits_with_chat_flags(self) -> None:
         spec = make_spec()
@@ -876,6 +977,8 @@ class ReconcileContract(unittest.TestCase):
                 "do things",
                 "--every",
                 "15m",
+                "--model",
+                "m",
                 "--tools",
                 ",".join(seed_automations.DEFAULT_JOB_TOOLS),
                 "--announce",
@@ -906,6 +1009,8 @@ class ReconcileContract(unittest.TestCase):
                 "do things",
                 "--every",
                 "15m",
+                "--model",
+                "m",
                 "--tools",
                 ",".join(seed_automations.DEFAULT_JOB_TOOLS),
                 "--announce",
@@ -978,7 +1083,7 @@ class MainFlow(unittest.TestCase):
 
     def test_single_cron_list_per_run(self) -> None:
         spec = make_spec()
-        job = stored_job({"kind": "every", "everyMs": 900000})
+        job = stored_job({"kind": "every", "everyMs": 900000}, model="zai/test-model")
         with (
             mock.patch.object(seed_automations, "build_jobs", return_value=[spec]),
             mock.patch.object(seed_automations, "list_cron_jobs", return_value=[job]) as lst,
@@ -987,6 +1092,20 @@ class MainFlow(unittest.TestCase):
             seed_automations.main(["--model", "zai/test-model"])
         self.assertEqual(lst.call_count, 1)
         oc.assert_not_called()
+
+    def test_job_model_flows_into_cron_add(self) -> None:
+        spec = make_spec(model="zai/mini")
+        with (
+            mock.patch.object(seed_automations, "build_jobs", return_value=[spec]),
+            mock.patch.object(seed_automations, "list_cron_jobs", return_value=[]),
+            mock.patch.object(seed_automations, "openclaw") as oc,
+        ):
+            oc.return_value = CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+            seed_automations.main(["--model", "global/model"])
+        oc.assert_called_once()
+        add_argv = oc.call_args[0][0]
+        self.assertEqual(["cron", "add"], add_argv[:2])
+        self.assertEqual("zai/mini", add_argv[add_argv.index("--model") + 1])
 
     def test_cli_model_wins_and_flows_into_cron_add(self) -> None:
         spec = make_spec()

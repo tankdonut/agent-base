@@ -99,7 +99,7 @@ split with copy-paste entries.
 | `AGENT_MEMORY_REINDEX` | `1` | `0` skips the post-startup memory reindex. |
 | `AGENT_GIT_TOKEN` | unset | gh token, used only when `features.gh_auth` is true. Never logged. |
 | `AGENT_AUTOMATIONS_DIR` | `/opt/agent/automations` | Override the automations directory. |
-| `AUTOMATION_MODEL` | unset | Cron model fallback when `--model` is not passed. The entrypoint always passes `spec.automations.model`, so this matters only for manual `seed_automations.py` runs. |
+| `AUTOMATION_MODEL` | unset | Cron model fallback when `--model` is not passed. The entrypoint always passes `spec.automations.model`, so this matters only for manual `seed_automations.py` runs. A job's `model:` header overrides it for that job. |
 | `TELEGRAM_CHAT_ID` | unset | Chat ID for cron delivery (base-standardized). Unset means jobs run without Telegram delivery. |
 | `automations.default_tools` (spec) | built-in list | Default tool allow-list for seeded jobs without their own `tools:` header; `["*"]` restores unrestricted. |
 | `AGENT_BASE_VERSION` | baked `ENV` | Image version (from the build ARG; also the OCI label). Read-only signal for the upgrade-backup phase — a delta against `{data}/last-image-version` triggers a verified backup before migration. |
@@ -405,7 +405,10 @@ wrapper entrypoint.
      reaching the cron tool could self-replicate jobs). Override per job
      with a `tools:` header, or globally with
      `automations.default_tools` in the spec (`["*"]` restores
-     unrestricted). When `TELEGRAM_CHAT_ID` is set, seeded jobs also
+     unrestricted). Override the model per job with a `model:` header
+     (falls back to `automations.model`); model drift — per-job or
+     global — heals like any other field via `cron edit --model`. When
+     `TELEGRAM_CHAT_ID` is set, seeded jobs also
      carry **failure alerts** routed to that chat (`--failure-alert`
      with include-skipped, attached via `cron edit` — `cron add` has no
      alert flags at the pinned base tag); alert drift heals like any
@@ -489,7 +492,7 @@ teardown.
 | `AGENT_*` prefix replaces `FREYA_*` / `MIMIR_*` | One vocabulary across projects; the base cannot accidentally special-case one agent's names. |
 | `TELEGRAM_CHAT_ID` is base-standard | Cron delivery needs one chat target the reconciler can read directly. All other `TELEGRAM_*` names stay project-side in spec refs (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_USERS`, `TELEGRAM_TOPIC_*`). |
 | Docs at `{data}/workspace/docs`, never `{data}/docs` | Docs are workspace-adjacent reference material seeded every boot. Migrating agents (Mimir layout) move once in a wrapper entrypoint. |
-| `automations.model` is required per project | A baked default would silently drift models between agents sharing one image. No default, no drift. |
+| `automations.model` is required per project | A baked default would silently drift models between agents sharing one image. No default, no drift. Per-job `model:` headers are overrides, not defaults — the global stays explicit. |
 | Seeded jobs get a bounded tool allow-list | A scheduled turn reaching the `cron` tool can self-replicate jobs (OWASP ASI06); the base default excludes recursion, spawn, and browser tools. Per-job `tools:` / spec `automations.default_tools` / `["*"]` escape hatches keep this the operator's call. |
 | Base sets `tools.deny` (cron, subagents, sessions_spawn, nodes) unless the spec configures `tools.*` | Same recursion/spawn surfaces denied for the agent's own turns; `heartbeat_respond` stays allowed so heartbeats work. Any spec entry under `tools.*` signals operator ownership and the base default stands down. |
 
@@ -695,7 +698,8 @@ the actions repo; projects reference them instead of copying YAML.
 5. Write `automations/*.md` (name must match the file stem; exactly one of
    `every` or `cron`; `deliver`; optional `topic-env`; optional `tools` —
    a comma-separated tool allow-list; `*` opts a job back to
-   unrestricted).
+   unrestricted; optional `model` — a per-job model override that beats
+   `automations.model` for that job alone).
 6. Write the thin Dockerfile per Quick start, pinning the current date tag.
 7. Add the `agent` service from `templates/compose.agent.yml` and, for
    development, the overlay from `templates/compose.dev.agent.yml`.
