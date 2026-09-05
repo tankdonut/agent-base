@@ -14,7 +14,7 @@
 | Build image (date tag default) | `./make.sh build` |
 | Push image | `AGENT_BASE_VERSION=YYYY.MM.DD[.N] ./make.sh push` — refuses implicit tags; same-day follow-up releases use the `.N` run suffix |
 | Validate a spec (CI gate) | `docker run --rm --env-file .env <image> --validate-spec` |
-| CLI contract (CI + local) | `scripts/contract-test.sh <image>` — real-CLI drift gate |
+| CLI contract (CI + local) | `python3 scripts/contract_test.py <image>` — real-CLI drift gate + upgrade-path gate (warm-volume reboot from last release; `CONTRACT_UPGRADE=required` in CI, `auto` locally) |
 
 ## Structure
 
@@ -27,8 +27,9 @@ fixtures/    freya-like/, mimir-like/ — boot-tested spec+automations trees; in
              unit FixtureBoots and smoke; consult, don't copy whole
 internal/    agentctl engine: cli (cobra), lifecycle (cobra-free), scaffold,
              embedded templates (templates/tmpl)
-scripts/     smoke.sh (shim harness), contract-test.sh + contract/ (real-CLI drift
-             gate: emitted-flag cross-check vs --help + clean shim-free boot),
+scripts/     smoke.sh (shim harness), contract_test.py + contract/ (real-CLI drift
+             gate: emitted-flag cross-check vs --help + clean shim-free boot +
+             upgrade-path warm-volume reboot from the last published release),
              shim/openclaw (fake CLI; asserts via invocation log)
 templates/   spec.example.json (golden), env.example, compose snippets, workspace skeletons
 ```

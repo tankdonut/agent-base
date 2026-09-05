@@ -27,7 +27,7 @@ mkdir -p "$LOGDIR"
 IMAGE=${AGENT_BASE_IMAGE:-${1:-agent-base:smoke}}
 # SMOKE_ENGINE pins the engine (CI sets docker: GH runners preinstall
 # podman, the auto-detect would pick it and build into podman's store —
-# same reason CONTRACT_ENGINE exists in scripts/contract-test.sh).
+# same reason CONTRACT_ENGINE exists in scripts/contract_test.py).
 ENGINE=${SMOKE_ENGINE:-$(command -v podman >/dev/null 2>&1 && echo podman || echo docker)}
 
 FAILURES=0
