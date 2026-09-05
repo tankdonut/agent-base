@@ -76,11 +76,13 @@ COPY --chown=node:node container/entrypoint.py         /opt/agent/entrypoint.py
 COPY --chown=node:node container/seed_automations.py   /opt/agent/seed_automations.py
 COPY --chown=node:node container/spec.py               /opt/agent/spec.py
 
-# automations default dir (script-dir sibling resolution in
-# seed_automations.build_jobs) + seed placeholders. The placeholders stay
-# EMPTY here: minimal projects may mount nothing over them, and
-# entrypoint.seed_content copytree sources must exist regardless.
-RUN mkdir -p /opt/agent/automations /opt/seed/workspace /opt/seed/skills /opt/seed/docs \
+# automations + trigger-scripts default dirs (script-dir sibling
+# resolution in seed_automations.build_jobs; trigger scripts mount
+# read-only like automations — writable scheduled scripts would be a
+# self-modification surface). The placeholders stay EMPTY here: minimal
+# projects may mount nothing over them, and entrypoint.seed_content
+# copytree sources must exist regardless.
+RUN mkdir -p /opt/agent/automations /opt/agent/scripts /opt/seed/workspace /opt/seed/skills /opt/seed/docs \
     && chown -R node:node /opt/agent /opt/seed
 
 LABEL org.opencontainers.image.title="agent-base" \

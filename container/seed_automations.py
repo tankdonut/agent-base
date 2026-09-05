@@ -19,10 +19,32 @@ Bodies render to a single canonical line (all whitespace runs collapse to
 one space), so markdown reformatting hooks can never churn the deployed
 message string and trigger needless ``cron edit`` calls.
 
+A job may declare ``trigger-script: <relative path>`` — a condition
+script evaluated by the Gateway each time the schedule is due (the job's
+agent turn runs only when the script returns ``fire: true``). The header
+value resolves inside the scripts directory; the CLI reads the file,
+trims it, embeds the bytes as the job's ``trigger.script`` (never the
+path), and refuses empty or >64 KiB content — the loader mirrors all of
+that fail-closed. Script content participates in currency: editing the
+file heals the stored job via one ``cron edit --trigger-script``, and
+dropping the header heals via ``--clear-trigger``.
+
 Standard agent contract (union of the freya and mimir originals):
 
   AGENT_AUTOMATIONS_DIR  Override the automations directory (default:
                          <script dir>/automations).
+  AGENT_SCRIPTS_DIR      Override the trigger-scripts directory (default:
+                         <automations dir>/../scripts — read-only mount
+                         surface for ``trigger-script:`` headers).
+  AGENT_AUTOMATION_TRIGGERS
+                         Must be exactly "1" when any automation declares
+                         ``trigger-script:`` — the run arms (and the
+                         Gateway requires) config
+                         ``cron.triggers.enabled=true``. Deliberately
+                         NOT auto-armed: trigger scripts execute
+                         headlessly with the owning agent's full tool
+                         policy (including exec), so the opt-in must be
+                         an explicit deployment decision.
   TELEGRAM_CHAT_ID       Chat ID for delivery (optional; if unset, jobs
                          run without Telegram delivery).
   TELEGRAM_TOPIC_*       Telegram forum topic IDs per job (via topic-env).
@@ -63,7 +85,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 # --- logging (OpenClaw line format: ts [tag] [level] message) ---
 
@@ -96,8 +118,25 @@ TOKEN_RE = re.compile(r"\{\{\s*([A-Z][A-Z_]*)\s*\}\}")
 NAME_RE = re.compile(r"[a-z0-9][a-z0-9-]*")
 ENV_NAME_RE = re.compile(r"[A-Z][A-Z0-9_]*")
 
-HEADER_KEYS = frozenset({"name", "every", "cron", "deliver", "topic-env", "tools", "model"})
+HEADER_KEYS = frozenset(
+    {"name", "every", "cron", "deliver", "topic-env", "tools", "model", "trigger-script"}
+)
 DELIVER_MODES = frozenset({"announce", "no-deliver"})
+
+# `trigger-script:` surface, source-verified at the pinned base tag
+# 2026.7.1-2 (cron-cli + gateway jobs bundles, plus live round-trip):
+# `cron add|edit --trigger-script <path>` reads the file CLI-side, trims
+# it, refuses empty or oversized content, and embeds it as the job's
+# `trigger.script`; the Gateway evaluates it headlessly when due
+# (json({fire, message?, state?}) — fire:false skips the run without
+# run history). Server-side gates: config `cron.triggers.enabled=true`
+# (armed only under the AGENT_AUTOMATION_TRIGGERS opt-in), every/cron
+# schedules only, and every >= 30s. Evaluation carries the OWNING
+# AGENT's full tool policy — not the job's --tools allow-list — which
+# is why the whole surface sits behind an explicit env opt-in instead
+# of being silently armed.
+TRIGGER_SCRIPT_MAX_BYTES = 65536
+TRIGGER_GATE_ENV = "AGENT_AUTOMATION_TRIGGERS"
 
 # Bounded tool allow-list for seeded jobs (overridden per job via `tools:`
 # or globally via spec automations.default_tools / --default-tools). The
@@ -159,6 +198,11 @@ class JobSpec:
     tools_declared: bool = False
     # Per-job `model:` header — "" means undeclared (global model applies).
     model: str = ""
+    # `trigger-script:` header — None means no condition trigger. The
+    # resolved path feeds cron add/edit argv; the trimmed content (what
+    # the CLI embeds as trigger.script) feeds currency comparison.
+    trigger_path: Path | None = None
+    trigger_script: str = ""
 
 
 def _effective_model(spec: JobSpec, fallback: str) -> str:
@@ -218,6 +262,57 @@ def _render_prompt(body: str, path: Path) -> str:
     if "{{" in rendered:
         raise AutomationSpecError(f"{path.name}: unrecognized token syntax in prompt body")
     return " ".join(rendered.split())
+
+
+def _scripts_dir(automations_dir: Path) -> Path:
+    """Scripts root for `trigger-script:` headers: AGENT_SCRIPTS_DIR
+    override, else the automations directory's sibling `scripts/` (the
+    image default /opt/agent/scripts — consumers mount it read-only,
+    mirroring automations; writable scheduled scripts would be a
+    self-modification surface)."""
+    env_dir = os.environ.get("AGENT_SCRIPTS_DIR", "")
+    return Path(env_dir) if env_dir else automations_dir.parent / "scripts"
+
+
+def _load_trigger_script(rel: str, automation: Path) -> tuple[Path, str]:
+    """Resolve and read a `trigger-script:` reference, fail-closed.
+
+    The value must be a plain relative path inside the scripts root (no
+    leading slash, no `..` segment, no backslashes) naming a readable
+    non-empty UTF-8 file within the CLI's 64 KiB trigger limit. Returns
+    (absolute path, trimmed content): the path feeds `cron add|edit
+    --trigger-script` argv, the trimmed bytes feed currency checks —
+    the CLI embeds exactly those bytes, never the path. Errors name the
+    automation and the script path, never file content."""
+    posix = PurePosixPath(rel)
+    if (
+        not rel
+        or rel.startswith("/")
+        or "\\" in rel
+        or posix.is_absolute()
+        or any(part == ".." for part in posix.parts)
+    ):
+        raise AutomationSpecError(
+            f"{automation.name}: trigger-script must be a relative path inside "
+            f"the scripts dir (no '..', no absolute paths), got {rel!r}"
+        )
+    root = _scripts_dir(automation.parent)
+    target = root / rel
+    try:
+        raw = target.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise AutomationSpecError(
+            f"{automation.name}: cannot read trigger script {rel!r} under {root} "
+            f"({exc.__class__.__name__})"
+        ) from exc
+    content = raw.strip()
+    if not content:
+        raise AutomationSpecError(f"{automation.name}: trigger script {rel!r} is empty")
+    if len(content.encode("utf-8")) > TRIGGER_SCRIPT_MAX_BYTES:
+        raise AutomationSpecError(
+            f"{automation.name}: trigger script {rel!r} exceeds {TRIGGER_SCRIPT_MAX_BYTES} bytes"
+        )
+    return target, content
 
 
 def _load_spec(path: Path) -> JobSpec:
@@ -281,6 +376,14 @@ def _load_spec(path: Path) -> JobSpec:
     if "model" in header and not model:
         raise AutomationSpecError(f"{path.name}: model value is empty")
 
+    trigger_rel = header.get("trigger-script", "")
+    if "trigger-script" in header and not trigger_rel:
+        raise AutomationSpecError(f"{path.name}: trigger-script value is empty")
+    trigger_path: Path | None = None
+    trigger_script = ""
+    if trigger_rel:
+        trigger_path, trigger_script = _load_trigger_script(trigger_rel, path)
+
     prompt = _render_prompt(body, path)
     if not prompt:
         raise AutomationSpecError(f"{path.name}: prompt body is empty")
@@ -295,6 +398,8 @@ def _load_spec(path: Path) -> JobSpec:
         tools=tools,
         tools_declared=tools_declared,
         model=model,
+        trigger_path=trigger_path,
+        trigger_script=trigger_script,
     )
 
 
@@ -461,11 +566,27 @@ def _schedule_is_current(job: dict, spec: JobSpec) -> bool:
     return literal == _collapse_ws(spec.schedule_value)
 
 
+def _trigger_is_current(job: dict, spec: JobSpec) -> bool:
+    """Trigger convergence: a spec without `trigger-script:` owns jobs
+    with NO trigger; a declaring spec owns the exact trimmed script bytes
+    with no foreign `once` policy (cron edit replaces the whole trigger,
+    so both directions heal with one idempotent edit)."""
+    stored = job.get("trigger")
+    if spec.trigger_script == "":
+        return stored is None
+    if not isinstance(stored, dict):
+        return False
+    if str(stored.get("script") or "") != spec.trigger_script:
+        return False
+    return not stored.get("once")
+
+
 def _job_is_current(job: dict, spec: JobSpec, model: str) -> bool:
     """Current requires message, model, threadId (when the spec has a
-    topic), delivery.to (when CHAT is set), schedule, and tool policy to
-    match. A stored job with no toolsAllow is unrestricted: current only
-    when the spec explicitly opts back to `*`."""
+    topic), delivery.to (when CHAT is set), schedule, trigger script,
+    and tool policy to match. A stored job with no toolsAllow is
+    unrestricted: current only when the spec explicitly opts back to
+    `*`."""
     msg = ""
     stored_model = ""
     payload = job.get("payload") or {}
@@ -486,6 +607,7 @@ def _job_is_current(job: dict, spec: JobSpec, model: str) -> bool:
         and chat_match
         and _schedule_is_current(job, spec)
         and _tools_are_current(job, spec)
+        and _trigger_is_current(job, spec)
         and _failure_alerts_are_current(job)
     )
 
@@ -532,7 +654,9 @@ def cron_add_argv(
     (unrestricted, explicit opt-out). Otherwise: a job-declared `tools:`
     header wins; jobs without one take default_tools, else
     DEFAULT_JOB_TOOLS. Model policy mirrors tools: a job-declared
-    `model:` header wins over the passed global model."""
+    `model:` header wins over the passed global model. A declared
+    `trigger-script:` rides along as its path (the CLI embeds the
+    bytes)."""
     tools = spec.tools if spec.tools_declared or default_tools is None else default_tools
     model = _effective_model(spec, model)
     argv = [
@@ -553,15 +677,27 @@ def cron_add_argv(
     ]
     if tools != ("*",):
         argv.extend(("--tools", ",".join(tools)))
+    if spec.trigger_path is not None:
+        argv.extend(("--trigger-script", str(spec.trigger_path)))
     argv.extend(flags)
     return argv
 
 
-def cron_edit_argv(spec: JobSpec, job_id: str, flags: list[str], model: str) -> list[str]:
+def cron_edit_argv(
+    spec: JobSpec,
+    job_id: str,
+    flags: list[str],
+    model: str,
+    stored_has_trigger: bool = False,
+) -> list[str]:
     """Argv for `openclaw cron edit` (message, schedule, model, delivery,
-    tools, failure-alert config). Model rides along so both per-job
-    `model:` header drift and global automations.model drift heal with
-    one idempotent edit."""
+    tools, trigger script, failure-alert config). Model rides along so
+    both per-job `model:` header drift and global automations.model drift
+    heal with one idempotent edit. Trigger policy: a declared
+    `trigger-script:` re-asserts its path (content drift heals because
+    the CLI re-reads the file); a spec that dropped the header clears a
+    stored trigger via --clear-trigger (the two flags are mutually
+    exclusive in the CLI)."""
     argv = [
         "cron",
         "edit",
@@ -575,6 +711,10 @@ def cron_edit_argv(spec: JobSpec, job_id: str, flags: list[str], model: str) -> 
     ]
     if spec.tools != ("*",):
         argv.extend(("--tools", ",".join(spec.tools)))
+    if spec.trigger_path is not None:
+        argv.extend(("--trigger-script", str(spec.trigger_path)))
+    elif stored_has_trigger:
+        argv.append("--clear-trigger")
     argv.extend(flags)
     argv.extend(failure_alert_flags())
     return argv
@@ -643,7 +783,9 @@ def reconcile(
     job_id = job.get("id", "")
     log(f"updating '{spec.name}'")
     flags = delivery_flags(spec)
-    result = openclaw(cron_edit_argv(spec, job_id, flags, model))
+    result = openclaw(
+        cron_edit_argv(spec, job_id, flags, model, stored_has_trigger=bool(job.get("trigger")))
+    )
     if result.returncode != 0:
         warn(f"cron edit failed: {spec.name}: {result.stderr.strip()}")
 
@@ -680,6 +822,22 @@ def main(argv: list[str] | None = None) -> None:
             error("--default-tools has empty entries")
             sys.exit(1)
         default_tools = tuple(tokens)
+
+    if any(spec.trigger_path is not None for spec in specs):
+        gate = os.environ.get(TRIGGER_GATE_ENV, "")
+        if gate != "1":
+            error(
+                f"trigger-script automations require {TRIGGER_GATE_ENV}=1 — cron triggers "
+                "run headless with the owning agent's full tool policy (including exec); "
+                "the opt-in must be an explicit deployment decision"
+            )
+            error("aborting — no jobs created, edited, or pruned")
+            sys.exit(1)
+        armed = openclaw(["config", "set", "cron.triggers.enabled", "true"])
+        if armed.returncode != 0:
+            warn(f"arming cron.triggers.enabled failed: {armed.stderr.strip()}")
+        else:
+            log("armed cron triggers (cron.triggers.enabled=true)")
 
     # One listing for the whole run: reconcile operations only touch their
     # own job (names are unique per spec), so per-spec listings would spend

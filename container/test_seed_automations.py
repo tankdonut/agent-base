@@ -15,6 +15,11 @@ Union of the freya and mimir suites, rebased onto the standard contract:
   model on `cron add`; empty declaration fails closed; stored-model
   drift (payload.model, source-verified shape at the pinned base tag)
   heals via `cron edit --model`.
+- TriggerScriptPolicy — the `trigger-script:` header: fail-closed
+  loading (relative-path confinement, missing/empty/oversized scripts),
+  the AGENT_AUTOMATION_TRIGGERS opt-in gate + config arming, stored
+  trigger.script currency (source-verified shape at the pinned base
+  tag), and add/edit/clear argv shapes.
 - EnvContract — the standard env names: AGENT_AUTOMATIONS_DIR override
   (default <script dir>/automations) and TELEGRAM_CHAT_ID.
 - DurationParsing — unit/compound/bare-ms forms and rejections.
@@ -77,6 +82,8 @@ def make_spec(
     topic: str = "",
     deliver: str = "announce",
     model: str = "",
+    trigger_path: Path | None = None,
+    trigger_script: str = "",
 ) -> seed_automations.JobSpec:
     return seed_automations.JobSpec(
         name="test-job",
@@ -86,6 +93,8 @@ def make_spec(
         topic=topic,
         deliver=deliver,
         model=model,
+        trigger_path=trigger_path,
+        trigger_script=trigger_script,
     )
 
 
@@ -446,6 +455,348 @@ class JobModelPolicy(TempSpecDir):
         self.write("test-job.md", VALID_SPEC)
         argv = seed_automations.cron_add_argv(self.load()[0], "global/model", [])
         self.assertEqual("global/model", argv[argv.index("--model") + 1])
+
+
+class TriggerScriptLoader(TempSpecDir):
+    """`trigger-script:` header — fail-closed loading against the scripts
+    dir sibling of the automations dir (AGENT_SCRIPTS_DIR overrides)."""
+
+    SCRIPT = "json({ fire: true })"
+
+    def write_trigger_spec(self, rel: str = "probe.js") -> None:
+        spec_text = VALID_SPEC.replace(
+            "deliver: announce", f"deliver: announce\ntrigger-script: {rel}"
+        )
+        self.write("test-job.md", spec_text)
+
+    def write_script(self, name: str, content: str) -> Path:
+        scripts = self.dir.parent / "scripts"
+        scripts.mkdir(exist_ok=True)
+        path = scripts / name
+        path.write_text(content, encoding="utf-8")
+        return path
+
+    def scripts_root(self) -> Path:
+        return self.dir.parent / "scripts"
+
+    def test_trigger_header_parses_with_trimmed_content(self) -> None:
+        self.write_trigger_spec()
+        self.write_script("probe.js", f"\n\n{self.SCRIPT}\n\n")
+        [spec] = self.load()
+        self.assertEqual(self.SCRIPT, spec.trigger_script)
+        self.assertEqual(self.scripts_root() / "probe.js", spec.trigger_path)
+
+    def test_trigger_header_works_with_cron_schedule(self) -> None:
+        spec_text = VALID_SPEC.replace("every: 15m", "cron: */20 * * * *").replace(
+            "deliver: announce", "deliver: announce\ntrigger-script: probe.js"
+        )
+        self.write("test-job.md", spec_text)
+        self.write_script("probe.js", self.SCRIPT)
+        [spec] = self.load()
+        self.assertEqual("--cron", spec.schedule_flag)
+        self.assertEqual(self.SCRIPT, spec.trigger_script)
+
+    def test_empty_trigger_script_value_fails_closed(self) -> None:
+        for bad in ("", " "):
+            with self.subTest(value=bad):
+                self.write_trigger_spec(bad)
+                with self.assertRaises(seed_automations.AutomationSpecError) as ctx:
+                    self.load()
+                self.assertIn("trigger-script", str(ctx.exception))
+                (self.dir / "test-job.md").unlink()
+
+    def test_missing_script_file_fails_closed(self) -> None:
+        self.write_trigger_spec("gone.js")
+        with self.assertRaises(seed_automations.AutomationSpecError) as ctx:
+            self.load()
+        message = str(ctx.exception)
+        self.assertIn("gone.js", message)
+        self.assertIn(str(self.scripts_root()), message)
+
+    def test_blank_script_content_fails_closed(self) -> None:
+        self.write_trigger_spec()
+        self.write_script("probe.js", " \n\t ")
+        with self.assertRaises(seed_automations.AutomationSpecError) as ctx:
+            self.load()
+        self.assertIn("empty", str(ctx.exception))
+
+    def test_oversized_script_fails_closed_at_cli_limit(self) -> None:
+        self.write_trigger_spec()
+        self.write_script("probe.js", "a" * (seed_automations.TRIGGER_SCRIPT_MAX_BYTES + 1))
+        with self.assertRaises(seed_automations.AutomationSpecError) as ctx:
+            self.load()
+        self.assertIn("exceeds", str(ctx.exception))
+
+    def test_script_at_exact_byte_limit_parses(self) -> None:
+        self.write_trigger_spec()
+        self.write_script("probe.js", "a" * seed_automations.TRIGGER_SCRIPT_MAX_BYTES)
+        [spec] = self.load()
+        self.assertEqual("a" * seed_automations.TRIGGER_SCRIPT_MAX_BYTES, spec.trigger_script)
+
+    def test_non_utf8_script_fails_closed(self) -> None:
+        self.write_trigger_spec()
+        scripts = self.scripts_root()
+        scripts.mkdir(exist_ok=True)
+        (scripts / "probe.js").write_bytes(b"\xff\xfe\x00")
+        with self.assertRaises(seed_automations.AutomationSpecError):
+            self.load()
+
+    def test_escaping_paths_fail_closed(self) -> None:
+        for bad in ("/abs/probe.js", "../probe.js", "sub/../../probe.js", "back\\slash.js"):
+            with self.subTest(rel=bad):
+                self.write_trigger_spec(bad)
+                with self.assertRaises(seed_automations.AutomationSpecError) as ctx:
+                    self.load()
+                self.assertIn("relative path", str(ctx.exception))
+                (self.dir / "test-job.md").unlink()
+
+    def test_subdirectory_script_resolves(self) -> None:
+        self.write_trigger_spec("checks/probe.js")
+        scripts = self.scripts_root() / "checks"
+        scripts.mkdir(parents=True, exist_ok=True)
+        (scripts / "probe.js").write_text(self.SCRIPT, encoding="utf-8")
+        [spec] = self.load()
+        self.assertEqual(self.scripts_root() / "checks" / "probe.js", spec.trigger_path)
+
+    def test_agent_scripts_dir_override_honored(self) -> None:
+        self.write_trigger_spec()
+        other = self.dir / "elsewhere"
+        other.mkdir()
+        (other / "probe.js").write_text(self.SCRIPT, encoding="utf-8")
+        with mock.patch.dict(os.environ, {"AGENT_SCRIPTS_DIR": str(other)}):
+            [spec] = self.load()
+        self.assertEqual(other / "probe.js", spec.trigger_path)
+
+    def test_sibling_scripts_ignored_when_override_set(self) -> None:
+        self.write_trigger_spec()
+        self.write_script("probe.js", self.SCRIPT)
+        other = self.dir / "elsewhere"
+        other.mkdir()
+        (other / "probe.js").write_text(self.SCRIPT, encoding="utf-8")
+        with mock.patch.dict(os.environ, {"AGENT_SCRIPTS_DIR": str(other)}):
+            [spec] = self.load()
+        self.assertEqual(other / "probe.js", spec.trigger_path)
+
+
+class TriggerScriptCurrency(unittest.TestCase):
+    """Stored `trigger.script` participates in currency: the trimmed
+    file bytes must match exactly, foreign `once` policy is drift, and a
+    spec without the header owns jobs with no trigger at all."""
+
+    def setUp(self) -> None:
+        patcher = mock.patch.object(seed_automations, "CHAT", "")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def spec_with_trigger(self) -> seed_automations.JobSpec:
+        return make_spec(
+            trigger_path=Path("/opt/agent/scripts/probe.js"),
+            trigger_script="json({ fire: true })",
+        )
+
+    def trigger(self, script: str = "json({ fire: true })", **extra: object) -> dict:
+        return {"script": script, **extra}
+
+    def test_no_trigger_spec_owns_untriggered_job(self) -> None:
+        job = stored_job({"kind": "every", "everyMs": 900000})
+        self.assertTrue(seed_automations._job_is_current(job, make_spec(), "m"))
+
+    def test_no_trigger_spec_with_stored_trigger_is_drift(self) -> None:
+        job = stored_job({"kind": "every", "everyMs": 900000}, trigger=self.trigger())
+        self.assertFalse(seed_automations._job_is_current(job, make_spec(), "m"))
+
+    def test_matching_script_is_current(self) -> None:
+        job = stored_job({"kind": "every", "everyMs": 900000}, trigger=self.trigger())
+        self.assertTrue(seed_automations._job_is_current(job, self.spec_with_trigger(), "m"))
+
+    def test_script_content_drift_is_drift(self) -> None:
+        job = stored_job(
+            {"kind": "every", "everyMs": 900000}, trigger=self.trigger("json({ fire: false })")
+        )
+        self.assertFalse(seed_automations._job_is_current(job, self.spec_with_trigger(), "m"))
+
+    def test_missing_stored_trigger_is_drift(self) -> None:
+        job = stored_job({"kind": "every", "everyMs": 900000})
+        self.assertFalse(seed_automations._job_is_current(job, self.spec_with_trigger(), "m"))
+
+    def test_foreign_once_policy_is_drift(self) -> None:
+        job = stored_job({"kind": "every", "everyMs": 900000}, trigger=self.trigger(once=True))
+        self.assertFalse(seed_automations._job_is_current(job, self.spec_with_trigger(), "m"))
+
+    def test_opaque_stored_trigger_is_drift(self) -> None:
+        for stored in ("json({ fire: true })", 42, [], {"script": 42}, None):
+            with self.subTest(stored=stored):
+                job = stored_job({"kind": "every", "everyMs": 900000}, trigger=stored)
+                self.assertFalse(
+                    seed_automations._job_is_current(job, self.spec_with_trigger(), "m")
+                )
+
+
+class TriggerScriptArgv(unittest.TestCase):
+    """cron add carries --trigger-script <path>; cron edit re-asserts it
+    or clears a stored trigger when the spec dropped the header."""
+
+    def setUp(self) -> None:
+        self.chat_patcher = mock.patch.object(seed_automations, "CHAT", "")
+        self.chat_patcher.start()
+        self.addCleanup(self.chat_patcher.stop)
+        self.oc_patcher = mock.patch.object(seed_automations, "openclaw")
+        self.oc = self.oc_patcher.start()
+        self.addCleanup(self.oc_patcher.stop)
+        self.oc.return_value = CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+
+    def spec_with_trigger(self) -> seed_automations.JobSpec:
+        return make_spec(
+            trigger_path=Path("/opt/agent/scripts/probe.js"),
+            trigger_script="json({ fire: true })",
+        )
+
+    def test_add_carries_trigger_script_flag(self) -> None:
+        argv = seed_automations.cron_add_argv(self.spec_with_trigger(), "m", [])
+        self.assertIn("--trigger-script", argv)
+        self.assertEqual("/opt/agent/scripts/probe.js", argv[argv.index("--trigger-script") + 1])
+
+    def test_add_without_trigger_omits_flag(self) -> None:
+        argv = seed_automations.cron_add_argv(make_spec(), "m", [])
+        self.assertNotIn("--trigger-script", argv)
+
+    def test_edit_reasserts_declared_trigger(self) -> None:
+        argv = seed_automations.cron_edit_argv(
+            self.spec_with_trigger(), "job-1", [], "m", stored_has_trigger=True
+        )
+        self.assertIn("--trigger-script", argv)
+        self.assertNotIn("--clear-trigger", argv)
+
+    def test_edit_clears_trigger_when_spec_dropped_header(self) -> None:
+        argv = seed_automations.cron_edit_argv(
+            make_spec(), "job-1", [], "m", stored_has_trigger=True
+        )
+        self.assertIn("--clear-trigger", argv)
+        self.assertNotIn("--trigger-script", argv)
+
+    def test_edit_without_trigger_surface_emits_neither_flag(self) -> None:
+        argv = seed_automations.cron_edit_argv(
+            make_spec(), "job-1", [], "m", stored_has_trigger=False
+        )
+        self.assertNotIn("--clear-trigger", argv)
+        self.assertNotIn("--trigger-script", argv)
+
+    def test_reconcile_heals_trigger_content_drift_via_edit(self) -> None:
+        job = stored_job(
+            {"kind": "every", "everyMs": 900000},
+            trigger={"script": "json({ fire: false })"},
+        )
+        seed_automations.reconcile(self.spec_with_trigger(), [job], "m")
+        self.oc.assert_called_once()
+        edit_argv = self.oc.call_args[0][0]
+        self.assertEqual(["cron", "edit", "job-1"], edit_argv[:3])
+        self.assertIn("--trigger-script", edit_argv)
+
+    def test_reconcile_clears_stored_trigger_when_header_dropped(self) -> None:
+        job = stored_job(
+            {"kind": "every", "everyMs": 900000}, trigger={"script": "json({ fire: true })"}
+        )
+        seed_automations.reconcile(make_spec(), [job], "m")
+        self.oc.assert_called_once()
+        edit_argv = self.oc.call_args[0][0]
+        self.assertEqual(["cron", "edit", "job-1"], edit_argv[:3])
+        self.assertIn("--clear-trigger", edit_argv)
+
+
+class TriggerScriptMainFlow(unittest.TestCase):
+    """The AGENT_AUTOMATION_TRIGGERS opt-in gate and config arming:
+    un-gated trigger automations abort before any mutation; the armed
+    path sets cron.triggers.enabled before touching any job."""
+
+    def setUp(self) -> None:
+        self.chat_patcher = mock.patch.object(seed_automations, "CHAT", "")
+        self.chat_patcher.start()
+        self.addCleanup(self.chat_patcher.stop)
+        self.spec = make_spec(
+            trigger_path=Path("/opt/agent/scripts/probe.js"),
+            trigger_script="json({ fire: true })",
+        )
+
+    def test_unset_gate_aborts_before_any_mutation(self) -> None:
+        stderr = io.StringIO()
+        with (
+            mock.patch.dict(os.environ),
+            mock.patch.object(seed_automations, "build_jobs", return_value=[self.spec]),
+            mock.patch.object(seed_automations, "list_cron_jobs") as lst,
+            mock.patch.object(seed_automations, "openclaw") as oc,
+            contextlib.redirect_stderr(stderr),
+        ):
+            os.environ.pop(seed_automations.TRIGGER_GATE_ENV, None)
+            with self.assertRaises(SystemExit) as ctx:
+                seed_automations.main(["--model", "zai/test-model"])
+        self.assertEqual(1, ctx.exception.code)
+        output = stderr.getvalue()
+        self.assertIn(seed_automations.TRIGGER_GATE_ENV, output)
+        lst.assert_not_called()
+        oc.assert_not_called()
+
+    def test_non_one_gate_value_aborts(self) -> None:
+        with (
+            mock.patch.dict(os.environ, {seed_automations.TRIGGER_GATE_ENV: "true"}),
+            mock.patch.object(seed_automations, "build_jobs", return_value=[self.spec]),
+            mock.patch.object(seed_automations, "list_cron_jobs") as lst,
+            mock.patch.object(seed_automations, "openclaw") as oc,
+            self.assertRaises(SystemExit) as ctx,
+        ):
+            seed_automations.main(["--model", "zai/test-model"])
+        self.assertEqual(1, ctx.exception.code)
+        lst.assert_not_called()
+        oc.assert_not_called()
+
+    def test_armed_gate_sets_config_then_adds_with_trigger(self) -> None:
+        stdout = io.StringIO()
+        with (
+            mock.patch.dict(os.environ, {seed_automations.TRIGGER_GATE_ENV: "1"}),
+            mock.patch.object(seed_automations, "build_jobs", return_value=[self.spec]),
+            mock.patch.object(seed_automations, "list_cron_jobs", return_value=[]),
+            mock.patch.object(
+                seed_automations, "openclaw", return_value=CompletedProcess([], 0, "", "")
+            ) as oc,
+            contextlib.redirect_stdout(stdout),
+        ):
+            seed_automations.main(["--model", "zai/test-model"])
+        arm_argv = oc.call_args_list[0][0][0]
+        self.assertEqual(["config", "set", "cron.triggers.enabled", "true"], arm_argv)
+        add_argv = oc.call_args_list[1][0][0]
+        self.assertEqual(["cron", "add"], add_argv[:2])
+        self.assertIn("--trigger-script", add_argv)
+        self.assertIn("armed cron triggers", stdout.getvalue())
+
+    def test_failed_arming_warns_but_proceeds_to_add(self) -> None:
+        stdout = io.StringIO()
+        with (
+            mock.patch.dict(os.environ, {seed_automations.TRIGGER_GATE_ENV: "1"}),
+            mock.patch.object(seed_automations, "build_jobs", return_value=[self.spec]),
+            mock.patch.object(seed_automations, "list_cron_jobs", return_value=[]),
+            mock.patch.object(seed_automations, "openclaw") as oc,
+            contextlib.redirect_stdout(stdout),
+        ):
+            oc.side_effect = [
+                CompletedProcess([], 1, "", "config write refused"),
+                CompletedProcess([], 0, "", ""),
+            ]
+            seed_automations.main(["--model", "zai/test-model"])
+        self.assertEqual(2, oc.call_count)
+        self.assertEqual(["cron", "add"], oc.call_args_list[1][0][0][:2])
+        self.assertIn("[warn]", stdout.getvalue())
+
+    def test_gate_stays_inert_without_trigger_automations(self) -> None:
+        with (
+            mock.patch.dict(os.environ, {seed_automations.TRIGGER_GATE_ENV: "1"}),
+            mock.patch.object(seed_automations, "build_jobs", return_value=[make_spec()]),
+            mock.patch.object(seed_automations, "list_cron_jobs", return_value=[]),
+            mock.patch.object(
+                seed_automations, "openclaw", return_value=CompletedProcess([], 0, "", "")
+            ) as oc,
+        ):
+            seed_automations.main(["--model", "zai/test-model"])
+        oc.assert_called_once()
+        self.assertEqual(["cron", "add"], oc.call_args[0][0][:2])
 
 
 class FailureAlerts(unittest.TestCase):

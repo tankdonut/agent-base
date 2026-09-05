@@ -52,8 +52,18 @@ spec.json files via {env:...} templating, if_env guards, and split_csv):
                           (default 600; 0 forwards then force-kills at
                           once).
   AGENT_AUTOMATIONS_DIR  Automations directory; resolved inside
-                         seed_automations (default /opt/agent/automations)
-                         — deliberately not duplicated here.
+                          seed_automations (default /opt/agent/automations)
+                          — deliberately not duplicated here.
+  AGENT_SCRIPTS_DIR      Trigger-scripts directory for `trigger-script:`
+                          automation headers; resolved inside
+                          seed_automations (default /opt/agent/scripts,
+                          read-only mount surface).
+  AGENT_AUTOMATION_TRIGGERS
+                          "1" opts the deployment into cron trigger
+                          scripts (arms the Gateway's
+                          cron.triggers.enabled); aborts the cron seed
+                          when a trigger-script automation exists
+                          without it — resolved inside seed_automations.
 
 Resolved secret values must never reach logs: warnings name config keys,
 never their values.
