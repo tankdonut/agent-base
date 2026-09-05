@@ -94,6 +94,7 @@ build_common() { # build_common FIXTURE
     -e "DATABASE_URL=postgres://localhost/smoke"
     -e "ZAI_API_KEY=smoke-zai-key"
     -e "AGENT_GIT_TOKEN=smoke-gh-token"
+    -e "AGENT_AUTOMATION_TRIGGERS=1"
     -e "HOME=/home/node"
     -e "OPENCLAW_SHIM_LOG=/tmp/shim.log"
     -e "PATH=/shim:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
@@ -108,10 +109,15 @@ build_common() { # build_common FIXTURE
   if [ -d "$REPO_ROOT/fixtures/$f/skills" ]; then
     COMMON_ARGS+=(-v "$REPO_ROOT/fixtures/$f/skills:/opt/seed/skills:ro")
   fi
+  # Only trigger-script fixtures ship a scripts dir; the image's empty
+  # /opt/agent/scripts placeholder covers the rest.
+  if [ -d "$REPO_ROOT/fixtures/$f/scripts" ]; then
+    COMMON_ARGS+=(-v "$REPO_ROOT/fixtures/$f/scripts:/opt/agent/scripts:ro")
+  fi
 }
 
-smoke_fixture() { # smoke_fixture FIXTURE EXPECTED_MCP_NAME
-  local f=$1 mcp=$2
+smoke_fixture() { # smoke_fixture FIXTURE EXPECTED_MCP_NAME [TRIGGERS]
+  local f=$1 mcp=$2 triggers=${3:-}
   local validate_log="$LOGDIR/smoke-$f.validate.log" boot_log="$LOGDIR/smoke-$f.boot.log"
   LOG="$LOGDIR/smoke-$f.shim.log"
   echo "[smoke] fixture: $f"
@@ -156,6 +162,17 @@ smoke_fixture() { # smoke_fixture FIXTURE EXPECTED_MCP_NAME
   assert_present "'--failure-alert'" "seeded cron jobs alert on failed/skipped runs"
   assert_present "'memory' 'status'" "memory ladder checked index status"
   assert_present "'health'" "post_startup waited for gateway health"
+  # --- trigger-script surface (opt-in env + read-only scripts mount) ---
+  if [ -n "$triggers" ]; then
+    assert_present "'config' 'set' 'cron.triggers.enabled' 'true'" \
+      "trigger automations armed cron.triggers.enabled before seeding"
+    assert_present "'--trigger-script' '/opt/agent/scripts/probe.js'" \
+      "trigger job seeded via --trigger-script"
+  elif grep -q "'cron.triggers.enabled'" "$LOG"; then
+    fail "no trigger arming without trigger-script automations"
+  else
+    pass "no trigger arming without trigger-script automations"
+  fi
   # The shim reports a CLEAN memory index (files=0, dirty=false, identity
   # valid), so the entrypoint must take the fast path and skip reindex.
   if grep -q "'memory' 'index'" "$LOG"; then
@@ -250,7 +267,7 @@ else
   fail "image HEALTHCHECK missing (was the build OCI-format?)"
 fi
 
-smoke_fixture freya-like ac-infinity
+smoke_fixture freya-like ac-infinity triggers
 smoke_fixture mimir-like trade-agent
 smoke_drain
 

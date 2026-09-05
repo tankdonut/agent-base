@@ -5,18 +5,21 @@ verdict (roadmap N4; the shim-only smoke let the --type remote bug ship).
 
 Four stages:
   A) boot the image with the shim on PATH purely to CAPTURE the argv the
-     entrypoint emits for the canary spec
+     entrypoint emits for the canary spec — twice, against a persisted
+     shim job store: boot 1 seeds from empty; boot 2 sees the shim's
+     payload-less stored jobs and emits the drift-heal `cron edit` argv,
+     so edit-only flags get policed too
   B) cross-check every captured flag against `openclaw <cmd> --help` run
      with the real CLI (flag drift fails here)
   C) boot the image with NO shim and the real CLI: full first boot +
      reconcile must exit 0 with zero [agent-entry] [warn] lines, and
-     `mcp list --json` must contain both canary servers
+      `mcp list --json` must contain both canary servers
   D) upgrade path: boot the LAST PUBLISHED release on a fresh volume with
-     the stable minimal spec dialect (spec.upgrade.json), then the
-     candidate on the SAME volume — the version delta must take a
-     verified backup to /backups, reconcile with zero [warn]s, advance
-     the last-image-version marker, and keep both upgrade-spec MCP
-     servers registered
+     the stable minimal spec dialect (spec.upgrade.json + the old-dialect
+     upgrade automations dir), then the candidate on the SAME volume —
+     the version delta must take a verified backup to /backups,
+     reconcile with zero [warn]s, advance the last-image-version marker,
+     and keep both upgrade-spec MCP servers registered
 
 Usage: python3 scripts/contract_test.py [IMAGE]   (builds nothing; expects
 the tag given, or ghcr.io/tankdonut/agent-base:contract)
@@ -82,6 +85,8 @@ CANARY_ENV = (
     "-e",
     "CONTRACT_REMOTE_TOKEN=contract-dummy-bearer",
     "-e",
+    "AGENT_AUTOMATION_TRIGGERS=1",
+    "-e",
     "HOME=/home/node",
 )
 CANARY_MOUNTS = (
@@ -91,6 +96,8 @@ CANARY_MOUNTS = (
     f"{REPO_ROOT}/scripts/contract/spec.json:/opt/agent/spec.json:ro",
     "-v",
     f"{REPO_ROOT}/scripts/contract/automations:/opt/agent/automations:ro",
+    "-v",
+    f"{REPO_ROOT}/scripts/contract/scripts:/opt/agent/scripts:ro",
 )
 UPGRADE_MOUNTS = (
     "--security-opt",
@@ -98,7 +105,7 @@ UPGRADE_MOUNTS = (
     "-v",
     f"{REPO_ROOT}/scripts/contract/spec.upgrade.json:/opt/agent/spec.json:ro",
     "-v",
-    f"{REPO_ROOT}/scripts/contract/automations:/opt/agent/automations:ro",
+    f"{REPO_ROOT}/scripts/contract/upgrade-automations:/opt/agent/automations:ro",
 )
 
 
@@ -162,38 +169,48 @@ def stage_validate(engine: str, image: str) -> None:
 
 
 def stage_a(engine: str, image: str, work: Path) -> Path:
-    shim_log = work / "shim.log"
-    shim_log.touch()
-    # The container writes as mapped uid 1000, not the host user — without
-    # 666 the bind-mounted log stays empty and stage B passes vacuously.
-    os.chmod(shim_log, 0o666)
-    proc = engine_run(
-        engine,
-        [
-            "run",
-            "--rm",
-            "-v",
-            f"{REPO_ROOT}/scripts/shim:/shim:ro",
-            "-v",
-            f"{shim_log}:/tmp/shim.log",
-            "-e",
-            "OPENCLAW_SHIM_LOG=/tmp/shim.log",
-            "-e",
-            f"PATH={SHIM_PATH}",
-            *CANARY_MOUNTS,
-            *CANARY_ENV,
-            image,
-            "sleep",
-            "3",
-        ],
-        timeout=120,
-    )
-    log = work / "stage-a.log"
-    log.write_text(output_of(proc), encoding="utf-8")
-    if succeeded(proc):
-        pass_line("stage A: shim boot exited 0")
-    else:
-        fail("stage A boot failed", log.read_text(encoding="utf-8"))
+    # Two boots sharing the shim's job store via a persisted /persist
+    # mount (the shim keeps its jobs file beside its log). Boot 1 seeds
+    # from empty; boot 2 re-lists those payload-less jobs and emits the
+    # drift-heal `cron edit` argv. If boot 1's seeding misses the sleep-3
+    # window, boot 2 degrades to adds — less coverage that run, never a
+    # false fail.
+    persist = work / "persist"
+    persist.mkdir()
+    # The container writes as mapped uid 1000, not the host user — the
+    # log and job store must stay writable across both boots.
+    os.chmod(persist, 0o777)
+    shim_log = persist / "shim.log"
+    for boot in (1, 2):
+        proc = engine_run(
+            engine,
+            [
+                "run",
+                "--rm",
+                "-v",
+                f"{REPO_ROOT}/scripts/shim:/shim:ro",
+                "-v",
+                f"{persist}:/persist",
+                "-e",
+                "OPENCLAW_SHIM_LOG=/persist/shim.log",
+                "-e",
+                f"PATH={SHIM_PATH}",
+                *CANARY_MOUNTS,
+                *CANARY_ENV,
+                image,
+                "sleep",
+                "3",
+            ],
+            timeout=120,
+        )
+        log = work / f"stage-a{boot}.log"
+        log.write_text(output_of(proc), encoding="utf-8")
+        if succeeded(proc):
+            pass_line(f"stage A boot {boot}: shim boot exited 0")
+        else:
+            fail(f"stage A boot {boot} failed", log.read_text(encoding="utf-8"))
+    if not shim_log.exists():
+        fail("stage A: shim log missing after boots")
     return shim_log
 
 
