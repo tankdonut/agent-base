@@ -10,7 +10,7 @@ internals only.
 | ---- | ---- |
 | `entrypoint.py` | Boot phases, each a plain function over `(spec, env)`, individually callable from wrapper entrypoints |
 | `spec.py` | Fail-closed spec.json loader — library only (shebang is dead; no `__main__`) |
-| `seed_automations.py` | Cron reconciler, dual-mode: imported in-process by entrypoint AND standalone CLI; jobs seeded with a bounded `--tools` allow-list (DEFAULT_JOB_TOOLS) unless a `tools:` header / `automations.default_tools` / `*` says otherwise; a per-job `model:` header overrides the global automation model (`payload.model`, healed via `cron edit --model`) |
+| `seed_automations.py` | Cron reconciler, dual-mode: imported in-process by entrypoint AND standalone CLI; jobs seeded with a bounded `--tools` allow-list (DEFAULT_JOB_TOOLS) unless a `tools:` header / `automations.default_tools` / `*` says otherwise; a per-job `model:` header overrides the global automation model (`payload.model`, healed via `cron edit --model`); a `trigger-script:` header embeds a condition script from the scripts dir sibling (`AGENT_SCRIPTS_DIR`, default `/opt/agent/scripts`, trimmed ≤64 KiB) whose content drift heals via `cron edit --trigger-script` and whose removal heals via `--clear-trigger` — gated on `AGENT_AUTOMATION_TRIGGERS=1`, which also arms `cron.triggers.enabled` before seeding |
 | `Dockerfile` | `FROM ghcr.io/openclaw/openclaw:2026.7.1-2`; apt python3 (no pip — stdlib by construction) + gh CLI from the cli.github.com apt repo (Debian ships none; consumed by `authenticate_gh`); tini → entrypoint → `openclaw gateway`; `USER 1000:1000` (node); EXPOSE 18789 |
 | `test_{spec,entrypoint,seed_automations}.py` | One suite per module; never shipped (explicit COPYs only) |
 
