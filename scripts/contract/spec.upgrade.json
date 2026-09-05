@@ -1,0 +1,38 @@
+{
+  "specVersion": 1,
+  "agent": {
+    "name": "contract-upgrade"
+  },
+  "setup": {
+    "auth_choice": "zai-coding-global"
+  },
+  "model": {
+    "fallback": "zai/glm-4.7"
+  },
+  "automations": {
+    "model": "zai/glm-4.7"
+  },
+  "config": [
+    {
+      "path": "tools.profile",
+      "value": "coding",
+      "strict": true
+    }
+  ],
+  "mcp_servers": [
+    {
+      "name": "contract-upgrade-remote",
+      "url": "https://mcp.invalid/mcp",
+      "headers": {
+        "Authorization": "Bearer {env:CONTRACT_REMOTE_TOKEN}"
+      },
+      "timeout": 11
+    },
+    {
+      "name": "contract-upgrade-local",
+      "command": "/bin/true",
+      "args": ["upgrade-arg"],
+      "no_probe": true
+    }
+  ]
+}

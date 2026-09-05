@@ -64,9 +64,12 @@ jobs:
     # smoke both validate agent-base's argv against itself — this job boots
     # the built image against the REAL openclaw CLI. Stage B cross-checks
     # every emitted flag against `openclaw <cmd> --help`; stage C requires a
-    # clean real boot (exit 0, zero [agent-entry] WARNING) with both canary
+    # clean real boot (exit 0, zero [agent-entry] [warn]) with both canary
     # MCP servers registered. This is what stops the next --type-remote-class
     # bug (including via renovate base-image bumps, whose PRs run CI).
+    # Stage D adds the upgrade path: last published release → candidate on
+    # a warm volume (verified backup + zero-warn reconcile) — the scenario
+    # automerged base-image bumps ride on.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -79,9 +82,12 @@ jobs:
         # CONTRACT_ENGINE: the image above was built with docker; the
         # script's podman-first auto-detect would look in podman's store,
         # miss it, and try pulling :contract from GHCR.
+        # CONTRACT_UPGRADE=required: stage D preconditions (baseline
+        # discovery/pull) must hold here — GHCR is reachable and public.
         env:
           CONTRACT_ENGINE: docker
-        run: scripts/contract-test.sh ghcr.io/tankdonut/agent-base:contract
+          CONTRACT_UPGRADE: required
+        run: python3 scripts/contract_test.py ghcr.io/tankdonut/agent-base:contract
 
   smoke:
     needs: [lint, test]
