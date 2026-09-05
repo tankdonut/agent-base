@@ -48,17 +48,25 @@ fi
 # --- Stage A: capture emitted argv via shim (shim is recorder, not judge) ---
 # 666: the container writes as mapped uid 1000, not the host user — without
 # it the bind-mounted log stays empty and stage B passes vacuously.
-touch "$WORK/shim.log"
-chmod 666 "$WORK/shim.log"
-if timeout 120 "$ENGINE" run --rm \
-  -v "$REPO_ROOT/scripts/shim:/shim:ro" -v "$WORK/shim.log:/tmp/shim.log" \
-  -e "OPENCLAW_SHIM_LOG=/tmp/shim.log" \
-  -e "PATH=/shim:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
-  "${CANARY_MOUNTS[@]}" "${CANARY_ENV[@]}" "$IMAGE" sleep 3 >"$WORK/stage-a.log" 2>&1; then
-  pass "stage A: shim boot exited 0"
-else
-  fail "stage A boot failed:"$'\n'"$(sed 's/^/    /' "$WORK/stage-a.log")"
-fi
+# Two boots share the shim's job store: boot 1 exercises the create path
+# (cron add); boot 2 sees the shim's payload-less job records as drift and
+# exercises the heal path (cron edit --message/--model/--tools/...). Without
+# boot 2, `cron edit` flags — including the per-job-model heal — are never
+# emitted, so stage B could not police them.
+touch "$WORK/shim.log" "$WORK/shim.jobs.json"
+chmod 666 "$WORK/shim.log" "$WORK/shim.jobs.json"
+for boot in 1 2; do
+  if timeout 120 "$ENGINE" run --rm \
+    -v "$REPO_ROOT/scripts/shim:/shim:ro" -v "$WORK/shim.log:/tmp/shim.log" \
+    -v "$WORK/shim.jobs.json:/tmp/shim.jobs.json" \
+    -e "OPENCLAW_SHIM_LOG=/tmp/shim.log" \
+    -e "PATH=/shim:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+    "${CANARY_MOUNTS[@]}" "${CANARY_ENV[@]}" "$IMAGE" sleep 3 >>"$WORK/stage-a.log" 2>&1; then
+    pass "stage A boot $boot: shim boot exited 0"
+  else
+    fail "stage A boot $boot failed:"$'\n'"$(sed 's/^/    /' "$WORK/stage-a.log")"
+  fi
+done
 
 # --- Stage B: every emitted flag must appear in real `--help` output ---
 # Subcommand paths agent-base invokes (longest-prefix match against the
