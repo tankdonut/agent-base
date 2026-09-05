@@ -49,6 +49,9 @@ COPY --chown=node:node docs/ /opt/seed/docs/
 
 # Cron specs: image-baked, never host-mounted.
 COPY --chown=node:node automations/ /opt/agent/automations/
+
+# Trigger scripts (optional): read-only like automations.
+COPY --chown=node:node scripts/ /opt/agent/scripts/
 ```
 
 Validate the spec and automations in CI without touching a volume:
@@ -99,6 +102,8 @@ split with copy-paste entries.
 | `AGENT_MEMORY_REINDEX` | `1` | `0` skips the post-startup memory reindex. |
 | `AGENT_GIT_TOKEN` | unset | gh token, used only when `features.gh_auth` is true. Never logged. |
 | `AGENT_AUTOMATIONS_DIR` | `/opt/agent/automations` | Override the automations directory. |
+| `AGENT_SCRIPTS_DIR` | `/opt/agent/scripts` | Override the trigger-scripts directory resolved for `trigger-script:` automation headers (sibling of the automations directory). |
+| `AGENT_AUTOMATION_TRIGGERS` | unset | `1` opts the deployment into cron trigger scripts: the cron seed arms the Gateway's `cron.triggers.enabled` config and `trigger-script:` automations seed normally. A trigger automation without the opt-in aborts cron seeding loudly. See [Cron trigger scripts](#cron-trigger-scripts). |
 | `AUTOMATION_MODEL` | unset | Cron model fallback when `--model` is not passed. The entrypoint always passes `spec.automations.model`, so this matters only for manual `seed_automations.py` runs. A job's `model:` header overrides it for that job. |
 | `TELEGRAM_CHAT_ID` | unset | Chat ID for cron delivery (base-standardized). Unset means jobs run without Telegram delivery. |
 | `automations.default_tools` (spec) | built-in list | Default tool allow-list for seeded jobs without their own `tools:` header; `["*"]` restores unrestricted. |
@@ -344,6 +349,7 @@ The base image bakes seed content under `/opt/seed/` and automations under
 | `/opt/seed/docs/` | `{data}/workspace/docs/` | Every boot | Full replacement. Docs are reference content, not agent state. |
 | (created) | `{data}/workspace/journal/` | Every boot | `mkdir -p`; the agent's append-only territory. |
 | `/opt/agent/automations/` | cron jobs (via `openclaw cron`) | Every boot, post-startup | Reconciled idempotently; markdown never copied anywhere. |
+| `/opt/agent/scripts/` | trigger scripts for `trigger-script:` headers | Read at boot by the cron reconciler | Read-only surface, sibling of `automations/`; content embedded into the job at seed time, never re-read at runtime. |
 
 Docs living at `{data}/workspace/docs` is a hard standard: there is no
 `{data}/docs` destination, and the entrypoint never writes one. Agents
@@ -412,7 +418,10 @@ wrapper entrypoint.
      carry **failure alerts** routed to that chat (`--failure-alert`
      with include-skipped, attached via `cron edit` — `cron add` has no
      alert flags at the pinned base tag); alert drift heals like any
-     other job field.
+     other job field. A job may also declare a `trigger-script:` header
+     — a condition script the Gateway evaluates headlessly when the
+     schedule is due, running the agent turn only on `fire: true`; see
+     [Cron trigger scripts](#cron-trigger-scripts).
    - Memory reindex (unless `AGENT_MEMORY_REINDEX=0`): clear stale
      reindex locks, check status, then full rebuild, incremental pass, or
      skip. Three attempts with 10s backoff; a degraded success
@@ -449,6 +458,81 @@ wrapper entrypoint.
 
 `--validate-spec` replaces all of the above with a dry parse (spec plus
 automations directory) for CI.
+
+## Cron trigger scripts
+
+An automation can declare a `trigger-script:` header — a condition script
+the Gateway evaluates each time the schedule is due. The job's agent turn
+runs only when the script returns `fire: true`; otherwise the run is
+skipped without run history (evaluation state still persists, so scripts
+can fire on *changes* — "alert only when the observed status differs from
+the last evaluation").
+
+```markdown
+---
+name: ci-watcher
+every: 30m
+deliver: announce
+trigger-script: check-ci.js
+---
+Investigate the CI status change and summarize what moved.
+```
+
+```js
+// scripts/check-ci.js — json() returns {fire, message?, state?}
+const res = await tools.call('exec', { command: 'gh pr checks 123 --json state' });
+const status = String(res?.result?.details?.aggregated ?? '').trim();
+json({
+  fire: status !== trigger.state?.status,
+  message: `PR 123 CI: ${trigger.state?.status ?? 'unknown'} -> ${status}`,
+  state: { status },
+});
+```
+
+Contract, pinned at the base tag (source-verified in the image bundles
+plus a live round-trip):
+
+- The header value is a **relative path inside the scripts directory**
+  (`/opt/agent/scripts`, or `AGENT_SCRIPTS_DIR`) — no `..`, no absolute
+  paths. The loader fails closed on missing, empty, non-UTF-8, or
+  >64 KiB scripts (the CLI's own limit).
+- The CLI reads the file at seed time and **embeds the trimmed bytes** as
+  the job's `trigger.script` — the path never matters at runtime. Script
+  content participates in currency: editing the file heals the job via
+  one `cron edit --trigger-script`; dropping the header heals via
+  `--clear-trigger`.
+- Evaluation semantics (upstream): `json({fire, message?, state?})`
+  return; `trigger.state` is the previous frozen state (16 KiB cap);
+  each evaluation gets a 30s wall-clock budget and at most 5 tool calls;
+  a returned `message` is appended to the agent-turn prompt; `once: true`
+  (not exposed as a header) would disable the job after its first
+  successful fired run.
+- Triggers require `every`/`cron` schedules, and `every` must be at
+  least 30s (the Gateway's minimum trigger interval).
+
+**Opt-in required.** Trigger evaluation runs headless with the **owning
+agent's full tool policy — including `exec`** — not the job's bounded
+`--tools` allow-list. That is unattended code execution, so the base
+never arms it implicitly: set
+
+```yaml
+environment:
+  AGENT_AUTOMATION_TRIGGERS: "1"
+```
+
+and the cron seed arms the Gateway's `cron.triggers.enabled` config
+before creating or editing any job. Without the env, a repo carrying a
+`trigger-script:` automation aborts cron seeding loudly (no jobs are
+created, edited, or pruned) — the security decision stays with the
+deployment, not with a header someone added to a markdown file. Consumer
+mount story mirrors automations — read-only, never writable (writable
+scheduled scripts would be an agent self-modification surface):
+
+```yaml
+volumes:
+  - ./automations:/opt/agent/automations:ro
+  - ./scripts:/opt/agent/scripts:ro
+```
 
 ## Graceful shutdown
 
@@ -494,6 +578,7 @@ teardown.
 | Docs at `{data}/workspace/docs`, never `{data}/docs` | Docs are workspace-adjacent reference material seeded every boot. Migrating agents (Mimir layout) move once in a wrapper entrypoint. |
 | `automations.model` is required per project | A baked default would silently drift models between agents sharing one image. No default, no drift. Per-job `model:` headers are overrides, not defaults — the global stays explicit. |
 | Seeded jobs get a bounded tool allow-list | A scheduled turn reaching the `cron` tool can self-replicate jobs (OWASP ASI06); the base default excludes recursion, spawn, and browser tools. Per-job `tools:` / spec `automations.default_tools` / `["*"]` escape hatches keep this the operator's call. |
+| Cron trigger scripts sit behind `AGENT_AUTOMATION_TRIGGERS=1` | Trigger evaluation runs headless with the owning agent's FULL tool policy (including `exec`) — not the job's `--tools` list. Arming that gateway-wide just because a header appeared in a markdown file would weaken the default posture; the env opt-in keeps unattended exec an explicit deployment decision. |
 | Base sets `tools.deny` (cron, subagents, sessions_spawn, nodes) unless the spec configures `tools.*` | Same recursion/spawn surfaces denied for the agent's own turns; `heartbeat_respond` stays allowed so heartbeats work. Any spec entry under `tools.*` signals operator ownership and the base default stands down. |
 
 ### Persona file trust model
@@ -526,7 +611,11 @@ control surface today, strongest first:
    denied — a loop cannot self-replicate jobs or spawn fan-outs.
 3. **Failure alerts** (in this base): every failed or skipped seeded run
    alerts the chat, so a retry storm is visible within one interval.
-4. **`--light-context`** exists on `openclaw cron add` at the pinned tag
+4. **Trigger-script budgets** (upstream, at the pinned tag): each
+   condition evaluation is capped at 30s wall-clock and 5 tool calls,
+   `fire: false` skips without run history, and the whole surface needs
+   the `AGENT_AUTOMATION_TRIGGERS=1` opt-in to exist.
+5. **`--light-context`** exists on `openclaw cron add` at the pinned tag
    for cheaper turns; pass it per job via a wrapper if needed.
 
 What does NOT exist yet: per-automation dollar/iteration caps enforced
@@ -699,11 +788,16 @@ the actions repo; projects reference them instead of copying YAML.
    `every` or `cron`; `deliver`; optional `topic-env`; optional `tools` —
    a comma-separated tool allow-list; `*` opts a job back to
    unrestricted; optional `model` — a per-job model override that beats
-   `automations.model` for that job alone).
-6. Write the thin Dockerfile per Quick start, pinning the current date tag.
-7. Add the `agent` service from `templates/compose.agent.yml` and, for
+   `automations.model` for that job alone; optional `trigger-script` —
+   a condition script path inside `scripts/`, which additionally needs
+   the `AGENT_AUTOMATION_TRIGGERS=1` deployment opt-in, see
+   [Cron trigger scripts](#cron-trigger-scripts)).
+6. Ship trigger scripts (if any) as `scripts/` — image-baked or mounted
+   read-only at `/opt/agent/scripts`.
+7. Write the thin Dockerfile per Quick start, pinning the current date tag.
+8. Add the `agent` service from `templates/compose.agent.yml` and, for
    development, the overlay from `templates/compose.dev.agent.yml`.
-8. Stand up CI per the pattern above, including the `--validate-spec` gate.
+9. Stand up CI per the pattern above, including the `--validate-spec` gate.
 
 Validate early: `docker run --rm --env-file .env <image> --validate-spec`
 catches schema, templating, and automation errors in seconds.
