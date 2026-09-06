@@ -51,6 +51,7 @@ from pathlib import Path
 from typing import NoReturn
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+CONTRACT_DIR = Path(__file__).resolve().parent / "contract"
 DEFAULT_IMAGE = "ghcr.io/tankdonut/agent-base:contract"
 GHCR_REPO = "tankdonut/agent-base"
 SHIM_PATH = "/shim:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
@@ -93,19 +94,19 @@ CANARY_MOUNTS = (
     "--security-opt",
     "label=disable",
     "-v",
-    f"{REPO_ROOT}/contract/spec.json:/opt/agent/spec.json:ro",
+    f"{CONTRACT_DIR}/spec.json:/opt/agent/spec.json:ro",
     "-v",
-    f"{REPO_ROOT}/contract/automations:/opt/agent/automations:ro",
+    f"{CONTRACT_DIR}/automations:/opt/agent/automations:ro",
     "-v",
-    f"{REPO_ROOT}/contract/scripts:/opt/agent/scripts:ro",
+    f"{CONTRACT_DIR}/scripts:/opt/agent/scripts:ro",
 )
 UPGRADE_MOUNTS = (
     "--security-opt",
     "label=disable",
     "-v",
-    f"{REPO_ROOT}/contract/spec.upgrade.json:/opt/agent/spec.json:ro",
+    f"{CONTRACT_DIR}/spec.upgrade.json:/opt/agent/spec.json:ro",
     "-v",
-    f"{REPO_ROOT}/contract/upgrade-automations:/opt/agent/automations:ro",
+    f"{CONTRACT_DIR}/upgrade-automations:/opt/agent/automations:ro",
 )
 
 
@@ -188,7 +189,7 @@ def stage_a(engine: str, image: str, work: Path) -> Path:
                 "run",
                 "--rm",
                 "-v",
-                f"{REPO_ROOT}/scripts/shim:/shim:ro",
+                f"{REPO_ROOT}/tests/shim:/shim:ro",
                 "-v",
                 f"{persist}:/persist",
                 "-e",
