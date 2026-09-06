@@ -1,0 +1,101 @@
+# golangci-lint enforces the layering rule from AGENTS.md (Key
+# Conventions) with depguard, plus govet and gofmt. Stdlib and
+# third-party imports are unconstrained; every rule below encodes one
+# edge of the internal import DAG:
+#
+#   project, process, templates  -> nothing internal (foundations)
+#   scaffold                     -> templates only
+#   compose                      -> process, project only
+#   platform (port, top level)   -> project, process only; never an adapter
+#   platform/* (adapters)        -> port + compose + foundations; never each other
+#   cli                          -> everything (composition root; no rule needed)
+#
+# depguard pkg entries are PREFIX matches (an entry denies the package
+# and its whole subtree; braces/stars are literals, and an allow list
+# would be a full stdlib-included whitelist — both are traps). Denying
+# `internal/platform` from the port works because a package cannot
+# import itself, so only adapter subtrees match. These deny lists FAIL
+# OPEN: a new top-level internal/ package or sibling adapter must be
+# added to every rule it must be kept out of — treat them as contract.
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - depguard
+    - govet
+
+  settings:
+    depguard:
+      rules:
+        foundations-import-nothing-internal:
+          files:
+            - "**/internal/project/**.go"
+            - "**/internal/process/**.go"
+            - "**/internal/templates/**.go"
+          deny:
+            - pkg: "github.com/tankdonut/agent-base/internal"
+              desc: "foundations import nothing internal"
+
+        scaffold-templates-only:
+          files:
+            - "**/internal/scaffold/**.go"
+          deny:
+            - pkg: "github.com/tankdonut/agent-base/internal/cli"
+              desc: "scaffold is a leaf: it may import only internal/templates"
+            - pkg: "github.com/tankdonut/agent-base/internal/compose"
+              desc: "scaffold is a leaf: it may import only internal/templates"
+            - pkg: "github.com/tankdonut/agent-base/internal/platform"
+              desc: "scaffold is a leaf: it may import only internal/templates"
+            - pkg: "github.com/tankdonut/agent-base/internal/process"
+              desc: "scaffold is a leaf: it may import only internal/templates"
+            - pkg: "github.com/tankdonut/agent-base/internal/project"
+              desc: "scaffold is a leaf: it may import only internal/templates"
+
+        compose-foundations-only:
+          files:
+            - "**/internal/compose/**.go"
+          deny:
+            - pkg: "github.com/tankdonut/agent-base/internal/cli"
+              desc: "compose (engine argv vocabulary) may import only internal/process and internal/project"
+            - pkg: "github.com/tankdonut/agent-base/internal/platform"
+              desc: "compose (engine argv vocabulary) may import only internal/process and internal/project"
+            - pkg: "github.com/tankdonut/agent-base/internal/scaffold"
+              desc: "compose (engine argv vocabulary) may import only internal/process and internal/project"
+            - pkg: "github.com/tankdonut/agent-base/internal/templates"
+              desc: "compose (engine argv vocabulary) may import only internal/process and internal/project"
+
+        platform-port-imports-no-adapter:
+          files:
+            - "**/internal/platform/*.go"
+          deny:
+            - pkg: "github.com/tankdonut/agent-base/internal/cli"
+              desc: "the port may import only internal/project and internal/process"
+            - pkg: "github.com/tankdonut/agent-base/internal/compose"
+              desc: "the port may import only internal/project and internal/process"
+            - pkg: "github.com/tankdonut/agent-base/internal/scaffold"
+              desc: "the port may import only internal/project and internal/process"
+            - pkg: "github.com/tankdonut/agent-base/internal/templates"
+              desc: "the port may import only internal/project and internal/process"
+            - pkg: "github.com/tankdonut/agent-base/internal/platform"
+              desc: "the port package must not import its adapters (self-import is impossible, so this denies only subpackage trees) — the registry lives in internal/cli"
+
+        adapters-see-port-and-foundations:
+          files:
+            - "**/internal/platform/*/**.go"
+          deny:
+            - pkg: "github.com/tankdonut/agent-base/internal/cli"
+              desc: "adapters import the port + compose + foundations only — never cli"
+            - pkg: "github.com/tankdonut/agent-base/internal/scaffold"
+              desc: "adapters import the port + compose + foundations only"
+            - pkg: "github.com/tankdonut/agent-base/internal/templates"
+              desc: "adapters import the port + compose + foundations only"
+            - pkg: "github.com/tankdonut/agent-base/internal/platform/dockercompose"
+              desc: "adapters never import each other — extend this list per new adapter under internal/platform/"
+
+formatters:
+  enable:
+    - gofmt
+
+run:
+  timeout: 5m

@@ -10,8 +10,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-
-	"github.com/tankdonut/agent-base/internal/process"
 )
 
 // gatewayTokenVar is set by secrets init with a generated value.
@@ -187,18 +185,4 @@ func SecretsCheck(root string) (int, error) {
 		return 0, fmt.Errorf("missing or empty in agent/.env: %s", strings.Join(missing, ", "))
 	}
 	return len(required), nil
-}
-
-// SecretsEdit opens agent/.env in the user's editor.
-func SecretsEdit(r process.Runner, editor, envPath string) error {
-	if r == nil {
-		return process.ErrNilRunner
-	}
-	if editor == "" {
-		editor = "vi"
-	}
-	if _, err := process.LookPath(r, editor); err != nil {
-		return fmt.Errorf("editor %q not found in PATH (set $EDITOR)", editor)
-	}
-	return process.RunArgv(r, nil, editor, envPath)
 }

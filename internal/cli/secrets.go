@@ -7,8 +7,25 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/tankdonut/agent-base/internal/process"
 	"github.com/tankdonut/agent-base/internal/project"
 )
+
+// SecretsEdit opens agent/.env in the user's editor — process glue like
+// Open and PreCommitCheck; the on-disk secrets contract lives in
+// internal/project.
+func SecretsEdit(r process.Runner, editor, envPath string) error {
+	if r == nil {
+		return process.ErrNilRunner
+	}
+	if editor == "" {
+		editor = "vi"
+	}
+	if _, err := process.LookPath(r, editor); err != nil {
+		return fmt.Errorf("editor %q not found in PATH (set $EDITOR)", editor)
+	}
+	return process.RunArgv(r, nil, editor, envPath)
+}
 
 func newSecretsCmd() *cobra.Command {
 	secrets := &cobra.Command{
@@ -50,7 +67,7 @@ func newSecretsCmd() *cobra.Command {
 				return err
 			}
 			editor := os.Getenv("EDITOR")
-			return project.SecretsEdit(newRunner(), editor, filepath.Join(root, "agent", ".env"))
+			return SecretsEdit(newRunner(), editor, filepath.Join(root, "agent", ".env"))
 		},
 	}
 	secrets.AddCommand(init, check, edit)

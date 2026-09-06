@@ -3,6 +3,9 @@
   "extends": [
     "config:recommended"
   ],
+  "pre-commit": {
+    "enabled": true
+  },
   "minimumReleaseAge": "7 days",
   "platformAutomerge": true,
   "automergeStrategy": "squash",

@@ -233,23 +233,3 @@ func TestSecretsCheckMissingEnvFile(t *testing.T) {
 		t.Fatalf("err = %v, want pointer at secrets init", err)
 	}
 }
-
-func TestSecretsEdit(t *testing.T) {
-	r := newFakeRunner("vi", "nvim")
-	if err := SecretsEdit(r, "nvim", "/proj/agent/.env"); err != nil {
-		t.Fatal(err)
-	}
-	assertCalls(t, r.calls, [][]string{{"nvim", "/proj/agent/.env"}})
-
-	if err := SecretsEdit(r, "emacs", "/proj/agent/.env"); err == nil || !strings.Contains(err.Error(), "$EDITOR") {
-		t.Fatalf("missing editor: err = %v, want $EDITOR hint", err)
-	}
-
-	// Empty editor falls back to vi.
-	if err := SecretsEdit(r, "", "/proj/agent/.env"); err != nil {
-		t.Fatal(err)
-	}
-	if strings.Join(r.calls[len(r.calls)-1], " ") != "vi /proj/agent/.env" {
-		t.Errorf("empty editor argv = %v, want vi", r.calls[len(r.calls)-1])
-	}
-}
