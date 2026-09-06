@@ -3,7 +3,8 @@ package cli
 import (
 	"github.com/spf13/cobra"
 
-	"github.com/tankdonut/agent-base/internal/lifecycle"
+	"github.com/tankdonut/agent-base/internal/compose"
+	"github.com/tankdonut/agent-base/internal/project"
 )
 
 // newDevCmd is the local iterative surface: the compose stack with the
@@ -33,8 +34,8 @@ Subcommands: up, down, logs, restart, mcp, open.`,
 			if err != nil {
 				return err
 			}
-			lifecycle.WarnGatewayPortBusy(cmd.ErrOrStderr(), root, cfg.ComposeGatewayPort())
-			return lifecycle.Dev(newRunner(), engine, root)
+			project.WarnGatewayPortBusy(cmd.ErrOrStderr(), root, cfg.ComposeGatewayPort())
+			return compose.Dev(newRunner(), engine, root)
 		},
 	}
 	var down = &cobra.Command{
@@ -46,7 +47,7 @@ Subcommands: up, down, logs, restart, mcp, open.`,
 			if err != nil {
 				return err
 			}
-			return lifecycle.Down(newRunner(), engine)
+			return compose.Down(newRunner(), engine)
 		},
 	}
 	var logs = &cobra.Command{
@@ -58,7 +59,7 @@ Subcommands: up, down, logs, restart, mcp, open.`,
 			if err != nil {
 				return err
 			}
-			return lifecycle.Logs(newRunner(), engine, args)
+			return compose.Logs(newRunner(), engine, args)
 		},
 	}
 	var restart = &cobra.Command{
@@ -69,7 +70,7 @@ Subcommands: up, down, logs, restart, mcp, open.`,
 			if err != nil {
 				return err
 			}
-			return lifecycle.Restart(newRunner(), engine, args)
+			return compose.Restart(newRunner(), engine, args)
 		},
 	}
 	var mcp = &cobra.Command{
@@ -81,7 +82,7 @@ Subcommands: up, down, logs, restart, mcp, open.`,
 			if err != nil {
 				return err
 			}
-			return lifecycle.Mcp(newRunner(), engine, args)
+			return compose.Mcp(newRunner(), engine, args)
 		},
 	}
 	var open = &cobra.Command{
@@ -97,7 +98,7 @@ Subcommands: up, down, logs, restart, mcp, open.`,
 			if err != nil {
 				return err
 			}
-			return lifecycle.Open(newRunner(), root, cfg.ComposeGatewayPort(), cmd.OutOrStdout())
+			return Open(newRunner(), root, cfg.ComposeGatewayPort(), cmd.OutOrStdout())
 		},
 	}
 	dev.AddCommand(up, down, logs, restart, mcp, open)

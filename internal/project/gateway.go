@@ -1,4 +1,4 @@
-package lifecycle
+package project
 
 import (
 	"fmt"
@@ -10,7 +10,7 @@ import (
 
 // ResolveGatewayPort prefers AGENT_GATEWAY_PORT from agent/.env (the
 // host-side compose interpolation var) and falls back to the configured
-// default (viper gateway_port) when unset or unparseable.
+// default when unset or unparseable.
 func ResolveGatewayPort(root string, fallback int) int {
 	data, err := readFileIfExists(filepath.Join(root, "agent", ".env"))
 	if err != nil {
@@ -40,19 +40,4 @@ func WarnGatewayPortBusy(w io.Writer, root string, fallbackPort int) {
 		"warning: %s is already bound — if another agent or service on this host holds it, set a distinct AGENT_GATEWAY_PORT in agent/.env; if this stack is already up, ignore this warning\n",
 		addr,
 	)
-}
-
-// Open prints the gateway URL and opens it with xdg-open when present
-// (otherwise printing is the whole success — exit 0).
-func Open(r Runner, root string, fallbackPort int, stdout io.Writer) error {
-	if r == nil {
-		return errNilRunner
-	}
-	port := ResolveGatewayPort(root, fallbackPort)
-	url := fmt.Sprintf("http://localhost:%d", port)
-	fmt.Fprintln(stdout, url)
-	if _, err := lookPath(r, "xdg-open"); err != nil {
-		return nil
-	}
-	return runArgv(r, nil, "xdg-open", url)
 }

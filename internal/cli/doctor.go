@@ -7,8 +7,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/tankdonut/agent-base/internal/lifecycle"
 	"github.com/tankdonut/agent-base/internal/platform"
+	"github.com/tankdonut/agent-base/internal/project"
 )
 
 // newDoctorCmd is the one-command pre-issue report: project shape,
@@ -35,7 +35,7 @@ func runDoctor(out io.Writer) error {
 	fail := func(format string, a ...any) { fmt.Fprintf(out, "FAIL  "+format+"\n", a...) }
 	failed := false
 
-	info, err := lifecycle.ReadSpec(filepath.Join(root, "agent", "spec.json"))
+	info, err := project.ReadSpec(filepath.Join(root, "agent", "spec.json"))
 	switch {
 	case err != nil:
 		fail("spec.json: %v", err)
@@ -44,7 +44,7 @@ func runDoctor(out io.Writer) error {
 		ok("spec.json parses (%d env refs, %d if_env guards)", len(info.EnvRefs), len(info.IfEnvNames))
 	}
 
-	tag, err := lifecycle.BaseTagFromDockerfile(filepath.Join(root, "agent", "Dockerfile"))
+	tag, err := project.BaseTagFromDockerfile(filepath.Join(root, "agent", "Dockerfile"))
 	switch {
 	case err != nil:
 		fail("Dockerfile base tag: %v", err)
@@ -53,7 +53,7 @@ func runDoctor(out io.Writer) error {
 		ok("base image pinned: ghcr.io/tankdonut/agent-base:%s", tag)
 	}
 
-	if n, err := lifecycle.SecretsCheck(root); err != nil {
+	if n, err := project.SecretsCheck(root); err != nil {
 		fail("secrets: %v", err)
 		failed = true
 	} else {

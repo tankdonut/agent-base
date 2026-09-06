@@ -4,7 +4,7 @@ import (
 	"os"
 	"os/exec"
 
-	"github.com/tankdonut/agent-base/internal/lifecycle"
+	"github.com/tankdonut/agent-base/internal/process"
 )
 
 // execRunner is the real Runner: exec with inherited stdio. A nil env
@@ -26,4 +26,4 @@ func (execRunner) LookPath(name string) (string, error) {
 
 // newRunner builds the Runner injected into lifecycle and platform
 // calls. A var so tests can stub process execution hermetically.
-var newRunner = func() lifecycle.Runner { return execRunner{} }
+var newRunner = func() process.Runner { return execRunner{} }

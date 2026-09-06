@@ -1,9 +1,31 @@
-package lifecycle
+package process
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
+
+type fakeRunner struct {
+	look map[string]bool
+}
+
+func newFakeRunner(look ...string) *fakeRunner {
+	r := &fakeRunner{look: map[string]bool{}}
+	for _, n := range look {
+		r.look[n] = true
+	}
+	return r
+}
+
+func (f *fakeRunner) Run(env []string, name string, args ...string) error { return nil }
+
+func (f *fakeRunner) LookPath(name string) (string, error) {
+	if f.look[name] {
+		return "/usr/bin/" + name, nil
+	}
+	return "", fmt.Errorf("%s: not found", name)
+}
 
 func TestResolveEngine(t *testing.T) {
 	tests := []struct {

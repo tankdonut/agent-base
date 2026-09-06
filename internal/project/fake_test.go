@@ -1,15 +1,15 @@
-package lifecycle
+package project
 
 import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
 // fakeRunner records every Run call (full argv) and resolves LookPath
-// from a fixed set of binary names. failArgv makes specific calls fail,
-// e.g. a missing git ref for the worktree branch-existence probe.
+// from a fixed set of binary names. failArgv makes specific calls fail.
 type fakeRunner struct {
 	calls    [][]string
 	envs     [][]string
@@ -42,6 +42,18 @@ func (f *fakeRunner) LookPath(name string) (string, error) {
 		return "/usr/bin/" + name, nil
 	}
 	return "", fmt.Errorf("%s: not found", name)
+}
+
+func assertCalls(t *testing.T, got, want [][]string) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("call count = %d, want %d\ngot:  %v\nwant: %v", len(got), len(want), got, want)
+	}
+	for i := range want {
+		if strings.Join(got[i], " ") != strings.Join(want[i], " ") {
+			t.Errorf("call %d = %v, want %v", i, got[i], want[i])
+		}
+	}
 }
 
 // writeProject materializes a fixture project tree in a temp dir.

@@ -1,4 +1,4 @@
-package compose
+package dockercompose
 
 import (
 	"bytes"
@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tankdonut/agent-base/internal/lifecycle"
 	"github.com/tankdonut/agent-base/internal/platform"
+	"github.com/tankdonut/agent-base/internal/process"
 )
 
 type fakeRunner struct {
@@ -77,7 +77,7 @@ func fixtureProject(t *testing.T) string {
 	})
 }
 
-func newAdapter(t *testing.T, r lifecycle.Runner, ns map[string]any) platform.Platform {
+func newAdapter(t *testing.T, r process.Runner, ns map[string]any) platform.Platform {
 	t.Helper()
 	p, err := New(r, ns)
 	if err != nil {

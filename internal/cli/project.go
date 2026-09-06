@@ -6,15 +6,17 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/tankdonut/agent-base/internal/lifecycle"
+	"github.com/tankdonut/agent-base/internal/compose"
 	"github.com/tankdonut/agent-base/internal/platform"
+	"github.com/tankdonut/agent-base/internal/process"
+	"github.com/tankdonut/agent-base/internal/project"
 )
 
 // chdirProject locates the enclosing agent project, chdirs to its root
 // (compose and validate use root-relative paths), and returns the
 // absolute root.
 func chdirProject() (string, error) {
-	root, err := lifecycle.FindProjectRoot(".")
+	root, err := project.FindProjectRoot(".")
 	if err != nil {
 		return "", err
 	}
@@ -67,7 +69,7 @@ func newValidateCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return lifecycle.Validate(newRunner(), engine, root)
+			return compose.Validate(newRunner(), engine, root)
 		},
 	}
 }
@@ -80,5 +82,5 @@ func resolveComposeEngine() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return lifecycle.ResolveEngine(cfg.ComposeEnginePref(), newRunner())
+	return process.ResolveEngine(cfg.ComposeEnginePref(), newRunner())
 }

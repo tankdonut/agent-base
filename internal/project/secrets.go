@@ -1,4 +1,4 @@
-package lifecycle
+package project
 
 import (
 	"crypto/rand"
@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/tankdonut/agent-base/internal/process"
 )
 
 // gatewayTokenVar is set by secrets init with a generated value.
@@ -131,6 +133,15 @@ func RequiredEnvVars(info SpecInfo) []string {
 	return required
 }
 
+func contains(names []string, want string) bool {
+	for _, n := range names {
+		if n == want {
+			return true
+		}
+	}
+	return false
+}
+
 // EnvKeyNames returns the sorted variable names set in agent/.env, nil
 // when the file is absent. Names only — values never leave the file —
 // so callers can print the result (platform.Deployment.EnvKeys).
@@ -179,15 +190,15 @@ func SecretsCheck(root string) (int, error) {
 }
 
 // SecretsEdit opens agent/.env in the user's editor.
-func SecretsEdit(r Runner, editor, envPath string) error {
+func SecretsEdit(r process.Runner, editor, envPath string) error {
 	if r == nil {
-		return errNilRunner
+		return process.ErrNilRunner
 	}
 	if editor == "" {
 		editor = "vi"
 	}
-	if _, err := lookPath(r, editor); err != nil {
+	if _, err := process.LookPath(r, editor); err != nil {
 		return fmt.Errorf("editor %q not found in PATH (set $EDITOR)", editor)
 	}
-	return runArgv(r, nil, editor, envPath)
+	return process.RunArgv(r, nil, editor, envPath)
 }

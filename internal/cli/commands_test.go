@@ -8,15 +8,16 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tankdonut/agent-base/internal/lifecycle"
+	"github.com/tankdonut/agent-base/internal/process"
 )
 
 // stubRunner records Run calls and resolves LookPath from a fixed set —
-// the cli-level twin of lifecycle's fakeRunner, so command wiring tests
-// run hermetically (no docker/podman on the host).
+// the cli-level twin of the foundation packages' fakes, so command
+// wiring tests run hermetically (no docker/podman on the host).
 type stubRunner struct {
-	calls [][]string
-	look  map[string]bool
+	calls    [][]string
+	look     map[string]bool
+	failArgv [][]string
 }
 
 func newStubRunner(look ...string) *stubRunner {
@@ -28,7 +29,13 @@ func newStubRunner(look ...string) *stubRunner {
 }
 
 func (s *stubRunner) Run(env []string, name string, args ...string) error {
-	s.calls = append(s.calls, append([]string{name}, args...))
+	call := append([]string{name}, args...)
+	s.calls = append(s.calls, call)
+	for _, bad := range s.failArgv {
+		if strings.Join(call, " ") == strings.Join(bad, " ") {
+			return fmt.Errorf("fake failure: %v", call)
+		}
+	}
 	return nil
 }
 
@@ -37,6 +44,22 @@ func (s *stubRunner) LookPath(name string) (string, error) {
 		return "/usr/bin/" + name, nil
 	}
 	return "", fmt.Errorf("%s: not found", name)
+}
+
+// writeProject materializes a fixture project tree in a temp dir.
+func writeProject(t *testing.T, files map[string]string) string {
+	t.Helper()
+	root := t.TempDir()
+	for rel, content := range files {
+		p := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return root
 }
 
 // fixtureProject materializes a minimal but contract-shaped project:
@@ -79,7 +102,7 @@ func stubbedRunner(t *testing.T, look ...string) *stubRunner {
 	t.Helper()
 	r := newStubRunner(look...)
 	old := newRunner
-	newRunner = func() lifecycle.Runner { return r }
+	newRunner = func() process.Runner { return r }
 	t.Cleanup(func() { newRunner = old })
 	return r
 }

@@ -11,9 +11,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/tankdonut/agent-base/internal/lifecycle"
 	"github.com/tankdonut/agent-base/internal/platform"
-	"github.com/tankdonut/agent-base/internal/platform/compose"
+	"github.com/tankdonut/agent-base/internal/platform/dockercompose"
+	"github.com/tankdonut/agent-base/internal/process"
 )
 
 // platformInfo describes one registered platform for `platform ls`.
@@ -29,7 +29,7 @@ type platformInfo struct {
 // namespace decoded verbatim (nil when absent — factories apply their
 // defaults); each adapter decodes its own typed config from it and
 // fails closed on unknown keys.
-type platformFactory func(r lifecycle.Runner, ns map[string]any) (platform.Platform, error)
+type platformFactory func(r process.Runner, ns map[string]any) (platform.Platform, error)
 
 var platformRegistry = map[string]struct {
 	info    platformInfo
@@ -41,7 +41,7 @@ var platformRegistry = map[string]struct {
 			description:     "local docker/podman compose (the reference adapter)",
 			defaultPlatform: true,
 		},
-		factory: compose.New,
+		factory: dockercompose.New,
 	},
 }
 
@@ -68,7 +68,7 @@ func platformInfos() []platformInfo {
 // forPlatform resolves name to a constructed adapter. namespaces maps
 // each platform name to its config namespace; factories read only their
 // own. An unknown name fails closed listing what exists.
-func forPlatform(name string, r lifecycle.Runner, namespaces map[string]map[string]any) (platform.Platform, error) {
+func forPlatform(name string, r process.Runner, namespaces map[string]map[string]any) (platform.Platform, error) {
 	e, ok := platformRegistry[name]
 	if !ok {
 		return nil, fmt.Errorf("unknown platform %q (available: %s)", name, strings.Join(platformNames(), ", "))

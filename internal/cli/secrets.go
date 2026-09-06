@@ -7,7 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/tankdonut/agent-base/internal/lifecycle"
+	"github.com/tankdonut/agent-base/internal/project"
 )
 
 func newSecretsCmd() *cobra.Command {
@@ -32,7 +32,7 @@ func newSecretsCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			n, err := lifecycle.SecretsCheck(root)
+			n, err := project.SecretsCheck(root)
 			if err != nil {
 				return err
 			}
@@ -50,7 +50,7 @@ func newSecretsCmd() *cobra.Command {
 				return err
 			}
 			editor := os.Getenv("EDITOR")
-			return lifecycle.SecretsEdit(newRunner(), editor, filepath.Join(root, "agent", ".env"))
+			return project.SecretsEdit(newRunner(), editor, filepath.Join(root, "agent", ".env"))
 		},
 	}
 	secrets.AddCommand(init, check, edit)
@@ -72,7 +72,7 @@ func runSecretsInit(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	path, err := lifecycle.SecretsInit(root)
+	path, err := project.SecretsInit(root)
 	if err != nil {
 		return err
 	}

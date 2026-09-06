@@ -13,7 +13,7 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
-	"github.com/tankdonut/agent-base/internal/lifecycle"
+	"github.com/tankdonut/agent-base/internal/project"
 )
 
 // ConfigName is the per-project agentctl config file.
@@ -142,7 +142,7 @@ func agentctlConfigPath() string {
 	if _, err := os.Stat(ConfigName); err == nil {
 		return ConfigName
 	}
-	root, err := lifecycle.FindProjectRoot(".")
+	root, err := project.FindProjectRoot(".")
 	if err != nil {
 		return "" // not inside a project: defaults + env only
 	}

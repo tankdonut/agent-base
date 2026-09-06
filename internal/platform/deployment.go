@@ -7,7 +7,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/tankdonut/agent-base/internal/lifecycle"
+	"github.com/tankdonut/agent-base/internal/project"
 )
 
 // Deployment is the platform-neutral view of one agent project,
@@ -36,15 +36,15 @@ func Derive(root string) (Deployment, error) {
 	if err != nil {
 		return Deployment{}, fmt.Errorf("resolving %s: %w", root, err)
 	}
-	tag, err := lifecycle.BaseTagFromDockerfile(filepath.Join(abs, "agent", "Dockerfile"))
+	tag, err := project.BaseTagFromDockerfile(filepath.Join(abs, "agent", "Dockerfile"))
 	if err != nil {
 		return Deployment{}, err
 	}
-	info, err := lifecycle.ReadSpec(filepath.Join(abs, "agent", "spec.json"))
+	info, err := project.ReadSpec(filepath.Join(abs, "agent", "spec.json"))
 	if err != nil {
 		return Deployment{}, err
 	}
-	keys, err := lifecycle.EnvKeyNames(abs)
+	keys, err := project.EnvKeyNames(abs)
 	if err != nil {
 		return Deployment{}, err
 	}

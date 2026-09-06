@@ -1,4 +1,4 @@
-package lifecycle
+package cli
 
 import (
 	"os"
@@ -9,14 +9,14 @@ import (
 
 func TestWorktreeCreateNewBranch(t *testing.T) {
 	root := writeProject(t, map[string]string{"agent/spec.json": "{}", "agent/.env": "X=1\n"})
-	r := newFakeRunner("git")
+	r := newStubRunner("git")
 	// show-ref fails → branch does not exist yet → create with -b.
 	r.failArgv = [][]string{{"git", "show-ref", "--verify", "--quiet", "refs/heads/feat/x"}}
 
 	if err := WorktreeCreate(r, root, "feat/x"); err != nil {
 		t.Fatal(err)
 	}
-	assertCalls(t, r, [][]string{
+	assertCalls(t, r.calls, [][]string{
 		{"git", "show-ref", "--verify", "--quiet", "refs/heads/feat/x"},
 		{"git", "worktree", "add", "-b", "feat/x", ".worktrees/feat/x"},
 	})
@@ -54,11 +54,11 @@ func TestWorktreeCreateNewBranch(t *testing.T) {
 
 func TestWorktreeCreateExistingBranch(t *testing.T) {
 	root := writeProject(t, map[string]string{"agent/spec.json": "{}", "agent/.env": "X=1\n"})
-	r := newFakeRunner("git") // show-ref succeeds → branch exists
+	r := newStubRunner("git") // show-ref succeeds → branch exists
 	if err := WorktreeCreate(r, root, "main"); err != nil {
 		t.Fatal(err)
 	}
-	assertCalls(t, r, [][]string{
+	assertCalls(t, r.calls, [][]string{
 		{"git", "show-ref", "--verify", "--quiet", "refs/heads/main"},
 		{"git", "worktree", "add", ".worktrees/main", "main"},
 	})
@@ -69,7 +69,7 @@ func TestWorktreeCreateRefusesRegularFileAtLink(t *testing.T) {
 		"agent/spec.json":            "{}",
 		".worktrees/main/agent/.env": "REAL FILE\n",
 	})
-	r := newFakeRunner("git")
+	r := newStubRunner("git")
 	err := WorktreeCreate(r, root, "main")
 	if err == nil || !strings.Contains(err.Error(), "not a symlink") {
 		t.Fatalf("err = %v, want not-a-symlink refusal", err)
@@ -89,7 +89,7 @@ func TestWorktreeRejectsHostileBranchNames(t *testing.T) {
 	}
 	for _, tt := range tests {
 		root := writeProject(t, map[string]string{"agent/spec.json": "{}", "agent/.env": "X=1\n"})
-		r := newFakeRunner("git")
+		r := newStubRunner("git")
 		err := WorktreeCreate(r, root, tt.branch)
 		if err == nil || !strings.Contains(err.Error(), tt.want) {
 			t.Fatalf("create(%q) err = %v, want %q", tt.branch, err, tt.want)
@@ -117,14 +117,14 @@ func TestWorktreeRemove(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	r := newFakeRunner("git")
+	r := newStubRunner("git")
 	if err := WorktreeRemove(r, root, "feat"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Lstat(link); !os.IsNotExist(err) {
 		t.Errorf("symlink still present after remove: %v", err)
 	}
-	assertCalls(t, r, [][]string{{"git", "worktree", "remove", ".worktrees/feat"}})
+	assertCalls(t, r.calls, [][]string{{"git", "worktree", "remove", ".worktrees/feat"}})
 }
 
 func TestWorktreeRemoveKeepsRegularFile(t *testing.T) {
@@ -132,7 +132,7 @@ func TestWorktreeRemoveKeepsRegularFile(t *testing.T) {
 		"agent/spec.json":            "{}",
 		".worktrees/feat/agent/.env": "REAL FILE\n",
 	})
-	r := newFakeRunner("git")
+	r := newStubRunner("git")
 	if err := WorktreeRemove(r, root, "feat"); err != nil {
 		t.Fatal(err)
 	}
@@ -140,5 +140,5 @@ func TestWorktreeRemoveKeepsRegularFile(t *testing.T) {
 	if err != nil || string(data) != "REAL FILE\n" {
 		t.Errorf("regular file must be left alone: %v %q", err, data)
 	}
-	assertCalls(t, r, [][]string{{"git", "worktree", "remove", ".worktrees/feat"}})
+	assertCalls(t, r.calls, [][]string{{"git", "worktree", "remove", ".worktrees/feat"}})
 }

@@ -1,4 +1,4 @@
-package lifecycle
+package project
 
 import (
 	"os"
@@ -141,29 +141,16 @@ func TestSecretsInitMissingExample(t *testing.T) {
 	}
 }
 
-// TestSecretsCanary locks the secrets-handling contract the container
-// image enforces via its own canaries: a value planted in agent/.env
-// must never reach child argv or injected environments — compose reads
-// the env file itself, and validate substitutes dummies.
-func TestSecretsCanary(t *testing.T) {
+// TestEnvKeyNamesNeverLeaksValues locks the names-only contract of
+// EnvKeyNames: a value planted in agent/.env must never travel with the
+// key list (the Deployment IR prints it). The argv-level canary over
+// the compose verbs lives in internal/compose.
+func TestEnvKeyNamesNeverLeaksValues(t *testing.T) {
 	const canary = "CANARY-7f3a9d1c-value"
 	root := writeProject(t, map[string]string{
-		"agent/spec.json":    fixtureSpec,
-		"agent/Dockerfile":   fixtureDockerfile,
-		"agent/.env.example": "#FALLBACK_MODEL=\n",
-		"agent/.env":         "FALLBACK_MODEL=m\nPROVIDER_KEY=" + canary + "\nTELEGRAM_ALLOWED_USERS=" + canary + "\nZAI_API_KEY=" + canary + "\nOPENCLAW_GATEWAY_TOKEN=" + canary + "\n",
+		"agent/spec.json": fixtureSpec,
+		"agent/.env":      "FALLBACK_MODEL=m\nPROVIDER_KEY=" + canary + "\nZAI_API_KEY=" + canary + "\n",
 	})
-	r := newFakeRunner("podman", "git")
-	for _, fn := range []func() error{
-		func() error { return Up(r, "podman", root) },
-		func() error { return Dev(r, "podman", root) },
-		func() error { return Destroy(r, "podman", false) },
-		func() error { return Validate(r, "podman", root) },
-	} {
-		if err := fn(); err != nil {
-			t.Fatal(err)
-		}
-	}
 	names, err := EnvKeyNames(root)
 	if err != nil {
 		t.Fatal(err)
@@ -173,17 +160,8 @@ func TestSecretsCanary(t *testing.T) {
 			t.Fatalf("EnvKeyNames leaks a value-shaped name: %q", name)
 		}
 	}
-	for i, call := range r.calls {
-		for _, arg := range call {
-			if strings.Contains(arg, canary) {
-				t.Fatalf("call %d argv leaks the agent/.env canary: %v", i, call)
-			}
-		}
-		for _, kv := range r.envs[i] {
-			if strings.Contains(kv, canary) {
-				t.Fatalf("call %d environment leaks the agent/.env canary: %s", i, kv)
-			}
-		}
+	if len(names) != 3 {
+		t.Errorf("names = %v, want the three set keys", names)
 	}
 }
 
@@ -261,7 +239,7 @@ func TestSecretsEdit(t *testing.T) {
 	if err := SecretsEdit(r, "nvim", "/proj/agent/.env"); err != nil {
 		t.Fatal(err)
 	}
-	assertCalls(t, r, [][]string{{"nvim", "/proj/agent/.env"}})
+	assertCalls(t, r.calls, [][]string{{"nvim", "/proj/agent/.env"}})
 
 	if err := SecretsEdit(r, "emacs", "/proj/agent/.env"); err == nil || !strings.Contains(err.Error(), "$EDITOR") {
 		t.Fatalf("missing editor: err = %v, want $EDITOR hint", err)

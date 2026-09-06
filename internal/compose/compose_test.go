@@ -1,8 +1,10 @@
-package lifecycle
+package compose
 
 import (
 	"strings"
 	"testing"
+
+	"github.com/tankdonut/agent-base/internal/process"
 )
 
 func TestLifecycleArgv(t *testing.T) {
@@ -14,58 +16,61 @@ func TestLifecycleArgv(t *testing.T) {
 
 	tests := []struct {
 		name      string
-		run       func(r Runner) error
+		run       func(r process.Runner) error
 		wantCalls [][]string
 	}{
-		{"up", func(r Runner) error { return Up(r, "podman", root) }, [][]string{
+		{"up", func(r process.Runner) error { return Up(r, "podman", root) }, [][]string{
 			{"podman", "compose", "-f", "compose.yml", "up", "-d"},
 		}},
-		{"dev", func(r Runner) error { return Dev(r, "podman", root) }, [][]string{
+		{"dev", func(r process.Runner) error { return Dev(r, "podman", root) }, [][]string{
 			{"podman", "compose", "-f", "compose.yml", "-f", "compose.dev.yml", "up", "-d"},
 		}},
-		{"down", func(r Runner) error { return Down(r, "docker") }, [][]string{
+		{"down", func(r process.Runner) error { return Down(r, "docker") }, [][]string{
 			{"docker", "compose", "-f", "compose.yml", "down"},
 		}},
-		{"stop", func(r Runner) error { return Stop(r, "podman") }, [][]string{
+		{"stop", func(r process.Runner) error { return Stop(r, "podman") }, [][]string{
 			{"podman", "compose", "-f", "compose.yml", "stop"},
 		}},
-		{"start", func(r Runner) error { return Start(r, "podman") }, [][]string{
+		{"start", func(r process.Runner) error { return Start(r, "podman") }, [][]string{
 			{"podman", "compose", "-f", "compose.yml", "start"},
 		}},
-		{"destroy keeps volumes", func(r Runner) error { return Destroy(r, "podman", false) }, [][]string{
+		{"destroy keeps volumes", func(r process.Runner) error { return Destroy(r, "podman", false) }, [][]string{
 			{"podman", "compose", "-f", "compose.yml", "down"},
 		}},
-		{"destroy with volumes", func(r Runner) error { return Destroy(r, "podman", true) }, [][]string{
+		{"destroy with volumes", func(r process.Runner) error { return Destroy(r, "podman", true) }, [][]string{
 			{"podman", "compose", "-f", "compose.yml", "down", "-v"},
 		}},
-		{"logs passthrough", func(r Runner) error { return Logs(r, "podman", []string{"-f", "agent"}) }, [][]string{
+		{"ps", func(r process.Runner) error { return Ps(r, "podman") }, [][]string{
+			{"podman", "compose", "-f", "compose.yml", "ps"},
+		}},
+		{"logs passthrough", func(r process.Runner) error { return Logs(r, "podman", []string{"-f", "agent"}) }, [][]string{
 			{"podman", "compose", "-f", "compose.yml", "logs", "-f", "agent"},
 		}},
-		{"logs bare", func(r Runner) error { return Logs(r, "podman", nil) }, [][]string{
+		{"logs bare", func(r process.Runner) error { return Logs(r, "podman", nil) }, [][]string{
 			{"podman", "compose", "-f", "compose.yml", "logs"},
 		}},
-		{"mcp login passthrough", func(r Runner) error {
+		{"mcp login passthrough", func(r process.Runner) error {
 			return Mcp(r, "podman", []string{"login", "docs", "--code", "abc123"})
 		}, [][]string{
 			{"podman", "compose", "-f", "compose.yml", "exec", "agent", "openclaw", "mcp", "login", "docs", "--code", "abc123"},
 		}},
-		{"mcp bare", func(r Runner) error { return Mcp(r, "podman", nil) }, [][]string{
+		{"mcp bare", func(r process.Runner) error { return Mcp(r, "podman", nil) }, [][]string{
 			{"podman", "compose", "-f", "compose.yml", "exec", "agent", "openclaw", "mcp"},
 		}},
-		{"build-images", func(r Runner) error { return BuildImages(r, "podman") }, [][]string{
+		{"build-images", func(r process.Runner) error { return BuildImages(r, "podman") }, [][]string{
 			{"podman", "compose", "-f", "compose.yml", "build"},
 		}},
-		{"restart one service", func(r Runner) error { return Restart(r, "podman", []string{"agent"}) }, [][]string{
+		{"restart one service", func(r process.Runner) error { return Restart(r, "podman", []string{"agent"}) }, [][]string{
 			{"podman", "compose", "-f", "compose.yml", "restart", "agent"},
 		}},
-		{"restart all", func(r Runner) error { return Restart(r, "podman", nil) }, [][]string{
+		{"restart all", func(r process.Runner) error { return Restart(r, "podman", nil) }, [][]string{
 			{"podman", "compose", "-f", "compose.yml", "restart"},
 		}},
-		{"rebuild services", func(r Runner) error { return Rebuild(r, "podman", []string{"agent"}) }, [][]string{
+		{"rebuild services", func(r process.Runner) error { return Rebuild(r, "podman", []string{"agent"}) }, [][]string{
 			{"podman", "compose", "-f", "compose.yml", "build", "agent"},
 			{"podman", "compose", "-f", "compose.yml", "up", "-d", "--force-recreate", "agent"},
 		}},
-		{"rebuild all", func(r Runner) error { return Rebuild(r, "podman", nil) }, [][]string{
+		{"rebuild all", func(r process.Runner) error { return Rebuild(r, "podman", nil) }, [][]string{
 			{"podman", "compose", "-f", "compose.yml", "build"},
 			{"podman", "compose", "-f", "compose.yml", "up", "-d", "--force-recreate"},
 		}},
@@ -76,7 +81,7 @@ func TestLifecycleArgv(t *testing.T) {
 			if err := tt.run(r); err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			assertCalls(t, r, tt.wantCalls)
+			assertCalls(t, r.calls, tt.wantCalls)
 		})
 	}
 }
@@ -102,12 +107,7 @@ func TestNilRunnerNeverPanics(t *testing.T) {
 		"down":     func() error { return Down(nil, "podman") },
 		"logs":     func() error { return Logs(nil, "podman", nil) },
 		"validate": func() error { return Validate(nil, "podman", root) },
-		"check":    func() error { return PreCommitCheck(nil) },
-		"hooks":    func() error { return PreCommitHooks(nil) },
-		"worktree": func() error { return WorktreeCreate(nil, root, "b") },
-		"open":     func() error { return Open(nil, root, 18789, &strings.Builder{}) },
 		"mcp":      func() error { return Mcp(nil, "podman", nil) },
-		"edit":     func() error { return SecretsEdit(nil, "vi", "/tmp/x") },
 		"stop":     func() error { return Stop(nil, "podman") },
 		"start":    func() error { return Start(nil, "podman") },
 		"destroy":  func() error { return Destroy(nil, "podman", false) },
@@ -118,17 +118,5 @@ func TestNilRunnerNeverPanics(t *testing.T) {
 				t.Fatalf("%s with nil runner: err = %v, want nil-runner error", name, err)
 			}
 		})
-	}
-}
-
-func assertCalls(t *testing.T, r *fakeRunner, want [][]string) {
-	t.Helper()
-	if len(r.calls) != len(want) {
-		t.Fatalf("call count = %d, want %d\ngot:  %v\nwant: %v", len(r.calls), len(want), r.calls, want)
-	}
-	for i := range want {
-		if strings.Join(r.calls[i], " ") != strings.Join(want[i], " ") {
-			t.Errorf("call %d = %v, want %v", i, r.calls[i], want[i])
-		}
 	}
 }
