@@ -75,7 +75,7 @@ store the token in a credential store (`pass`/GPG) or a `chmod 600`
 
 ## Production compose file
 
-`templates/compose.prod.agent.yml` is the complete, ready-to-adapt file —
+`examples/compose.prod.agent.yml` is the complete, ready-to-adapt file —
 not a snippet. The directives it locks in, and why:
 
 | Directive | Why |
@@ -91,7 +91,7 @@ not a snippet. The directives it locks in, and why:
 
 Rootless Podman works too, with two caveats: named volumes can hit SELinux
 MCS stale-category denials (add `label=disable` under `security_opt` — see
-`templates/compose.agent.yml` for the rationale), and rootless cgroup
+`examples/compose.agent.yml` for the rationale), and rootless cgroup
 delegation grants `memory` + `pids` but **not** CPU limits unless you extend
 the delegate list. Do not mix: pick rootful Docker or rootless Podman and
 keep host docs consistent with it.
@@ -505,9 +505,9 @@ hosts), and note deploys run `up -d` without `--wait` (addable via stack
 ## Deployment checklist
 
 1. Host prep done (packages held, daemon.json, ghcr login).
-2. `.env` from `templates/env.example` — every `{env:}` ref your spec uses
+2. `.env` from `examples/env.example` — every `{env:}` ref your spec uses
    resolves; `OPENCLAW_GATEWAY_TOKEN` set.
-3. `templates/compose.prod.agent.yml` adapted (project name, limits).
+3. `examples/compose.prod.agent.yml` adapted (project name, limits).
 4. First boot verified: healthy within 300s, logs clean, token auth works
    through the proxy.
 5. Backup tarball landed off-host once; watchdog timer enabled.

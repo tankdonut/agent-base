@@ -1,4 +1,4 @@
-package templates
+package scaffold
 
 import (
 	"bytes"

@@ -29,7 +29,7 @@ services:
       - <project>-agent-data:/home/node/.openclaw
     # Bind the gateway to localhost only; put a reverse proxy in front for
     # remote access. AGENT_GATEWAY_PORT is host-side compose interpolation
-    # (templates/env.example section 4), never enters the container.
+    # (examples/env.example section 4), never enters the container.
     ports:
       - "127.0.0.1:${AGENT_GATEWAY_PORT:-18789}:18789"
     healthcheck:

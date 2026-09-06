@@ -48,7 +48,7 @@ import entrypoint
 from spec import SPEC_VERSION_SUPPORTED
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-FIXTURES = REPO_ROOT / "fixtures"
+FIXTURES = REPO_ROOT / "tests" / "fixtures"
 
 MINIMAL_SPEC: dict[str, object] = {
     "specVersion": 1,

@@ -1,6 +1,7 @@
-// Package templates embeds the agentctl scaffold file tree and exposes
-// its shape: one "<output-path>.tmpl" file per generated file.
-package templates
+// This file embeds the scaffold template tree (tmpl/) and exposes its
+// shape: one "<output-path>.tmpl" file per generated file. FS, Mode,
+// and Paths are the rendering surface scaffold.Run consumes.
+package scaffold
 
 import (
 	"embed"

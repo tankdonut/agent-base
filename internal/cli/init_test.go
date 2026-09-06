@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tankdonut/agent-base/internal/templates"
+	"github.com/tankdonut/agent-base/internal/scaffold"
 )
 
 // runRoot executes the command tree with args and captured stdio.
@@ -32,7 +32,7 @@ func TestInitCmdScaffoldsGoldenTree(t *testing.T) {
 		t.Fatalf("init: %v", err)
 	}
 
-	want, err := templates.Paths()
+	want, err := scaffold.Paths()
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -24,8 +24,8 @@ vocabulary covers both, declared per project in `spec.json`.
 This document is the contract. The code in `container/` is its
 implementation: `spec.py` (loader), `entrypoint.py` (boot phases),
 `seed_automations.py` (cron reconciler). Worked specs live in
-`templates/spec.example.json` (golden example) and `fixtures/freya-like/`
-plus `fixtures/mimir-like/` (real boot-tested fixtures; consult them rather
+`examples/spec.example.json` (golden example) and `tests/tests/fixtures/*freya-like/`
+plus `tests/tests/fixtures/*mimir-like/` (real boot-tested fixtures; consult them rather
 than copying them whole).
 
 ## Quick start
@@ -81,16 +81,16 @@ has no gh package, so the Dockerfile installs it from the cli.github.com
 apt repo; projects enabling `gh_auth` need no extra install step.
 Failure is non-fatal and the token is never logged.
 
-Wire the runtime up with `templates/compose.agent.yml` (service snippet)
-and `templates/compose.dev.agent.yml` (hot-reload overlay), then fill
-`.env` from `templates/env.example`.
+Wire the runtime up with `examples/compose.agent.yml` (service snippet)
+and `examples/compose.dev.agent.yml` (hot-reload overlay), then fill
+`.env` from `examples/env.example`.
 
 ## Environment contract
 
 The base image reads only the variables below. Everything else in a
 project's `.env` is spec-dependent: it reaches the runtime solely through
 `spec.json` `{env:NAME}` refs, `if_env` guards, and `split_csv` values, so
-its names are the project's choice. `templates/env.example` states the same
+its names are the project's choice. `examples/env.example` states the same
 split with copy-paste entries.
 
 | Variable | Default | Effect |
@@ -328,11 +328,11 @@ spec config entry) so the OAuth callback URL is reachable.
 
 ### Worked examples
 
-- `templates/spec.example.json`: one entry per feature, annotated by shape.
-- `fixtures/freya-like/spec.json`: local stdio servers with `--env` pairs,
+- `examples/spec.example.json`: one entry per feature, annotated by shape.
+- `tests/tests/fixtures/*freya-like/spec.json`: local stdio servers with `--env` pairs,
   `split_csv` allowFrom, heartbeat entries behind `if_env`, a local plugin,
   `gh_auth` enabled.
-- `fixtures/mimir-like/spec.json`: six servers mixing remote URLs
+- `tests/tests/fixtures/*mimir-like/spec.json`: six servers mixing remote URLs
   (one key-templated query param, one bearer-token header) with local npx
   commands, `gh_auth` disabled, a different automation model.
 
@@ -753,7 +753,7 @@ services:
 Add egress filtering at the network layer when the agent's outbound
 surface is known (allowlist the provider/registry hosts).
 
-`templates/compose.prod.agent.yml` is the complete production compose file
+`examples/compose.prod.agent.yml` is the complete production compose file
 built on this baseline, and `docs/deployment.md` is the full deployment
 playbook: host prep, TLS proxy, updates/rollback, backups, watchdogs, and
 per-platform (Render/Fly/AWS/Raspberry Pi) notes.
@@ -775,12 +775,12 @@ the actions repo; projects reference them instead of copying YAML.
 
 ## Extension checklist
 
-1. Copy `templates/env.example` to `.env` (or `secrets/agent.env`) and keep
+1. Copy `examples/env.example` to `.env` (or `secrets/agent.env`) and keep
    only the variables your spec references; the base vars can stay
    commented defaults.
-2. Write `spec.json` starting from `templates/spec.example.json`; consult
+2. Write `spec.json` starting from `examples/spec.example.json`; consult
    the fixtures for local-MCP versus remote-MCP shapes.
-3. Create `workspace/` from `templates/workspace/` (`AGENTS.md`, `SOUL.md`,
+3. Create `workspace/` from `examples/workspace/` (`AGENTS.md`, `SOUL.md`,
    `USER.md`, `MEMORY.md`) and fill in the persona placeholders.
 4. Assemble `skills/` and `docs/` as image-baked content; remember skills
    and docs are replaced wholesale every boot.
@@ -795,8 +795,8 @@ the actions repo; projects reference them instead of copying YAML.
 6. Ship trigger scripts (if any) as `scripts/` — image-baked or mounted
    read-only at `/opt/agent/scripts`.
 7. Write the thin Dockerfile per Quick start, pinning the current date tag.
-8. Add the `agent` service from `templates/compose.agent.yml` and, for
-   development, the overlay from `templates/compose.dev.agent.yml`.
+8. Add the `agent` service from `examples/compose.agent.yml` and, for
+   development, the overlay from `examples/compose.dev.agent.yml`.
 9. Stand up CI per the pattern above, including the `--validate-spec` gate.
 
 Validate early: `docker run --rm --env-file .env <image> --validate-spec`

@@ -14,7 +14,7 @@
 | Build image (date tag default) | `./make.sh build` |
 | Push image | `AGENT_BASE_VERSION=YYYY.MM.DD[.N] ./make.sh push` — refuses implicit tags; same-day follow-up releases use the `.N` run suffix |
 | Validate a spec (CI gate) | `docker run --rm --env-file .env <image> --validate-spec` |
-| CLI contract (CI + local) | `python3 scripts/contract_test.py <image>` — real-CLI drift gate + upgrade-path gate (warm-volume reboot from last release; `CONTRACT_UPGRADE=required` in CI, `auto` locally) |
+| CLI contract (CI + local) | `python3 tests/contract_test.py <image>` — real-CLI drift gate + upgrade-path gate (warm-volume reboot from last release; `CONTRACT_UPGRADE=required` in CI, `auto` locally) |
 
 ## Structure
 
@@ -23,21 +23,24 @@ cmd/         agentctl CLI — operator tool for downstream agent repos (scaffold
 container/   Image contract: entrypoint.py (boot), spec.py (loader), seed_automations.py
              (cron reconciler), Dockerfile, colocated test_*.py (never shipped)
 docs/        standard-agent.md — the whole agent contract + Freya/Mimir migration guides
-fixtures/    freya-like/, mimir-like/ — boot-tested spec+automations trees; input for
-             unit FixtureBoots and smoke; consult, don't copy whole
+tests/       e2e surface (image-side, python stdlib): smoke_test.py (real-image
+             fixture boots + graceful-shutdown drain), contract_test.py + contract/
+             (real-CLI drift gate: emitted-flag cross-check vs --help + clean
+             shim-free boot + upgrade-path warm-volume reboot from the last
+             published release), fixtures/* (freya-like, mimir-like — boot-tested
+             spec+automations trees; input for smoke; consult, don't copy whole),
+             shim/openclaw (fake CLI; asserts via invocation log)
 internal/    agentctl engine, layered by import direction:
              project + process (foundations: repo contract readers,
              Runner/engine policy — import nothing internal), compose
              (engine argv vocabulary), platform (deployment port +
              Deployment IR; adapter under platform/dockercompose),
              cli (cobra composition root incl. the platform registry —
-             the only package allowed to import adapters), scaffold,
-             embedded templates (templates/tmpl)
-scripts/     smoke.sh (shim harness), contract_test.py + contract/ (real-CLI drift
-             gate: emitted-flag cross-check vs --help + clean shim-free boot +
-             upgrade-path warm-volume reboot from the last published release),
-             shim/openclaw (fake CLI; asserts via invocation log)
-templates/   spec.example.json (golden), env.example, compose snippets, workspace skeletons
+             the only package allowed to import adapters), scaffold
+             (self-contained leaf owning its embedded tmpl/ tree)
+scripts/     check-image-refs.sh only (release-time GHCR tag gate)
+examples/    Image-contract examples: spec.example.json (golden), env.example,
+             compose snippets, workspace skeletons
 ```
 
 ## Where To Look
@@ -45,11 +48,11 @@ templates/   spec.example.json (golden), env.example, compose snippets, workspac
 | Task | Location |
 | ----- | -------- |
 | Change boot behavior | `container/entrypoint.py` — each phase is a plain function over `(spec, env)` |
-| Spec schema change | `container/spec.py` + `templates/spec.example.json` + `docs/standard-agent.md` (same commit) |
+| Spec schema change | `container/spec.py` + `examples/spec.example.json` + `docs/standard-agent.md` (same commit) |
 | Cron reconcile behavior | `container/seed_automations.py` |
 | Graceful shutdown / drain behavior | `container/entrypoint.py` — `supervise`, `ShutdownSupervisor`, `parse_shutdown_grace` |
-| Env var contract (base vs project) | `templates/env.example`, `docs/standard-agent.md#environment-contract` |
-| Smoke failure | `logs/smoke-*.log` (kept on failure, deleted on success) + `scripts/smoke.sh` |
+| Env var contract (base vs project) | `examples/env.example`, `docs/standard-agent.md#environment-contract` |
+| Smoke failure | `logs/smoke-*.log` (kept on failure, deleted on success) + `tests/smoke_test.py` |
 | Migration guides | `docs/standard-agent.md#migrations` |
 | Scaffold a new downstream agent repo | `cmd/agentctl` — `go run ./cmd/agentctl init <dir>` |
 
@@ -83,7 +86,7 @@ Symbols relative to `container/`.
 - `container/` files are the image contract; renaming/moving any of them changes downstream projects' Dockerfiles — update `docs/standard-agent.md` in the same commit. Modules import each other top-level (no package, no `__init__.py`); the Dockerfile COPYs exactly the three modules flat to `/opt/agent`.
 - Reconcile failures warn and never raise (gateway availability > config completeness); loader failures abort the boot.
 - Seeded automations run with a bounded tool allow-list (`seed_automations.DEFAULT_JOB_TOOLS` — fs/runtime/web/memory + `bundle-mcp`; recursion/spawn/browser excluded, OWASP ASI06). Per-job `tools:` header or spec `automations.default_tools` overrides; `*` = unrestricted. Per-job `model:` header overrides the global `automations.model` for that job (set on add, drift healed via `cron edit --model`). A `trigger-script:` header attaches a Gateway condition script (path inside the read-only `/opt/agent/scripts` sibling, content embedded at seed time; content drift healed via `cron edit --trigger-script`, removal via `--clear-trigger`) — the surface aborts seeding unless `AGENT_AUTOMATION_TRIGGERS=1` (which arms `cron.triggers.enabled`; evaluation runs with the owning agent's FULL tool policy, so the opt-in is deliberate). The base also sets `tools.deny` (cron, subagents, sessions_spawn, nodes) unless any env-active spec `tools.*` config entry exists (an `if_env` guard that never fires configures nothing).
-- Formatter is `ruff-format` (not black) via pre-commit, alongside ruff, hadolint (`container/Dockerfile` only), markdownlint (`fixtures/**` ignored).
+- Formatter is `ruff-format` (not black) via pre-commit, alongside ruff, hadolint (`container/Dockerfile` only), markdownlint (`tests/fixtures/***` ignored).
 - CI composes reusable actions from `tankdonut/github-actions` (`pre-commit`, `setup-python-uv`, `ghcr-login`); do not hand-roll equivalents. Exception: the multi-arch image jobs in `.github/workflows/ci.yml` use native per-arch runners + `imagetools` merge — the shared `build-and-publish` workflow hardcodes `ubuntu-latest` and cannot express per-arch builds (and a single multi-platform buildx push drops the HEALTHCHECK via the OCI exporter).
 - Releases bump two Go constants on main before tagging: `internal/cli` `Version` and `internal/scaffold` `DefaultBaseTag`, both equal to the tag verbatim. The `release` job cross-compiles `agentctl-linux-amd64/arm64` + `agentctl-SHA256SUMS` into the release assets and fails if `agentctl version` ≠ tag (see the `releasing-agent-base` skill).
 - Images publish under date tags only (`YYYY.MM.DD`); no `latest` exists; push requires explicit `AGENT_BASE_VERSION`.
@@ -95,7 +98,7 @@ Symbols relative to `container/`.
 - Setting `OPENCLAW_HOME` — double-nests `{data}`; the entrypoint pops it at import.
 - Writing docs to `{data}/docs` — the hard standard is `{data}/workspace/docs`.
 - Floating image tags; hand-rolled CI steps.
-- Editing `AGENTS.md` under `templates/workspace/` or `fixtures/*/workspace/` as project docs — those are shipped agent personas (payload), not repo documentation.
+- Editing `AGENTS.md` under `examples/workspace/` or `tests/fixtures/**/workspace/` as project docs — those are shipped agent personas (payload), not repo documentation.
 - In tests: `from seed_automations import X` — reload discipline requires module-attribute access (`seed_automations.X`).
 
 ## Unique Styles
@@ -103,12 +106,12 @@ Symbols relative to `container/`.
 - `# allow: SIZE_OK` header marks contractually-single test files exempt from size ceilings.
 - Meta-tests: an AST audit of `entrypoint.py` forbids legacy `FREYA_` / `MIMIR_` env names; import-safety classes assert importing never boots.
 - Secrets canary tests: plant a canary, assert it reaches CLI argv but never captured stdout/stderr.
-- Smoke asserts phase order by line number in the shim invocation log (`scripts/shim/openclaw`), plus proof-of-absence checks (e.g. no `memory index` on clean status).
+- Smoke asserts phase order by line number in the shim invocation log (`tests/shim/openclaw`), plus proof-of-absence checks (e.g. no `memory index` on clean status).
 
 ## Notes
 
 - Smoke runs in CI (`smoke` job, docker via `SMOKE_ENGINE`) and locally (podman-first); logs are `logs/smoke-*.log` (gitignored) — kept on failure, removed on success.
-- `scripts/smoke.sh` embeds a Python RUNNER mirroring `main()` minus the fork/supervise handoff — update both when phases change.
+- `tests/smoke_test.py` embeds a Python RUNNER mirroring `main()` minus the fork/supervise handoff — update both when phases change.
 - Project one-offs go in wrapper entrypoints that import the phases — never hooks in the base (docs "Escape hatch: wrapper entrypoints").
 - Local `container/__pycache__` (cpython-313/314) and the `.codegraph` symlink are machine-local, untracked artifacts.
 
@@ -118,7 +121,7 @@ Symbols relative to `container/`.
 | ----- | ----- |
 | Agent contract + project extension guide | `docs/standard-agent.md` |
 | Deployment guide (host prep, proxy, platforms) | `docs/deployment.md` |
-| Production compose template | `templates/compose.prod.agent.yml` |
+| Production compose template | `examples/compose.prod.agent.yml` |
 | Migration guides (Freya, Mimir) | `docs/standard-agent.md#migrations` |
-| Spec schema golden example | `templates/spec.example.json` |
-| Env contract (base vs project vars) | `templates/env.example` |
+| Spec schema golden example | `examples/spec.example.json` |
+| Env contract (base vs project vars) | `examples/env.example` |

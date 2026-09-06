@@ -8,8 +8,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"text/template"
-
-	"github.com/tankdonut/agent-base/internal/templates"
 )
 
 // templateData is the complete template surface: templates may use ONLY
@@ -47,8 +45,8 @@ func Run(cfg Config) ([]string, error) {
 		Telegram:       cfg.Telegram,
 	}
 
-	tmplFS := templates.FS()
-	paths, err := templates.Paths()
+	tmplFS := FS()
+	paths, err := Paths()
 	if err != nil {
 		return nil, err
 	}
@@ -114,7 +112,7 @@ func renderFile(fsys fs.FS, target, rel string, data templateData) error {
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 		return fmt.Errorf("creating %s: %w", filepath.Dir(dest), err)
 	}
-	mode := templates.Mode(rel)
+	mode := Mode(rel)
 	if err := os.WriteFile(dest, out, mode); err != nil {
 		return fmt.Errorf("writing %s: %w", dest, err)
 	}

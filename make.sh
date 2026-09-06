@@ -27,7 +27,7 @@ Targets:
   test    Run container module tests (python3 -m unittest discover container)
   lint    Run pre-commit on all files
   smoke   Build the smoke image: fixture boots + graceful-shutdown drain
-          (scripts/smoke.sh; SMOKE_ENGINE overrides engine detection)
+          (python3 tests/smoke_test.py; SMOKE_ENGINE overrides engine detection)
   build   Build $IMAGE:<AGENT_BASE_VERSION or today's date>
   push    Push $IMAGE:\$AGENT_BASE_VERSION (env var must be set explicitly)
   agentctl         Run agentctl via go run (args pass through: ./make.sh
@@ -53,7 +53,7 @@ case $target in
     pre-commit run --all-files
     ;;
   smoke)
-    scripts/smoke.sh
+    python3 tests/smoke_test.py
     ;;
   build)
     version=${AGENT_BASE_VERSION:-$(date +%Y.%m.%d)}

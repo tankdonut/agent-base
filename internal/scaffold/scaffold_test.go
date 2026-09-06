@@ -10,16 +10,14 @@ import (
 	"sort"
 	"strings"
 	"testing"
-
-	"github.com/tankdonut/agent-base/internal/templates"
 )
 
-// The golden manifest lives in internal/templates (templates_test
-// pins Paths() against the embedded FS); scaffold tests derive from it
-// so adding a template file needs one edit, not three.
+// The golden manifest lives in the embedded tree (templates_test pins
+// Paths() against it); scaffold tests derive from it so adding a
+// template file needs one edit, not three.
 func goldenPaths(t *testing.T) []string {
 	t.Helper()
-	paths, err := templates.Paths()
+	paths, err := Paths()
 	if err != nil {
 		t.Fatal(err)
 	}

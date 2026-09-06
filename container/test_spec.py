@@ -6,7 +6,7 @@ level, required sections/fields, specVersion gating, {env:NAME}/{data}
 templating (including nested values and single-pass substitution),
 pre-derived CLI marshalling for config entries, local/remote MCP server
 validation and flag construction, plugin sources, if_env guards, and the
-golden templates/spec.example.json.
+golden examples/spec.example.json.
 
 Runs directly with no pytest dependency:
 
@@ -42,7 +42,7 @@ from spec import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-EXAMPLE_SPEC = REPO_ROOT / "templates" / "spec.example.json"
+EXAMPLE_SPEC = REPO_ROOT / "examples" / "spec.example.json"
 
 MINIMAL: dict[str, object] = {
     "specVersion": 1,

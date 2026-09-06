@@ -21,7 +21,7 @@ Four stages:
      reconcile with zero [warn]s, advance the last-image-version marker,
      and keep both upgrade-spec MCP servers registered
 
-Usage: python3 scripts/contract_test.py [IMAGE]   (builds nothing; expects
+Usage: python3 tests/contract_test.py [IMAGE]   (builds nothing; expects
 the tag given, or ghcr.io/tankdonut/agent-base:contract)
 
 Environment:
@@ -93,19 +93,19 @@ CANARY_MOUNTS = (
     "--security-opt",
     "label=disable",
     "-v",
-    f"{REPO_ROOT}/scripts/contract/spec.json:/opt/agent/spec.json:ro",
+    f"{REPO_ROOT}/contract/spec.json:/opt/agent/spec.json:ro",
     "-v",
-    f"{REPO_ROOT}/scripts/contract/automations:/opt/agent/automations:ro",
+    f"{REPO_ROOT}/contract/automations:/opt/agent/automations:ro",
     "-v",
-    f"{REPO_ROOT}/scripts/contract/scripts:/opt/agent/scripts:ro",
+    f"{REPO_ROOT}/contract/scripts:/opt/agent/scripts:ro",
 )
 UPGRADE_MOUNTS = (
     "--security-opt",
     "label=disable",
     "-v",
-    f"{REPO_ROOT}/scripts/contract/spec.upgrade.json:/opt/agent/spec.json:ro",
+    f"{REPO_ROOT}/contract/spec.upgrade.json:/opt/agent/spec.json:ro",
     "-v",
-    f"{REPO_ROOT}/scripts/contract/upgrade-automations:/opt/agent/automations:ro",
+    f"{REPO_ROOT}/contract/upgrade-automations:/opt/agent/automations:ro",
 )
 
 

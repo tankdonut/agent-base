@@ -87,7 +87,7 @@ jobs:
         env:
           CONTRACT_ENGINE: docker
           CONTRACT_UPGRADE: required
-        run: python3 scripts/contract_test.py ghcr.io/tankdonut/agent-base:contract
+        run: python3 tests/contract_test.py ghcr.io/tankdonut/agent-base:contract
 
   smoke:
     needs: [lint, test]

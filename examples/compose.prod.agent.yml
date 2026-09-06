@@ -49,7 +49,7 @@ services:
       - agent-backups:/backups
     # Loopback-only bind; remote access goes through a TLS-terminating
     # reverse proxy (docs/deployment.md). AGENT_GATEWAY_PORT is host-side
-    # compose interpolation (templates/env.example section 4), and never
+    # compose interpolation (examples/env.example section 4), and never
     # enters the container.
     ports:
       - "127.0.0.1:${AGENT_GATEWAY_PORT:-18789}:18789"

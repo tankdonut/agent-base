@@ -17,9 +17,10 @@ lifecycle, boot sequence, extension checklist) lives in
 | `container/` | Base-image Python modules (entrypoint, spec loader, automations reconciler) + unittest suites |
 | `cmd/` | `agentctl` CLI — scaffolds new downstream agent repos |
 | `internal/` | agentctl scaffold engine + embedded templates |
-| `templates/` | Project-facing templates: spec example, env contract, compose snippets, workspace skeletons |
+| `examples/` | Image-contract examples: spec golden, env contract, compose snippets, workspace skeletons |
 | `docs/` | The standard-agent contract + migration guides |
-| `scripts/` | Smoke harness |
+| `tests/` | E2E surface: smoke (fixture boots + drain), CLI contract gate, fixtures, openclaw shim |
+| `scripts/` | `check-image-refs.sh` (release-time GHCR tag gate) |
 | `make.sh` | Task runner (test / lint / smoke / build / push) |
 
 ## Quick start

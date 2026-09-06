@@ -3,8 +3,8 @@
 # third-party imports are unconstrained; every rule below encodes one
 # edge of the internal import DAG:
 #
-#   project, process, templates  -> nothing internal (foundations)
-#   scaffold                     -> templates only
+#   project, process              -> nothing internal (foundations)
+#   scaffold                      -> self-contained leaf (owns its embedded tmpl/ tree)
 #   compose                      -> process, project only
 #   platform (port, top level)   -> project, process only; never an adapter
 #   platform/* (adapters)        -> port + compose + foundations; never each other
@@ -32,25 +32,16 @@ linters:
           files:
             - "**/internal/project/**.go"
             - "**/internal/process/**.go"
-            - "**/internal/templates/**.go"
           deny:
             - pkg: "github.com/tankdonut/agent-base/internal"
               desc: "foundations import nothing internal"
 
-        scaffold-templates-only:
+        scaffold-is-a-self-contained-leaf:
           files:
             - "**/internal/scaffold/**.go"
           deny:
-            - pkg: "github.com/tankdonut/agent-base/internal/cli"
-              desc: "scaffold is a leaf: it may import only internal/templates"
-            - pkg: "github.com/tankdonut/agent-base/internal/compose"
-              desc: "scaffold is a leaf: it may import only internal/templates"
-            - pkg: "github.com/tankdonut/agent-base/internal/platform"
-              desc: "scaffold is a leaf: it may import only internal/templates"
-            - pkg: "github.com/tankdonut/agent-base/internal/process"
-              desc: "scaffold is a leaf: it may import only internal/templates"
-            - pkg: "github.com/tankdonut/agent-base/internal/project"
-              desc: "scaffold is a leaf: it may import only internal/templates"
+            - pkg: "github.com/tankdonut/agent-base/internal"
+              desc: "scaffold owns its embedded template tree and imports nothing internal"
 
         compose-foundations-only:
           files:
