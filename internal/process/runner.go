@@ -11,9 +11,12 @@ var ErrNilRunner = errors.New("internal: nil runner")
 
 // Runner abstracts process execution. Run starts name with args, wiring
 // stdin/stdout/stderr through; env is the full environment (nil inherits
-// the parent's). LookPath mirrors exec.LookPath.
+// the parent's). LookPath mirrors exec.LookPath. RunOutput runs name
+// capturing stdout (stderr goes to the caller's stderr) for adapters
+// that parse CLI JSON output.
 type Runner interface {
 	Run(env []string, name string, args ...string) error
+	RunOutput(env []string, name string, args ...string) ([]byte, error)
 	LookPath(name string) (string, error)
 }
 

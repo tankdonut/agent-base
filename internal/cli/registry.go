@@ -13,6 +13,7 @@ import (
 
 	"github.com/tankdonut/agent-base/internal/platform"
 	"github.com/tankdonut/agent-base/internal/platform/dockercompose"
+	"github.com/tankdonut/agent-base/internal/platform/fly"
 	"github.com/tankdonut/agent-base/internal/process"
 )
 
@@ -42,6 +43,13 @@ var platformRegistry = map[string]struct {
 			defaultPlatform: true,
 		},
 		factory: dockercompose.New,
+	},
+	"fly": {
+		info: platformInfo{
+			name:        "fly",
+			description: "fly.io — single machine + volume, remote build via flyctl",
+		},
+		factory: fly.New,
 	},
 }
 

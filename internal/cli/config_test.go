@@ -203,3 +203,37 @@ func TestPinPlatform(t *testing.T) {
 		}
 	})
 }
+
+func TestLoadConfigFlyNamespace(t *testing.T) {
+	dir := t.TempDir()
+	file := "platform: fly\nfly:\n  app: my-agent\n  region: sjc\n"
+	if err := os.WriteFile(filepath.Join(dir, ConfigName), []byte(file), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	restore := chdir(t, dir)
+	defer restore()
+
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Platform != "fly" {
+		t.Errorf("platform = %q", cfg.Platform)
+	}
+	if got := cfg.Namespaces["fly"]["app"]; got != "my-agent" {
+		t.Errorf("fly.app = %v", got)
+	}
+}
+
+func TestLoadConfigUnknownNamespaceFailsClosed(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ConfigName), []byte("k8s: {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	restore := chdir(t, dir)
+	defer restore()
+	_, err := LoadConfig()
+	if err == nil || !strings.Contains(err.Error(), "unknown key") {
+		t.Fatalf("err = %v, want unknown namespace key error", err)
+	}
+}

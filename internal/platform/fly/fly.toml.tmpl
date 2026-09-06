@@ -1,0 +1,45 @@
+# fly.io deployment for {{.App}} — scaffolded by `agentctl platform set fly`.
+# Edit regions and checks freely; `agentctl platform check` lints the
+# contract fields: kill_signal/kill_timeout, AGENT_SHUTDOWN_GRACE, the
+# single data volume, and the agent Dockerfile.
+#
+# Layout note: fly machines mount exactly ONE volume. It holds {data}
+# (/home/node/.openclaw, warm across deploys). /backups lands on the
+# machine's ephemeral disk — the pre-upgrade backup survives the deploy
+# only long enough to verify; the data volume itself is the source of
+# truth. Do not add a second mount.
+
+app = "{{.App}}"
+primary_region = "{{.Region}}"
+
+# The agent contract drains on SIGTERM; fly's default kill_signal is
+# SIGINT, which skips the graceful drain entirely.
+kill_signal = "SIGTERM"
+# Fly caps the drain window at 300s; the entrypoint's default 600s
+# grace would be force-killed mid-drain.
+kill_timeout = 300
+
+[build]
+  dockerfile = "agent/Dockerfile"
+
+[env]
+  HOME = "/home/node"
+  AGENT_SHUTDOWN_GRACE = "300"
+
+[mounts]
+  source = "{{.App}}_data"
+  destination = "/home/node/.openclaw"
+
+[http_service]
+  internal_port = 18789
+  force_https = true
+  # The agent is a singleton with a volume: never auto-stop (cron must
+  # fire), always auto-start, one machine minimum.
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    interval = "10s"
+    timeout = "2s"
+    path = "/healthz"

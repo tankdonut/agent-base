@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/tankdonut/agent-base/internal/platform/fly"
 	"github.com/tankdonut/agent-base/internal/process"
 )
 
@@ -37,6 +38,10 @@ func (s *stubRunner) Run(env []string, name string, args ...string) error {
 		}
 	}
 	return nil
+}
+
+func (s *stubRunner) RunOutput(env []string, name string, args ...string) ([]byte, error) {
+	return nil, fmt.Errorf("fake: output capture not configured")
 }
 
 func (s *stubRunner) LookPath(name string) (string, error) {
@@ -250,12 +255,77 @@ func TestPlatformLsMarksPinned(t *testing.T) {
 func TestPlatformSetUnknownFailsClosed(t *testing.T) {
 	root := fixtureProject(t)
 	stubbedRunner(t, "podman")
-	_, err := execIn(t, root, "platform", "set", "fly")
+	_, err := execIn(t, root, "platform", "set", "wat")
 	if err == nil || !strings.Contains(err.Error(), "unknown platform") {
 		t.Fatalf("err = %v, want unknown platform", err)
 	}
 	if _, statErr := os.Stat(filepath.Join(root, ConfigName)); !os.IsNotExist(statErr) {
 		t.Error("failed set must not write .agentctl.yaml")
+	}
+}
+
+func TestPlatformSetFlyScaffoldsAndPins(t *testing.T) {
+	root := fixtureProject(t)
+	stubbedRunner(t, "podman", "fly")
+	out, err := execIn(t, root, "platform", "set", "fly", "--app", "my-agent", "--region", "sjc")
+	if err != nil {
+		t.Fatalf("platform set fly: %v\n%s", err, out)
+	}
+	manifest, err := os.ReadFile(filepath.Join(root, "deploy", "fly.toml"))
+	if err != nil {
+		t.Fatalf("deploy/fly.toml not scaffolded: %v", err)
+	}
+	for _, want := range []string{
+		`app = "my-agent"`,
+		`primary_region = "sjc"`,
+		`kill_signal = "SIGTERM"`,
+		"kill_timeout = 300",
+		`AGENT_SHUTDOWN_GRACE = "300"`,
+		`destination = "/home/node/.openclaw"`,
+	} {
+		if !strings.Contains(string(manifest), want) {
+			t.Errorf("fly.toml lacks %q:\n%s", want, manifest)
+		}
+	}
+	cfgData, err := os.ReadFile(filepath.Join(root, ConfigName))
+	if err != nil || !strings.Contains(string(cfgData), "platform: fly") {
+		t.Errorf("platform not pinned: %v %s", err, cfgData)
+	}
+	if !strings.Contains(out, "fly launch") {
+		t.Errorf("output lacks fly next steps:\n%s", out)
+	}
+
+	// Re-running set fly must refuse to clobber the manifest.
+	out, err = execIn(t, root, "platform", "set", "fly", "--app", "other", "--region", "iad")
+	if err == nil || !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("re-scaffold must refuse to overwrite: %v", err)
+	}
+}
+
+func TestPlatformSetFlyRequiresFlags(t *testing.T) {
+	root := fixtureProject(t)
+	stubbedRunner(t, "podman", "fly")
+	_, err := execIn(t, root, "platform", "set", "fly")
+	if err == nil || !strings.Contains(err.Error(), "--app") {
+		t.Fatalf("err = %v, want --app requirement", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, "deploy", "fly.toml")); !os.IsNotExist(statErr) {
+		t.Error("failed set must not scaffold")
+	}
+}
+
+func TestDestroyGateOnNonVolumePreservingPlatform(t *testing.T) {
+	root := fixtureProject(t)
+	if err := os.WriteFile(filepath.Join(root, ConfigName), []byte("platform: fly\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stubbedRunner(t, "podman", "fly")
+	if err := fly.ScaffoldConfig(root, "my-agent", "sjc"); err != nil {
+		t.Fatal(err)
+	}
+	_, err := execIn(t, root, "destroy")
+	if err == nil || !strings.Contains(err.Error(), "--volumes") {
+		t.Fatalf("err = %v, want volume-loss gate", err)
 	}
 }
 

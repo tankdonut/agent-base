@@ -126,6 +126,9 @@ and agent-backups too and asks for the project name as confirmation
 			if err != nil {
 				return err
 			}
+			if !p.Capabilities().VolumePreservingDestroy && !destroyVolumes {
+				return fmt.Errorf("platform %q always deletes the data volume when destroying — pass --volumes to accept that, or use `agentctl stop` to pause while keeping data", p.Name())
+			}
 			if destroyVolumes && !destroyYes {
 				if err := confirmDestroy(cmd.InOrStdin(), cmd.OutOrStdout(), d.Project); err != nil {
 					return err

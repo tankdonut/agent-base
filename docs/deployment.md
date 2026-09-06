@@ -16,6 +16,40 @@ docker compose; alternative platforms follow.
 | Railway / Lightsail / App Runner | [Railway](#railway) / [AWS](#aws) | Railway weakest; Lightsail/App Runner blocked, see breakers |
 | A container management plane | [Management planes](#management-planes) | Komodo conditional (multi-host), Watchtower no |
 
+## Platform capability matrix
+
+What actually filters platforms for this image contract — two hard
+requirements plus one clamp:
+
+1. **Block storage as a local filesystem** — `{data}` holds SQLite-class
+   writes; network filesystems (EFS, Azure Files, GCS FUSE) break locking.
+2. **Exec into the running container** — `openclaw mcp login` writes OAuth
+   tokens into the live `{data}`, and `mcp doctor/status` debugs it. A
+   platform without exec yields an agent you cannot authenticate or enter.
+3. **Drain cap** — every platform force-kills after some window; adapters
+   clamp `AGENT_SHUTDOWN_GRACE` under it and say so.
+
+| Platform | Block volume | Exec | Drain cap | agentctl adapter |
+| --- | --- | --- | --- | --- |
+| compose (any host) | ✓ host disk | ✓ `compose exec` | 600s full | `compose` (default) |
+| Fly.io | ✓ NVMe (1 vol ↔ 1 machine) | ✓ `fly ssh console` | 300s | `fly` |
+| Kubernetes (any) | ✓ block PV | ✓ `kubectl exec` | pod grace (660s) | planned |
+| Render | ✓ disks | ✗ no exec | 300s | blocked — re-evaluate if Render ships exec |
+| ECS Fargate | EFS only (network FS) | ✓ | 120s | blocked at the volume |
+| Azure Container Apps | Azure Files only | ✓ | — | blocked at the volume |
+| Cloud Run / App Runner / Lightsail / DO App Platform | ✗ | ✗ | — | blocked |
+
+Fly-specific notes the adapter encodes: `kill_signal` must be `SIGTERM`
+(fly's default SIGINT skips the drain), `kill_timeout` and
+`AGENT_SHUTDOWN_GRACE` clamp to 300s, one machine mounts one volume —
+it carries `{data}` while `/backups` stays ephemeral (verified pre-upgrade
+backup, then gone with the machine; the data volume is the source of
+truth), and `fly apps destroy` deletes the volume with the app —
+`agentctl destroy` refuses without `--volumes` on this platform.
+Secrets never flow through agentctl argv: run
+`fly secrets import -a <app> < agent/.env` once — flyctl reads the file
+itself.
+
 ## Deployment model
 
 Fixed facts the rest of this document assumes (from the image contract):

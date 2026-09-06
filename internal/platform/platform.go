@@ -25,12 +25,17 @@ type Output interface {
 // with an actionable message instead of a broken run.
 type Capabilities struct {
 	// Exec: `agentctl mcp` can reach a running instance (compose exec,
-	// fly ssh console, ecs execute-command).
+	// fly ssh console, kubectl exec).
 	Exec bool
 	// StopStart: stop and start exist without destroying the containers
 	// (compose stop/start, machine stop). Platforms without it go
 	// straight to destroy.
 	StopStart bool
+	// VolumePreservingDestroy: destroy can tear the stack down while
+	// keeping the data volume (compose down). Platforms where the data
+	// dies with the stack (fly apps destroy deletes volumes) say false,
+	// and the destroy verb then demands explicit --volumes confirmation.
+	VolumePreservingDestroy bool
 }
 
 // DeployOptions parameterizes Deploy.

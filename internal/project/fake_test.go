@@ -37,6 +37,10 @@ func (f *fakeRunner) Run(env []string, name string, args ...string) error {
 	return nil
 }
 
+func (f *fakeRunner) RunOutput(env []string, name string, args ...string) ([]byte, error) {
+	return nil, fmt.Errorf("fake: output capture not configured")
+}
+
 func (f *fakeRunner) LookPath(name string) (string, error) {
 	if f.look[name] {
 		return "/usr/bin/" + name, nil

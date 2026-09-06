@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -27,6 +28,13 @@ const ConfigName = ".agentctl.yaml"
 type Config struct {
 	Platform   string
 	Namespaces map[string]map[string]any
+}
+
+// namespaceKeys maps each platform's .agentctl.yaml namespace to the
+// registry name it configures.
+var namespaceKeys = map[string]string{
+	"compose": "compose",
+	"fly":     "fly",
 }
 
 // LoadConfig layers defaults < file < env. Cheap enough to call per
@@ -75,20 +83,32 @@ func applyConfigFile(cfg *Config, data []byte, path string) error {
 				return fmt.Errorf("%s: platform is empty — remove the key (default: compose) or set a registry name", path)
 			}
 			cfg.Platform = s
-		case "compose":
-			ns, ok := val.(map[string]any)
-			if !ok {
-				return fmt.Errorf("%s: compose: want a mapping of compose config keys, got %T", path, val)
-			}
-			cfg.Namespaces["compose"] = ns
 		default:
-			if renamed, legacy := legacyKeys[key]; legacy {
-				return fmt.Errorf("%s: unknown key %q — it moved: rename it to %s", path, key, renamed)
+			ns, isNamespace := namespaceKeys[key]
+			if !isNamespace {
+				if renamed, legacy := legacyKeys[key]; legacy {
+					return fmt.Errorf("%s: unknown key %q — it moved: rename it to %s", path, key, renamed)
+				}
+				return fmt.Errorf("%s: unknown key %q (known: platform, %s)", path, key, strings.Join(sortedNamespaceKeys(), ", "))
 			}
-			return fmt.Errorf("%s: unknown key %q (known: platform, compose)", path, key)
+			m, ok := val.(map[string]any)
+			if !ok {
+				return fmt.Errorf("%s: %s: want a mapping of %s config keys, got %T", path, key, ns, val)
+			}
+			cfg.Namespaces[ns] = m
 		}
 	}
 	return nil
+}
+
+// sortedNamespaceKeys lists the accepted namespace keys for errors.
+func sortedNamespaceKeys() []string {
+	out := make([]string, 0, len(namespaceKeys))
+	for k := range namespaceKeys {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // applyConfigEnv overlays AGENTCTL_PLATFORM, AGENTCTL_COMPOSE_ENGINE,

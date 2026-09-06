@@ -6,6 +6,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/tankdonut/agent-base/internal/platform"
+	"github.com/tankdonut/agent-base/internal/platform/fly"
 )
 
 // newPlatformCmd manages the project's deployment platform: list the
@@ -46,7 +47,10 @@ compose is the default; pin another with ` + "`agentctl platform set`" + `.`,
 	var set = &cobra.Command{
 		Use:   "set <name>",
 		Short: "Pin the platform in .agentctl.yaml and lint the project",
-		Args:  cobra.ExactArgs(1),
+		Long: `Pins the platform and scaffolds its repo-owned manifest when the
+adapter has one: fly writes deploy/fly.toml (--app and --region are
+required for it, and an existing manifest is never overwritten).`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			root, err := chdirProject()
 			if err != nil {
@@ -55,6 +59,12 @@ compose is the default; pin another with ` + "`agentctl platform set`" + `.`,
 			cfg, err := LoadConfig()
 			if err != nil {
 				return err
+			}
+			switch args[0] {
+			case "fly":
+				if err := fly.ScaffoldConfig(root, setApp, setRegion); err != nil {
+					return err
+				}
 			}
 			p, err := forPlatform(args[0], newRunner(), cfg.Namespaces)
 			if err != nil {
@@ -71,9 +81,14 @@ compose is the default; pin another with ` + "`agentctl platform set`" + `.`,
 				return err
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "pinned platform %q in %s\n", args[0], ConfigName)
+			if args[0] == "fly" {
+				fmt.Fprintf(cmd.OutOrStdout(), "next: `fly launch --no-deploy --copy-config -c deploy/fly.toml` once, then `fly secrets import < agent/.env` — then `agentctl deploy`\n")
+			}
 			return nil
 		},
 	}
+	set.Flags().StringVar(&setApp, "app", "", "fly app name (fly scaffold; required for fly)")
+	set.Flags().StringVar(&setRegion, "region", "", "primary fly region code (fly scaffold; default iad — US East)")
 
 	var check = &cobra.Command{
 		Use:   "check",
@@ -95,3 +110,8 @@ compose is the default; pin another with ` + "`agentctl platform set`" + `.`,
 	platformCmd.AddCommand(ls, set, check)
 	return platformCmd
 }
+
+var (
+	setApp    string
+	setRegion string
+)

@@ -76,9 +76,10 @@ func New(r process.Runner, ns map[string]any) (platform.Platform, error) {
 // Name identifies the adapter in errors and `platform ls`.
 func (a *Adapter) Name() string { return "compose" }
 
-// Capabilities: compose has exec and stop/start; volumes are inherent.
+// Capabilities: compose has exec and stop/start; down keeps named
+// volumes by default.
 func (a *Adapter) Capabilities() platform.Capabilities {
-	return platform.Capabilities{Exec: true, StopStart: true}
+	return platform.Capabilities{Exec: true, StopStart: true, VolumePreservingDestroy: true}
 }
 
 // Check fail-closed lints the repo-owned manifest against the image

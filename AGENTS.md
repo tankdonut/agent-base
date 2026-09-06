@@ -34,10 +34,12 @@ internal/    agentctl engine, layered by import direction:
              project + process (foundations: repo contract readers,
              Runner/engine policy — import nothing internal), compose
              (engine argv vocabulary), platform (deployment port +
-             Deployment IR; adapter under platform/dockercompose),
-             cli (cobra composition root incl. the platform registry —
-             the only package allowed to import adapters), scaffold
-             (self-contained leaf owning its embedded tmpl/ tree)
+             Deployment IR; adapters under platform/dockercompose and
+             platform/fly — fly ships its own embedded fly.toml.tmpl and
+             scaffolds deploy/fly.toml), cli (cobra composition root
+             incl. the platform registry — the only package allowed to
+             import adapters), scaffold (self-contained leaf owning its
+             embedded tmpl/ tree)
 scripts/     check-image-refs.sh only (release-time GHCR tag gate)
 examples/    Image-contract examples: spec.example.json (golden), env.example,
              compose snippets, workspace skeletons
@@ -80,7 +82,7 @@ Symbols relative to `container/`.
 ## Key Conventions
 
 - Python 3.11 floor (bookworm image), stdlib only; no 3.12+ syntax; full type annotations (convention — no mypy gate); `unittest` + `mock`, never pytest. Stdlib-only is enforced by construction: the image installs no pip; `.ruff.toml` targets py311, line 100; CI matrix is 3.11 (floor) + 3.14 (drift guard).
-- Go module at the repo root (`agentctl`, spf13/cobra + go.yaml.in/yaml/v3 — no viper): operator CLI for downstream projects (scaffold + dev loop + release verbs via the platform port + secrets + validate). Release verbs (`deploy/status/logs/mcp/stop/start/destroy`) dispatch through the `Platform` interface (`internal/platform`); the registry is the explicit map in `internal/cli/registry.go` (composition root — the port package must not import its adapters; adapters live in `internal/platform/<name>`, compose first). Config is typed and fail-closed: `.agentctl.yaml` top level accepts only `platform` + per-platform namespaces (`compose.engine`, `compose.gateway_port`); unknown keys abort with rename hints for the legacy flat names. Scaffold templates embedded under `internal/templates/tmpl`. Dependency rule (machine-enforced by depguard via golangci-lint — pre-commit hook + `.golangci.yml`): `project`/`process`/`templates` import nothing internal; `compose` imports only `process` + `project`; the `platform` port imports no adapter (project + process only); adapters (`internal/platform/<name>`, dockercompose first) never import each other; only `internal/cli` imports adapters. Process execution flows through the `Runner` interface (`internal/process`); cobra-free logic lives in the foundation and port packages.
+- Go module at the repo root (`agentctl`, spf13/cobra + go.yaml.in/yaml/v3 + BurntSushi/toml — no viper): operator CLI for downstream projects (scaffold + dev loop + release verbs via the platform port + secrets + validate). Release verbs (`deploy/status/logs/mcp/stop/start/destroy`) dispatch through the `Platform` interface (`internal/platform`); the registry is the explicit map in `internal/cli/registry.go` (composition root — the port package must not import its adapters; adapters live in `internal/platform/<name>`, dockercompose + fly so far). Config is typed and fail-closed: `.agentctl.yaml` top level accepts only `platform` + per-platform namespaces (`compose.engine`, `compose.gateway_port`, `fly.app`, `fly.region`); unknown keys abort with rename hints for the legacy flat names. Scaffold templates embedded in `internal/scaffold/tmpl` (init tree) and per-adapter (`fly` embeds its own fly.toml.tmpl). Dependency rule (machine-enforced by depguard via golangci-lint — pre-commit hook + `.golangci.yml`): `project`/`process` import nothing internal; `compose` imports only `process` + `project`; the `platform` port imports no adapter (project + process only); adapters (`internal/platform/<name>`) never import each other; only `internal/cli` imports adapters. Process execution flows through the `Runner` interface (`internal/process` — Run, RunOutput, LookPath); cobra-free logic lives in the foundation and port packages.
 - Loader modules fail closed: unknown key/token, ambiguous shape → abort loudly; never a silent empty string or skip.
 - Secrets flow only through `{env:VAR}` spec refs and env vars; resolved values must never reach logs — warnings name keys/env vars, never values (locked by SecretsCanary tests).
 - `container/` files are the image contract; renaming/moving any of them changes downstream projects' Dockerfiles — update `docs/standard-agent.md` in the same commit. Modules import each other top-level (no package, no `__init__.py`); the Dockerfile COPYs exactly the three modules flat to `/opt/agent`.
