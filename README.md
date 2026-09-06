@@ -31,13 +31,18 @@ lifecycle, boot sequence, extension checklist) lives in
 
 ## agentctl
 
-`agentctl` is the operator CLI for downstream agent projects — scaffolding is
-its first feature:
+`agentctl` is the operator CLI for downstream agent projects — scaffolding,
+the local dev loop, and platform-targeted deployment (compose is the
+reference platform):
 
 ```sh
 go run ./cmd/agentctl init ../my-agent   # scaffold a new agent repo
 go install ./cmd/agentctl                # then, in any project:
-agentctl up                              # lifecycle: dev/down/logs/rebuild/update
+agentctl deploy                          # ship the checked-out tree (check → build → up)
+agentctl dev up                          # local loop: hot-reload overlay
+agentctl status · logs · stop · start · destroy
+agentctl platform ls · set · check       # deployment platform management
+agentctl doctor                          # pre-flight report
 agentctl secrets init                    # secrets: init/check/edit
 agentctl validate                        # spec gate via the base image
 ```

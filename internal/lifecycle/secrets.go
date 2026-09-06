@@ -131,6 +131,26 @@ func RequiredEnvVars(info SpecInfo) []string {
 	return required
 }
 
+// EnvKeyNames returns the sorted variable names set in agent/.env, nil
+// when the file is absent. Names only — values never leave the file —
+// so callers can print the result (platform.Deployment.EnvKeys).
+func EnvKeyNames(root string) ([]string, error) {
+	data, err := os.ReadFile(filepath.Join(root, "agent", ".env"))
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("reading agent/.env: %w", err)
+	}
+	set := parseEnvValues(string(data))
+	names := make([]string, 0, len(set))
+	for name := range set {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
 // SecretsCheck verifies every required var in agent/.env is set and
 // non-empty. On success it returns the count of vars checked; on
 // failure the error lists every offender.

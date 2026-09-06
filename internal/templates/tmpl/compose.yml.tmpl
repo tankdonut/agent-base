@@ -70,7 +70,7 @@ services:
           cpus: "2.0"
           memory: 2g
           pids: 512
-    # Rotate container logs host-side; json-file keeps `agentctl logs -f`
+    # Rotate container logs host-side; json-file keeps `agentctl logs`
     # working. Values are strings, not numbers.
     logging:
       driver: json-file

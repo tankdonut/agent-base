@@ -1,9 +1,15 @@
 # agentctl config for {{.ProjectName}}. Every line below is commented
 # out: agentctl built-in defaults apply until you edit this file.
 
-# engine: auto — podman when available, docker otherwise (or pin: podman | docker)
-#engine: auto
+# platform: where the release verbs (deploy, status, logs, mcp, stop,
+# start, destroy) operate. compose is the default — the reference
+# adapter on this host's docker/podman engine.
+#platform: compose
 
-# gateway_port: host port the gateway URL uses (keep it distinct per
-# agent when several agents share one host)
-#gateway_port: {{.GatewayPort}}
+# compose: the compose platform's namespace. engine picks the local
+# container engine (podman when available, docker otherwise);
+# gateway_port is the host port the gateway URL uses — keep it distinct
+# per agent when several agents share one host.
+#compose:
+#  engine: auto
+#  gateway_port: {{.GatewayPort}}

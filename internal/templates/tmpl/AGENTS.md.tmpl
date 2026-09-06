@@ -9,19 +9,23 @@ Operate this repo with agentctl; `./make.sh` is a thin shim over it.
 
 | Task | Command |
 | ---- | ------- |
-| Start (production) | `agentctl up` |
-| Start (dev overlay) | `agentctl dev` |
-| Stop | `agentctl down` |
-| Logs | `agentctl logs -f` |
-| Build project images | `agentctl build-images` |
-| Restart services | `agentctl restart` |
-| Rebuild after content edits | `agentctl rebuild` |
-| Update base image | `agentctl update` |
+| Ship the checked-out tree | `agentctl deploy` |
+| Convergence check only | `agentctl deploy --dry-run` |
+| Instance status | `agentctl status` |
+| Instance logs | `agentctl logs` (`-f` to follow) |
+| Pause / resume | `agentctl stop` / `agentctl start` |
+| Tear down (volumes kept) | `agentctl destroy` (add `--volumes` to drop data) |
+| Start the dev stack (overlay) | `agentctl dev up` |
+| Stop the dev stack | `agentctl dev down` |
+| Dev logs / restart | `agentctl dev logs -f` / `agentctl dev restart` |
+| Update to the latest tree | `git pull --ff-only && agentctl deploy` |
 | Validate spec + automations | `agentctl validate` |
 | Secrets | `agentctl secrets {init\|check\|edit}` |
 | Secrets alias | `agentctl env` |
 | Worktree sharing agent/.env | `agentctl worktree {create\|remove} <branch>` |
-| Open the gateway in a browser | `agentctl open` |
+| Open the gateway in a browser | `agentctl dev open` |
+| Deployment platform | `agentctl platform {ls\|set\|check}` |
+| Pre-flight report | `agentctl doctor` |
 | Lint (pre-commit) | `agentctl check` |
 | Install git hooks | `agentctl hooks` |
 | Version | `agentctl version` |

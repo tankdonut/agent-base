@@ -17,10 +17,11 @@ func composeArgv(engine string, dev bool, verb ...string) []string {
 	return append(argv, verb...)
 }
 
-// requireEnvFile is the secrets gate for start commands: compose mounts
+// RequireEnvFile is the secrets gate for start commands: compose mounts
 // agent/.env via env_file, so a missing file fails deep inside the
-// engine. Fail early with the fix instead.
-func requireEnvFile(root string) error {
+// engine. Fail early with the fix instead. Exported for platform
+// adapters that gate their own deploy paths.
+func RequireEnvFile(root string) error {
 	if _, err := os.Stat(filepath.Join(root, "agent", ".env")); err != nil {
 		return fmt.Errorf("agent/.env not found — run `agentctl secrets init` first")
 	}
@@ -32,7 +33,7 @@ func Up(r Runner, engine, root string) error {
 	if r == nil {
 		return errNilRunner
 	}
-	if err := requireEnvFile(root); err != nil {
+	if err := RequireEnvFile(root); err != nil {
 		return err
 	}
 	return runArgv(r, nil, composeArgv(engine, false, "up", "-d")...)
@@ -44,18 +45,58 @@ func Dev(r Runner, engine, root string) error {
 	if r == nil {
 		return errNilRunner
 	}
-	if err := requireEnvFile(root); err != nil {
+	if err := RequireEnvFile(root); err != nil {
 		return err
 	}
 	return runArgv(r, nil, composeArgv(engine, true, "up", "-d")...)
 }
 
-// Down stops the stack.
+// Down removes the stack's containers and networks; named volumes
+// (agent-data, agent-backups) survive.
 func Down(r Runner, engine string) error {
 	if r == nil {
 		return errNilRunner
 	}
 	return runArgv(r, nil, composeArgv(engine, false, "down")...)
+}
+
+// Stop pauses the running containers in place (no removal); Start
+// resumes them. The pair exists for capability-gated platform verbs.
+func Stop(r Runner, engine string) error {
+	if r == nil {
+		return errNilRunner
+	}
+	return runArgv(r, nil, composeArgv(engine, false, "stop")...)
+}
+
+// Start resumes containers stopped with Stop.
+func Start(r Runner, engine string) error {
+	if r == nil {
+		return errNilRunner
+	}
+	return runArgv(r, nil, composeArgv(engine, false, "start")...)
+}
+
+// Ps lists the stack's containers and their state.
+func Ps(r Runner, engine string) error {
+	if r == nil {
+		return errNilRunner
+	}
+	return runArgv(r, nil, composeArgv(engine, false, "ps")...)
+}
+
+// Destroy removes the stack. volumes=false keeps the named volumes
+// (warm {data} survives); volumes=true also deletes them — the
+// explicit data-loss path.
+func Destroy(r Runner, engine string, volumes bool) error {
+	if r == nil {
+		return errNilRunner
+	}
+	verb := []string{"down"}
+	if volumes {
+		verb = append(verb, "-v")
+	}
+	return runArgv(r, nil, composeArgv(engine, false, verb...)...)
 }
 
 // Logs shows compose logs; args pass through untouched (e.g. -f agent).
@@ -108,19 +149,4 @@ func Rebuild(r Runner, engine string, services []string) error {
 	}
 	recreate := append([]string{"up", "-d", "--force-recreate"}, services...)
 	return runArgv(r, nil, composeArgv(engine, false, recreate...)...)
-}
-
-// Update gates on agent/.env (its rebuild ends in up -d), fast-forwards
-// the project repo, then rebuilds and recreates the whole stack.
-func Update(r Runner, engine, root string) error {
-	if r == nil {
-		return errNilRunner
-	}
-	if err := requireEnvFile(root); err != nil {
-		return err
-	}
-	if err := runArgv(r, nil, "git", "pull", "--ff-only"); err != nil {
-		return fmt.Errorf("git pull: %w", err)
-	}
-	return Rebuild(r, engine, nil)
 }

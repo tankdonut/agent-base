@@ -24,8 +24,8 @@ Then:
 agentctl secrets init   # agent/.env from agent/.env.example (+ generated gateway token)
 agentctl secrets edit   # fill in real values (ZAI_API_KEY is required)
 agentctl secrets check  # verify every required var is set
-agentctl up             # build + start (podman or docker, auto-detected)
-agentctl dev            # dev overlay: bind-mounted seed content, no rebuild
+agentctl deploy         # build + start the stack (podman or docker, auto-detected)
+agentctl dev up         # dev overlay: bind-mounted seed content, no rebuild
 ```
 
 `./make.sh <command>` works as a shim for the same commands.
@@ -37,7 +37,7 @@ token-authenticated when OPENCLAW_GATEWAY_TOKEN is set.
 
 | Path | Purpose |
 | ---- | ------- |
-| `.agentctl.yaml` | Optional agentctl config (engine, gateway_port); defaults apply while commented out |
+| `.agentctl.yaml` | Optional agentctl config (platform, compose.engine, compose.gateway_port); defaults apply while commented out |
 | `agent/spec.json` | Declarative boot contract (fail-closed loader) |
 | `agent/Dockerfile` | Thin project image: FROM agent-base + five COPY lines |
 | `agent/.env` | Secrets (gitignored), created from `agent/.env.example` |

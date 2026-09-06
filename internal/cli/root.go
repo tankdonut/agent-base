@@ -1,40 +1,36 @@
 // Package cli wires agentctl's cobra command tree over the pure
-// internal/lifecycle engine and the internal/scaffold renderer.
+// internal/lifecycle engine, the internal/platform deployment port,
+// and the internal/scaffold renderer.
 package cli
 
 import (
-	"fmt"
-	"os"
-	"path/filepath"
-
 	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
-
-	"github.com/tankdonut/agent-base/internal/lifecycle"
 )
 
 // Version is the single agentctl version constant, date-versioned in the
 // same YYYY.MM.DD[.N] scheme as the agent-base image tags.
 const Version = "2026.09.05"
 
-// NewRootCommand builds the full agentctl command tree.
+// NewRootCommand builds the full agentctl command tree: repo tooling
+// (init, platform, secrets, worktree, validate, doctor), the local dev
+// group, and the release verbs dispatched through the platform port.
 func NewRootCommand() *cobra.Command {
 	root := &cobra.Command{
 		Use:   "agentctl",
 		Short: "Operator CLI for downstream agent-base projects",
 		Long: `agentctl — operator CLI for downstream agent projects on the
-agent-base image: scaffolding, compose lifecycle, secrets, worktrees,
-and validation.
+agent-base image: scaffolding, the local dev loop, deployment
+platforms, secrets, worktrees, and validation.
 
-Configuration (optional): engine (auto|podman|docker) and gateway_port
-via .agentctl.yaml or AGENTCTL_ENGINE / AGENTCTL_GATEWAY_PORT.
+Platforms select where the release verbs (deploy, status, logs, mcp,
+stop, start, destroy) operate; compose is the default and the reference
+adapter. Configure via .agentctl.yaml (platform, compose.engine,
+compose.gateway_port) or AGENTCTL_PLATFORM / AGENTCTL_COMPOSE_ENGINE /
+AGENTCTL_COMPOSE_GATEWAY_PORT.
 
 Exit codes: 0 success, 1 any error — usage and flag errors included.`,
 		Version:      Version,
 		SilenceUsage: true,
-		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-			return setupViper()
-		},
 	}
 	root.SetVersionTemplate("agentctl {{.Version}}\n")
 	root.AddCommand(
@@ -43,8 +39,12 @@ Exit codes: 0 success, 1 any error — usage and flag errors included.`,
 		newSecretsCmd(),
 		newEnvCmd(),
 		newWorktreeCmd(),
+		newValidateCmd(),
+		newDoctorCmd(),
+		newPlatformCmd(),
+		newDevCmd(),
 	)
-	root.AddCommand(newLifecycleCmds()...)
+	root.AddCommand(newReleaseCmds()...)
 	root.AddCommand(newMiscCmds()...)
 	return root
 }
@@ -56,42 +56,4 @@ func Execute() int {
 		return 1
 	}
 	return 0
-}
-
-// setupViper layers configuration: defaults, then an optional
-// .agentctl.yaml (working directory, else the project root), then
-// AGENTCTL_* env vars.
-func setupViper() error {
-	viper.SetDefault("engine", "auto")
-	viper.SetDefault("gateway_port", 18789)
-	viper.SetEnvPrefix("AGENTCTL")
-	viper.AutomaticEnv()
-	path := agentctlConfigPath()
-	if path == "" {
-		return nil
-	}
-	viper.SetConfigFile(path)
-	if err := viper.ReadInConfig(); err != nil {
-		return fmt.Errorf("reading %s: %w", path, err)
-	}
-	return nil
-}
-
-// agentctlConfigPath resolves the config file: a .agentctl.yaml in the
-// working directory wins; otherwise the project root's copy — commands
-// resolve the project by marker from any subdirectory, so the config
-// must follow the same root, not the invocation cwd.
-func agentctlConfigPath() string {
-	if _, err := os.Stat(".agentctl.yaml"); err == nil {
-		return ".agentctl.yaml"
-	}
-	root, err := lifecycle.FindProjectRoot(".")
-	if err != nil {
-		return "" // not inside a project: defaults + env only
-	}
-	candidate := filepath.Join(root, ".agentctl.yaml")
-	if _, err := os.Stat(candidate); err == nil {
-		return candidate
-	}
-	return ""
 }

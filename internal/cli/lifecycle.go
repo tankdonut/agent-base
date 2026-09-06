@@ -5,9 +5,9 @@ import (
 	"path/filepath"
 
 	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
 
 	"github.com/tankdonut/agent-base/internal/lifecycle"
+	"github.com/tankdonut/agent-base/internal/platform"
 )
 
 // chdirProject locates the enclosing agent project, chdirs to its root
@@ -28,163 +28,57 @@ func chdirProject() (string, error) {
 	return abs, nil
 }
 
-// resolveEngine maps the configured engine preference to a binary.
-func resolveEngine() (string, error) {
-	return lifecycle.ResolveEngine(viper.GetString("engine"), newRunner())
+// loadProjectPlatform resolves everything the release verbs need: the
+// project root (chdir into it), the loaded config, the derived
+// Deployment, and the constructed pinned platform. Failing early here
+// means every verb fails the same way with the same hints.
+func loadProjectPlatform() (string, platform.Platform, platform.Deployment, error) {
+	root, err := chdirProject()
+	if err != nil {
+		return "", nil, platform.Deployment{}, err
+	}
+	cfg, err := LoadConfig()
+	if err != nil {
+		return "", nil, platform.Deployment{}, err
+	}
+	d, err := platform.Derive(root)
+	if err != nil {
+		return "", nil, platform.Deployment{}, err
+	}
+	p, err := forPlatform(cfg.Platform, newRunner(), cfg.Namespaces)
+	if err != nil {
+		return "", nil, platform.Deployment{}, err
+	}
+	return root, p, d, nil
 }
 
-func newLifecycleCmds() []*cobra.Command {
-	var up = &cobra.Command{
-		Use:   "up",
-		Short: "Start the agent stack (compose up -d)",
-		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			root, engine, err := projectEngine()
-			if err != nil {
-				return err
-			}
-			lifecycle.WarnGatewayPortBusy(cmd.ErrOrStderr(), root, viper.GetInt("gateway_port"))
-			return lifecycle.Up(newRunner(), engine, root)
-		},
-	}
-	var dev = &cobra.Command{
-		Use:   "dev",
-		Short: "Start the stack with the dev overlay (hot-reload mounts)",
-		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			root, engine, err := projectEngine()
-			if err != nil {
-				return err
-			}
-			lifecycle.WarnGatewayPortBusy(cmd.ErrOrStderr(), root, viper.GetInt("gateway_port"))
-			return lifecycle.Dev(newRunner(), engine, root)
-		},
-	}
-	var down = &cobra.Command{
-		Use:   "down",
-		Short: "Stop the agent stack",
-		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if _, err := chdirProject(); err != nil {
-				return err
-			}
-			engine, err := resolveEngine()
-			if err != nil {
-				return err
-			}
-			return lifecycle.Down(newRunner(), engine)
-		},
-	}
-	var logs = &cobra.Command{
-		Use:                "logs [args...]",
-		Short:              "Show compose logs (args pass through, e.g. -f agent)",
-		DisableFlagParsing: true,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if _, err := chdirProject(); err != nil {
-				return err
-			}
-			engine, err := resolveEngine()
-			if err != nil {
-				return err
-			}
-			return lifecycle.Logs(newRunner(), engine, args)
-		},
-	}
-	var mcp = &cobra.Command{
-		Use:                "mcp [args...]",
-		Short:              "Run openclaw mcp inside the agent container (login, logout, status, doctor)",
-		DisableFlagParsing: true,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if _, err := chdirProject(); err != nil {
-				return err
-			}
-			engine, err := resolveEngine()
-			if err != nil {
-				return err
-			}
-			return lifecycle.Mcp(newRunner(), engine, args)
-		},
-	}
-	var buildImages = &cobra.Command{
-		Use:   "build-images",
-		Short: "Build the project image",
-		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if _, err := chdirProject(); err != nil {
-				return err
-			}
-			engine, err := resolveEngine()
-			if err != nil {
-				return err
-			}
-			return lifecycle.BuildImages(newRunner(), engine)
-		},
-	}
-	var restart = &cobra.Command{
-		Use:   "restart [svc...]",
-		Short: "Restart services (all when none given)",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if _, err := chdirProject(); err != nil {
-				return err
-			}
-			engine, err := resolveEngine()
-			if err != nil {
-				return err
-			}
-			return lifecycle.Restart(newRunner(), engine, args)
-		},
-	}
-	var rebuild = &cobra.Command{
-		Use:   "rebuild [svc...]",
-		Short: "Rebuild images and force-recreate services",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if _, err := chdirProject(); err != nil {
-				return err
-			}
-			engine, err := resolveEngine()
-			if err != nil {
-				return err
-			}
-			return lifecycle.Rebuild(newRunner(), engine, args)
-		},
-	}
-	var update = &cobra.Command{
-		Use:   "update",
-		Short: "git pull --ff-only, then rebuild the stack",
-		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			root, engine, err := projectEngine()
-			if err != nil {
-				return err
-			}
-			return lifecycle.Update(newRunner(), engine, root)
-		},
-	}
-	var validate = &cobra.Command{
+// newValidateCmd runs the base image's --validate-spec gate.
+func newValidateCmd() *cobra.Command {
+	return &cobra.Command{
 		Use:   "validate",
 		Short: "Validate spec + automations via the base image (--validate-spec)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			root, engine, err := projectEngine()
+			root, err := chdirProject()
+			if err != nil {
+				return err
+			}
+			engine, err := resolveComposeEngine()
 			if err != nil {
 				return err
 			}
 			return lifecycle.Validate(newRunner(), engine, root)
 		},
 	}
-	return []*cobra.Command{up, dev, down, logs, mcp, buildImages, restart, rebuild, update, validate}
 }
 
-// projectEngine resolves the project root (chdir'ing into it) and the
-// engine in one step.
-func projectEngine() (string, string, error) {
-	root, err := chdirProject()
+// resolveComposeEngine maps the configured compose.engine preference to
+// a binary — a local-dev concern only; release verbs get their engine
+// from the compose adapter itself.
+func resolveComposeEngine() (string, error) {
+	cfg, err := LoadConfig()
 	if err != nil {
-		return "", "", err
+		return "", err
 	}
-	engine, err := resolveEngine()
-	if err != nil {
-		return "", "", err
-	}
-	return root, engine, nil
+	return lifecycle.ResolveEngine(cfg.ComposeEnginePref(), newRunner())
 }

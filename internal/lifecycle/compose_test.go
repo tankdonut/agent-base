@@ -26,6 +26,18 @@ func TestLifecycleArgv(t *testing.T) {
 		{"down", func(r Runner) error { return Down(r, "docker") }, [][]string{
 			{"docker", "compose", "-f", "compose.yml", "down"},
 		}},
+		{"stop", func(r Runner) error { return Stop(r, "podman") }, [][]string{
+			{"podman", "compose", "-f", "compose.yml", "stop"},
+		}},
+		{"start", func(r Runner) error { return Start(r, "podman") }, [][]string{
+			{"podman", "compose", "-f", "compose.yml", "start"},
+		}},
+		{"destroy keeps volumes", func(r Runner) error { return Destroy(r, "podman", false) }, [][]string{
+			{"podman", "compose", "-f", "compose.yml", "down"},
+		}},
+		{"destroy with volumes", func(r Runner) error { return Destroy(r, "podman", true) }, [][]string{
+			{"podman", "compose", "-f", "compose.yml", "down", "-v"},
+		}},
 		{"logs passthrough", func(r Runner) error { return Logs(r, "podman", []string{"-f", "agent"}) }, [][]string{
 			{"podman", "compose", "-f", "compose.yml", "logs", "-f", "agent"},
 		}},
@@ -57,11 +69,6 @@ func TestLifecycleArgv(t *testing.T) {
 			{"podman", "compose", "-f", "compose.yml", "build"},
 			{"podman", "compose", "-f", "compose.yml", "up", "-d", "--force-recreate"},
 		}},
-		{"update pulls then rebuilds", func(r Runner) error { return Update(r, "podman", root) }, [][]string{
-			{"git", "pull", "--ff-only"},
-			{"podman", "compose", "-f", "compose.yml", "build"},
-			{"podman", "compose", "-f", "compose.yml", "up", "-d", "--force-recreate"},
-		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -88,29 +95,6 @@ func TestUpGatesOnEnvFile(t *testing.T) {
 	}
 }
 
-func TestUpdateGatesOnEnvFile(t *testing.T) {
-	root := writeProject(t, map[string]string{"agent/spec.json": fixtureSpec}) // no agent/.env
-	r := newFakeRunner("podman")
-	if err := Update(r, "podman", root); err == nil || !strings.Contains(err.Error(), "secrets init") {
-		t.Fatalf("Update without agent/.env: err = %v, want gate error mentioning secrets init", err)
-	}
-	if len(r.calls) != 0 {
-		t.Errorf("gate failure must not exec anything, got %v", r.calls)
-	}
-}
-
-func TestUpdatePullFailureStopsRebuild(t *testing.T) {
-	root := writeProject(t, map[string]string{"agent/spec.json": fixtureSpec, "agent/.env": "ZAI_API_KEY=x\n"})
-	r := newFakeRunner("podman")
-	r.failArgv = [][]string{{"git", "pull", "--ff-only"}}
-	if err := Update(r, "podman", root); err == nil || !strings.Contains(err.Error(), "git pull") {
-		t.Fatalf("Update with failing pull: err = %v, want git pull error", err)
-	}
-	if len(r.calls) != 1 {
-		t.Errorf("rebuild must not run after a failed pull, calls = %v", r.calls)
-	}
-}
-
 func TestNilRunnerNeverPanics(t *testing.T) {
 	root := writeProject(t, map[string]string{"agent/spec.json": fixtureSpec, "agent/.env": "X=1\n"})
 	funcs := map[string]func() error{
@@ -124,7 +108,9 @@ func TestNilRunnerNeverPanics(t *testing.T) {
 		"open":     func() error { return Open(nil, root, 18789, &strings.Builder{}) },
 		"mcp":      func() error { return Mcp(nil, "podman", nil) },
 		"edit":     func() error { return SecretsEdit(nil, "vi", "/tmp/x") },
-		"update":   func() error { return Update(nil, "podman", root) },
+		"stop":     func() error { return Stop(nil, "podman") },
+		"start":    func() error { return Start(nil, "podman") },
+		"destroy":  func() error { return Destroy(nil, "podman", false) },
 	}
 	for name, fn := range funcs {
 		t.Run(name, func(t *testing.T) {

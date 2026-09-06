@@ -34,7 +34,7 @@ func newInitCmd() *cobra.Command {
 			for _, rel := range created {
 				fmt.Fprintln(out, rel)
 			}
-			fmt.Fprintf(out, "\nNext steps:\n  cd %s\n  agentctl secrets init\n  agentctl secrets edit\n  agentctl up\n", cfg.TargetDir)
+			fmt.Fprintf(out, "\nNext steps:\n  cd %s\n  agentctl secrets init\n  agentctl secrets edit\n  agentctl dev up\n", cfg.TargetDir)
 			return nil
 		},
 	}

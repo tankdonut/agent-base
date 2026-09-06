@@ -338,10 +338,10 @@ host-wide; everything else derives from them.
 | Compose project name | The scaffolded `compose.yml` pins a top-level `name:` (the lowercased project name); it prefixes the containers, volumes, and `agent-net` network, and keeps them stable across directory renames. Hand-rolled stacks get the same by setting `name:` explicitly (or exporting `COMPOSE_PROJECT_NAME`). |
 | Host gateway bind | A distinct `AGENT_GATEWAY_PORT` per agent, in each project's `.env`. The container-internal port stays 18789; only the host bind moves. |
 
-`agentctl up`/`dev` probe the resolved loopback port before starting and
-warn when it is already bound — either this stack is already up (ignore)
-or another agent owns the port and the new one needs its own
-`AGENT_GATEWAY_PORT`.
+`agentctl deploy`/`dev up` probe the resolved loopback port before
+starting and warn when it is already bound — either this stack is
+already up (ignore) or another agent owns the port and the new one
+needs its own `AGENT_GATEWAY_PORT`.
 
 The rest of the playbook:
 

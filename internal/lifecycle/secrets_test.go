@@ -157,11 +157,20 @@ func TestSecretsCanary(t *testing.T) {
 	for _, fn := range []func() error{
 		func() error { return Up(r, "podman", root) },
 		func() error { return Dev(r, "podman", root) },
-		func() error { return Update(r, "podman", root) },
+		func() error { return Destroy(r, "podman", false) },
 		func() error { return Validate(r, "podman", root) },
 	} {
 		if err := fn(); err != nil {
 			t.Fatal(err)
+		}
+	}
+	names, err := EnvKeyNames(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range names {
+		if strings.Contains(name, canary) {
+			t.Fatalf("EnvKeyNames leaks a value-shaped name: %q", name)
 		}
 	}
 	for i, call := range r.calls {

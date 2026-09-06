@@ -8,23 +8,29 @@ import (
 	"testing"
 
 	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
 )
 
 func TestCommandTree(t *testing.T) {
 	root := NewRootCommand()
 	want := map[string]bool{
-		"init": false, "version": false, "up": false, "dev": false,
-		"down": false, "logs": false, "build-images": false,
-		"restart": false, "rebuild": false, "update": false,
-		"validate": false, "secrets": false, "env": false,
-		"worktree": false, "open": false, "check": false, "hooks": false,
+		"init": false, "version": false, "validate": false,
+		"secrets": false, "env": false, "worktree": false,
+		"check": false, "hooks": false, "doctor": false,
+		"platform": false, "dev": false,
+		"deploy": false, "status": false, "logs": false, "mcp": false,
+		"stop": false, "start": false, "destroy": false,
 	}
 	for _, cmd := range root.Commands() {
 		delete(want, cmd.Name())
 	}
 	for name := range want {
 		t.Errorf("missing root command %q", name)
+	}
+	deleted := []string{"up", "down", "update", "rebuild", "build-images", "open"}
+	for _, name := range deleted {
+		if child(t, root, name) != nil {
+			t.Errorf("command %q must not exist — it moved (see `agentctl --help`)", name)
+		}
 	}
 
 	secrets := child(t, root, "secrets")
@@ -37,6 +43,18 @@ func TestCommandTree(t *testing.T) {
 	for _, name := range []string{"create", "remove"} {
 		if child(t, worktree, name) == nil {
 			t.Errorf("missing worktree subcommand %q", name)
+		}
+	}
+	platform := child(t, root, "platform")
+	for _, name := range []string{"ls", "set", "check"} {
+		if child(t, platform, name) == nil {
+			t.Errorf("missing platform subcommand %q", name)
+		}
+	}
+	dev := child(t, root, "dev")
+	for _, name := range []string{"up", "down", "logs", "restart", "mcp", "open"} {
+		if child(t, dev, name) == nil {
+			t.Errorf("missing dev subcommand %q", name)
 		}
 	}
 }
@@ -128,95 +146,6 @@ func runWithArgs(t *testing.T, args ...string) int {
 		return 1
 	}
 	return 0
-}
-
-func TestSetupViperLayering(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, ".agentctl.yaml"), []byte("engine: docker\ngateway_port: 19000\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	restore := chdir(t, dir)
-	defer restore()
-
-	viper.Reset()
-	if err := setupViper(); err != nil {
-		t.Fatal(err)
-	}
-	if got := viper.GetString("engine"); got != "docker" {
-		t.Errorf("engine = %q, want docker from .agentctl.yaml", got)
-	}
-	if got := viper.GetInt("gateway_port"); got != 19000 {
-		t.Errorf("gateway_port = %d, want 19000", got)
-	}
-
-	t.Setenv("AGENTCTL_ENGINE", "podman")
-	viper.Reset()
-	if err := setupViper(); err != nil {
-		t.Fatal(err)
-	}
-	if got := viper.GetString("engine"); got != "podman" {
-		t.Errorf("engine = %q, want podman from AGENTCTL_ENGINE", got)
-	}
-}
-
-func TestSetupViperReadsProjectRootConfig(t *testing.T) {
-	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, "agent"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "agent", "spec.json"), []byte("{}"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, ".agentctl.yaml"), []byte("engine: podman\ngateway_port: 18790\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	nested := filepath.Join(root, "agent", "nested")
-	if err := os.MkdirAll(nested, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	restore := chdir(t, nested)
-	defer restore()
-
-	viper.Reset()
-	if err := setupViper(); err != nil {
-		t.Fatal(err)
-	}
-	if got := viper.GetString("engine"); got != "podman" {
-		t.Errorf("engine = %q, want podman from project-root .agentctl.yaml", got)
-	}
-	if got := viper.GetInt("gateway_port"); got != 18790 {
-		t.Errorf("gateway_port = %d, want 18790 from project-root .agentctl.yaml", got)
-	}
-}
-
-func TestSetupViperCwdConfigWins(t *testing.T) {
-	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, "agent"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "agent", "spec.json"), []byte("{}"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, ".agentctl.yaml"), []byte("engine: podman\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	nested := filepath.Join(root, "sub")
-	if err := os.MkdirAll(nested, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(nested, ".agentctl.yaml"), []byte("engine: docker\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	restore := chdir(t, nested)
-	defer restore()
-
-	viper.Reset()
-	if err := setupViper(); err != nil {
-		t.Fatal(err)
-	}
-	if got := viper.GetString("engine"); got != "docker" {
-		t.Errorf("engine = %q, want docker — cwd config must win over project root", got)
-	}
 }
 
 func TestSecretsInitAndEnvAlias(t *testing.T) {
