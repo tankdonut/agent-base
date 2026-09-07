@@ -574,8 +574,22 @@ class ReconcileConfigPhases(EntrypointTestCase):
                 "tools.deny",
                 json.dumps(list(entrypoint.TOOLS_DENY_DEFAULT)),
                 "--strict-json",
-            ]
+            ],
+            ["openclaw", "config", "set", "gateway.bind", "lan"],
         ]
+
+    def test_gateway_bind_seeded_unless_spec_owns_it(self) -> None:
+        spec_doc = copy.deepcopy(MINIMAL_SPEC)
+        spec_doc["config"] = [{"path": "gateway.bind", "value": "tailnet"}]
+        spec = self.load_spec_with(spec_doc)
+        out, _err = self.capture(lambda: entrypoint.reconcile_config(spec, os.environ))
+        bind_calls = [
+            c for c in self.calls_with("openclaw", "config", "set") if c[3] == "gateway.bind"
+        ]
+        self.assertEqual(
+            [["openclaw", "config", "set", "gateway.bind", "tailnet"]],
+            bind_calls,
+        )
 
     def test_entries_applied_in_spec_order(self) -> None:
         spec_doc = copy.deepcopy(MINIMAL_SPEC)
@@ -587,7 +601,7 @@ class ReconcileConfigPhases(EntrypointTestCase):
         spec = self.load_spec_with(spec_doc)
         self.capture(lambda: entrypoint.reconcile_config(spec, os.environ))
         paths = [c[3] for c in self.calls_with("openclaw", "config", "set")]
-        self.assertEqual(["z.last", "a.first", "m.middle", "tools.deny"], paths)
+        self.assertEqual(["z.last", "a.first", "m.middle", "tools.deny", "gateway.bind"], paths)
 
     def test_split_csv_entry_marshals_as_strict_json_list(self) -> None:
         spec_doc = copy.deepcopy(MINIMAL_SPEC)

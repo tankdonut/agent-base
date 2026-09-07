@@ -109,6 +109,11 @@ jobs:
           SMOKE_ENGINE: docker
         run: ./make.sh smoke
 
+      - name: agentctl front-door e2e (init → deploy → destroy)
+        env:
+          E2E_ENGINE: docker
+        run: ./make.sh agentctl-e2e
+
   # Multi-arch image (L1): native per-arch builds keep the docker media
   # type (a single buildx multi-platform push exports OCI and silently
   # drops the Dockerfile HEALTHCHECK — the trap X3 documented), then

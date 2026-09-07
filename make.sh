@@ -28,6 +28,10 @@ Targets:
   lint    Run pre-commit on all files
   smoke   Build the smoke image: fixture boots + graceful-shutdown drain
           (python3 tests/smoke_test.py; SMOKE_ENGINE overrides engine detection)
+  agentctl-e2e
+          Front-door e2e: init → doctor → deploy → health → stop/start →
+          destroy volume semantics → dev overlay (python3 tests/agentctl_e2e.py;
+          E2E_ENGINE overrides engine detection)
   build   Build $IMAGE:<AGENT_BASE_VERSION or today's date>
   push    Push $IMAGE:\$AGENT_BASE_VERSION (env var must be set explicitly)
   agentctl         Run agentctl via go run (args pass through: ./make.sh
@@ -54,6 +58,9 @@ case $target in
     ;;
   smoke)
     python3 tests/smoke_test.py
+    ;;
+  agentctl-e2e)
+    python3 tests/agentctl_e2e.py
     ;;
   build)
     version=${AGENT_BASE_VERSION:-$(date +%Y.%m.%d)}

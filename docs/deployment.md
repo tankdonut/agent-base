@@ -59,7 +59,7 @@ Fixed facts the rest of this document assumes (from the image contract):
 | Image | `ghcr.io/tankdonut/agent-base:<YYYY.MM.DD>` — date tags only, immutable, multi-arch amd64/arm64, no `latest` |
 | Data volume | `/home/node/.openclaw` (`{data}`, SQLite inside — never raw-copy while running) |
 | Backup volume | `/backups` (override: `AGENT_BACKUP_DIR`; the CLI refuses output inside `{data}`) |
-| Gateway | listens on 18789 (container); bearer-token auth; WebSocket traffic |
+| Gateway | listens on 18789 (container), bind `lan` — the base seeds `gateway.bind=lan` because the CLI's loopback default makes every published port unreachable (engines forward to the container's network interface, not its loopback); bearer-token auth; WebSocket traffic |
 | Health | `/healthz` HTTP probe; HEALTHCHECK 30s/10s/3 retries, 300s start period |
 | Lifecycle | PID 1 is tini → entrypoint, which supervises `openclaw gateway`: on stop, in-flight automations drain up to `AGENT_SHUTDOWN_GRACE` (600s default) before exit; `restart: unless-stopped` owns restarts |
 | Upgrades | image tag bumps only; every version delta auto-runs a verified backup into `/backups` **before** mutating a warm volume, and a failed backup aborts the boot on purpose |

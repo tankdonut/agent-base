@@ -108,7 +108,11 @@ ENV OPENCLAW_SERVICE_REPAIR_POLICY=external \
 RUN mkdir /backups && chown 1000:1000 /backups
 
 # Drop back to the non-root node user for runtime (node is uid/guid 1000 in
-# the base image; numeric form per hadolint DL3066).
+# the base image; numeric form per hadolint DL3066). The production compose
+# baseline runs read_only with volumes only at {data} and /backups — so
+# npm's cache must live inside {data} or first-boot plugin installs fail
+# on the read-only root filesystem.
+ENV NPM_CONFIG_CACHE=/home/node/.openclaw/.npm
 USER 1000:1000
 
 # OpenClaw gateway WebSocket + HTTP port (health, API, agent sessions).

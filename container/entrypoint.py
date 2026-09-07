@@ -403,6 +403,15 @@ def reconcile_config(spec: Spec, env: Mapping[str, str]) -> None:
         log("Applying base tools.deny default (agent tool policy unconfigured)")
         config_set("tools.deny", json.dumps(list(TOOLS_DENY_DEFAULT)), "--strict-json")
 
+    # The gateway's own default bind is loopback-only, which makes every
+    # published port unreachable (engines forward to the container's
+    # network interface, not its loopback). The agent access model is
+    # token auth on the gateway port, not network isolation — seed the
+    # wide bind unless the spec owns gateway.bind itself.
+    if not any(entry.path == "gateway.bind" for entry in spec.config_entries):
+        log("Seeding gateway.bind=lan (published ports must reach the gateway)")
+        config_set("gateway.bind", "lan")
+
     _seed_plugins_allow(spec, env)
 
     if spec.features.gateway_auth:

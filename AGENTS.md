@@ -11,6 +11,7 @@
 | Run agentctl without installing | `./make.sh agentctl <command> [flags]` (forwards to `go run`) |
 | Lint (ruff, ruff-format, hadolint, markdownlint, golangci-lint/depguard) | `./make.sh lint` |
 | Image smoke (CI + local; podman or docker, `SMOKE_ENGINE` override) | `./make.sh smoke` |
+| agentctl front-door e2e (init → deploy → destroy; `E2E_ENGINE` override) | `./make.sh agentctl-e2e` |
 | Build image (date tag default) | `./make.sh build` |
 | Push image | `AGENT_BASE_VERSION=YYYY.MM.DD[.N] ./make.sh push` — refuses implicit tags; same-day follow-up releases use the `.N` run suffix |
 | Validate a spec (CI gate) | `docker run --rm --env-file .env <image> --validate-spec` |
@@ -24,12 +25,15 @@ container/   Image contract: entrypoint.py (boot), spec.py (loader), seed_automa
              (cron reconciler), Dockerfile, colocated test_*.py (never shipped)
 docs/        standard-agent.md — the whole agent contract + Freya/Mimir migration guides
 tests/       e2e surface (image-side, python stdlib): smoke_test.py (real-image
-             fixture boots + graceful-shutdown drain), contract_test.py + contract/
+             fixture boots + graceful-shutdown drain), agentctl_e2e.py (front
+             door: init → doctor → deploy → health → stop/start → destroy
+             volume semantics → dev overlay), contract_test.py + contract/
              (real-CLI drift gate: emitted-flag cross-check vs --help + clean
              shim-free boot + upgrade-path warm-volume reboot from the last
-             published release), fixtures/* (freya-like, mimir-like — boot-tested
-             spec+automations trees; input for smoke; consult, don't copy whole),
-             shim/openclaw (fake CLI; asserts via invocation log)
+             published release), fixtures/* (freya-like, mimir-like —
+             boot-tested spec+automations trees; input for smoke; consult,
+             don't copy whole), shim/openclaw (fake CLI; asserts via
+             invocation log)
 internal/    agentctl engine, layered by import direction:
              project + process (foundations: repo contract readers,
              Runner/engine policy — import nothing internal), compose
