@@ -234,6 +234,13 @@ def main() -> int:
             check=True,
         )
 
+        # Pin the project's compose engine to the harness engine: CI
+        # runners preinstall podman, and agentctl's auto-detect would
+        # build the stack there while these assertions drive E2E_ENGINE
+        # — the mixed-engine split makes every state check lie.
+        with (project / ".agentctl.yaml").open("a", encoding="utf-8") as f:
+            f.write(f"\ncompose:\n  engine: {ENGINE}\n")
+
         agentctl_cmd("secrets", "init", check=True)
         env_file = project / "agent" / ".env"
         with env_file.open("a", encoding="utf-8") as f:
