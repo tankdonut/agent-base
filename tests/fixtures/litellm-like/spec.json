@@ -1,0 +1,23 @@
+{
+  "specVersion": 1,
+  "agent": {
+    "name": "litellm-like"
+  },
+  "setup": {
+    "auth_choice": "litellm-api-key"
+  },
+  "model": {
+    "fallback": "litellm/glm-5.2"
+  },
+  "config": [],
+  "channels": [],
+  "mcp_servers": [],
+  "plugins": [],
+  "features": {
+    "gh_auth": false,
+    "mcp_prune": true
+  },
+  "automations": {
+    "model": "litellm/glm-5.2"
+  }
+}

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Image smoke test: build agent-base once, boot each fixture (freya-like,
-mimir-like) against the fake openclaw CLI (tests/shim/openclaw), and assert
-the boot's phase order from the shim's invocation log.
+mimir-like, litellm-like) against the fake openclaw CLI (tests/shim/openclaw),
+and assert the boot's phase order from the shim's invocation log.
 
 Three scenarios:
   1. per fixture: entrypoint --validate-spec — spec + automations parse,
@@ -32,6 +32,16 @@ IMAGE = os.environ.get("AGENT_BASE_IMAGE", sys.argv[1] if len(sys.argv) > 1 else
 # podman, the auto-detect would pick it and build into podman's store —
 # same reason CONTRACT_ENGINE exists in tests/contract_test.py).
 ENGINE = os.environ.get("SMOKE_ENGINE") or (shutil.which("podman") and "podman") or "docker"
+
+# Per-fixture boot env: the spec loader gates each auth_choice on exactly
+# one required env var (spec.required_env_for_auth_choice) — the zai
+# fixtures need ZAI_API_KEY, the litellm fixture LITELLM_API_KEY. Every
+# other -e flag in build_common is dummy env shared by all fixtures.
+FIXTURE_ENV: dict[str, dict[str, str]] = {
+    "freya-like": {"ZAI_API_KEY": "smoke-zai-key"},
+    "mimir-like": {"ZAI_API_KEY": "smoke-zai-key"},
+    "litellm-like": {"LITELLM_API_KEY": "smoke-litellm-key"},
+}
 
 FAILURES = 0
 
@@ -128,8 +138,6 @@ def build_common(fixture: str) -> list[str]:
         "-e",
         "DATABASE_URL=postgres://localhost/smoke",
         "-e",
-        "ZAI_API_KEY=smoke-zai-key",
-        "-e",
         "AGENT_GIT_TOKEN=smoke-gh-token",
         "-e",
         "AGENT_AUTOMATION_TRIGGERS=1",
@@ -139,6 +147,10 @@ def build_common(fixture: str) -> list[str]:
         "OPENCLAW_SHIM_LOG=/tmp/shim.log",
         "-e",
         "PATH=/shim:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    ]
+    for name, value in FIXTURE_ENV[fixture].items():
+        args += ["-e", f"{name}={value}"]
+    args += [
         "-v",
         f"{REPO_ROOT}/tests/shim:/shim:ro",
         "-v",
@@ -161,7 +173,7 @@ def build_common(fixture: str) -> list[str]:
     return args
 
 
-def smoke_fixture(fixture: str, mcp_name: str, triggers: str = "") -> None:
+def smoke_fixture(fixture: str, mcp_name: str | None, triggers: str = "") -> None:
     print(f"[smoke] fixture: {fixture}")
     validate_log = LOGDIR / f"smoke-{fixture}.validate.log"
     boot_log = LOGDIR / f"smoke-{fixture}.boot.log"
@@ -209,12 +221,30 @@ def smoke_fixture(fixture: str, mcp_name: str, triggers: str = "") -> None:
 
     assert_present(r"'setup'", "first boot: openclaw setup ran")
     assert_present(r"'config' 'set'", "reconcile_config applied config entries")
-    assert_present(rf"'mcp' 'add' '{mcp_name}'", f"reconcile_mcp registered '{mcp_name}'")
+    if mcp_name is None:
+        # An mcp-less fixture proves the no-server path: reconcile_mcp
+        # must register nothing (the orphan marker still writes).
+        if "'mcp' 'add'" in log:
+            fail("mcp-less fixture: unexpected mcp add call")
+        else:
+            pass_("mcp-less fixture: no mcp add calls")
+    else:
+        assert_present(rf"'mcp' 'add' '{mcp_name}'", f"reconcile_mcp registered '{mcp_name}'")
     assert_present(r"'cron' 'list'", "post_startup seeded cron jobs (cron list)")
     assert_present(r"'--tools'", "seeded cron jobs carry a bounded tool allow-list")
     assert_present(r"'--failure-alert'", "seeded cron jobs alert on failed/skipped runs")
     assert_present(r"'memory' 'status'", "memory ladder checked index status")
     assert_present(r"'health'", "post_startup waited for gateway health")
+    # --- litellm provider surface (litellm-like fixture only) ---
+    if fixture == "litellm-like":
+        assert_present(
+            r"'--auth-choice' 'litellm-api-key'",
+            "first boot: setup ran with the litellm-api-key auth choice",
+        )
+        assert_present(
+            r"'config' 'set' 'models.providers.litellm.baseUrl' 'http://litellm:4000'",
+            "reconcile seeded the litellm sidecar baseUrl (loopback default overridden)",
+        )
     # --- trigger-script surface (opt-in env + read-only scripts mount) ---
     if triggers:
         assert_present(
@@ -243,12 +273,12 @@ def smoke_fixture(fixture: str, mcp_name: str, triggers: str = "") -> None:
 
     o_setup, o_cfg = first_line(r"'setup'"), first_line(r"'config' 'set'")
     o_mcp, o_cron = first_line(r"'mcp' 'add'"), first_line(r"'cron' 'list'")
-    order = (o_setup, o_cfg, o_mcp, o_cron)
-    if None not in order and o_setup < o_cfg < o_mcp < o_cron:
-        pass_(
-            f"phase order setup(l{o_setup}) < config set(l{o_cfg}) <"
-            f" mcp add(l{o_mcp}) < cron list(l{o_cron})"
-        )
+    if mcp_name is None:
+        order_ok = None not in (o_setup, o_cfg, o_cron) and o_setup < o_cfg < o_cron
+    else:
+        order_ok = None not in (o_setup, o_cfg, o_mcp, o_cron) and o_setup < o_cfg < o_mcp < o_cron
+    if order_ok:
+        pass_(f"phase order setup(l{o_setup}) < config set(l{o_cfg}) < ... < cron list(l{o_cron})")
     else:
         fail(
             f"phase order setup({o_setup}) < config set({o_cfg}) <"
@@ -346,12 +376,13 @@ def main() -> int:
 
     smoke_fixture("freya-like", "ac-infinity", triggers="yes")
     smoke_fixture("mimir-like", "trade-agent")
+    smoke_fixture("litellm-like", None)
     smoke_drain()
 
     if FAILURES == 0:
         for stale in LOGDIR.glob("smoke-*.log"):
             stale.unlink()
-        print("[smoke] PASS (both fixtures green)")
+        print("[smoke] PASS (all fixtures green)")
         return 0
     print(
         f"[smoke] FAIL: {FAILURES} assertion(s); logs kept in {LOGDIR}/smoke-*.log", file=sys.stderr

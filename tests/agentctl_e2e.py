@@ -8,7 +8,14 @@ throwaway project (implausible base tag 2000.01.01, telegram off, random
 gateway port),
 then walks the front door: doctor → deploy → health → status/logs →
 idempotent redeploy → stop/start → destroy (volume kept, then gone) →
-dev overlay boot. Any failure keeps the full command log under logs/.
+dev overlay. Any failure keeps the full command log under logs/.
+
+The scaffolded stack includes the LiteLLM sidecar (the scaffold default):
+the litellm assertions cover the real proxy container — healthcheck
+reaching healthy, the seeded baseUrl inside openclaw.json, and the
+auth-enforced /v1/models reachable from the agent over model-net.
+E2E_LITELLM=0 skips those assertions (offline local runs); the sidecar
+itself still deploys as part of the stack.
 
 Engine: E2E_ENGINE pins it (CI sets docker); default is podman when
 available, docker otherwise. The base image is built once as
@@ -31,6 +38,11 @@ LOGDIR = REPO_ROOT / "logs"
 BASE_IMAGE = "ghcr.io/tankdonut/agent-base:2000.01.01"
 ENGINE = os.environ.get("E2E_ENGINE") or (shutil.which("podman") and "podman") or "docker"
 HEALTH_TIMEOUT = int(os.environ.get("E2E_HEALTH_TIMEOUT", "360"))
+# The scaffold's pinned proxy image; pre-pulled so deploy-time network
+# hiccups cannot masquerade as stack failures.
+LITELLM_IMAGE = "ghcr.io/berriai/litellm:v1.100.0"
+LITELLM_HEALTH_TIMEOUT = int(os.environ.get("E2E_LITELLM_HEALTH_TIMEOUT", "360"))
+LITELLM_ENABLED = os.environ.get("E2E_LITELLM", "1") != "0"
 
 FAILURES = 0
 TRANSCRIPT: list[str] = []
@@ -140,6 +152,10 @@ def dump_container_diag() -> None:
             continue
         logs = engine(["logs", "--tail", "40", name])
         TRANSCRIPT.append(f"[diag] logs {name}:\n{logs.stdout}{logs.stderr}")
+        if "litellm" in name:
+            # No node runtime in the proxy image; its logs above are the
+            # diagnostics.
+            continue
         probe = (
             "fetch('http://localhost:18789/healthz')"
             ".then(r=>{console.log('healthz',r.status);process.exit(0)})"
@@ -163,17 +179,52 @@ def read_gateway_token(project: Path) -> str:
     return ""
 
 
-def container_state(project_name: str) -> str | None:
-    """State of the agent container under either naming scheme —
-    docker compose v2 uses <project>-agent-1, the external
-    podman-compose provider uses <project>_agent_1."""
+def read_env_value(project: Path, rel: str, name: str) -> str:
+    """First NAME= value from a project env file. Values stay in the
+    harness process — never printed, never transcribed."""
+    try:
+        for line in (project / rel).read_text(encoding="utf-8").splitlines():
+            if line.startswith(name + "="):
+                return line.split("=", 1)[1].strip()
+    except OSError:
+        pass
+    return ""
+
+
+def container_state(project_name: str, service: str = "agent") -> str | None:
+    """State of a stack container under either naming scheme —
+    docker compose v2 uses <project>-<svc>-1, the external
+    podman-compose provider uses <project>_<svc>_1."""
     proc = engine(["ps", "-a", "--format", "{{.Names}} {{.State}}"])
-    names = [f"{project_name}-agent-1", f"{project_name}_agent_1"]
+    names = [f"{project_name}-{service}-1", f"{project_name}_{service}_1"]
     for line in proc.stdout.splitlines():
         parts = line.split()
         if parts and parts[0] in names:
             return parts[1] if len(parts) > 1 else ""
     return None
+
+
+def litellm_container_name(project_name: str) -> str:
+    ps = engine(["ps", "--format", "{{.Names}}"])
+    for line in ps.stdout.splitlines():
+        if line.strip() in (f"{project_name}-litellm-1", f"{project_name}_litellm_1"):
+            return line.strip()
+    return ""
+
+
+def litellm_wait_healthy(project_name: str) -> bool:
+    """The sidecar's own healthcheck (python3 → /health/liveliness) is
+    the proxy's contract truth; wait for the engine to report healthy."""
+    deadline = time.monotonic() + LITELLM_HEALTH_TIMEOUT
+    while time.monotonic() < deadline:
+        name = litellm_container_name(project_name)
+        if name:
+            status = engine(["inspect", "-f", "{{.State.Health.Status}}", name])
+            if status.stdout.strip() == "healthy":
+                return True
+        time.sleep(5)
+    TRANSCRIPT.append("[diag] litellm container never reached healthy\n")
+    return False
 
 
 def volume_exists(name: str) -> bool:
@@ -242,9 +293,26 @@ def main() -> int:
             f.write(f"\ncompose:\n  engine: {ENGINE}\n")
 
         agentctl_cmd("secrets", "init", check=True)
-        env_file = project / "agent" / ".env"
-        with env_file.open("a", encoding="utf-8") as f:
-            f.write("FALLBACK_MODEL=zai/glm-4.7\nZAI_API_KEY=e2e-dummy-key\n")
+        client_key = read_env_value(project, "agent/.env", "LITELLM_API_KEY")
+        master_key = read_env_value(project, "litellm/.env", "LITELLM_MASTER_KEY")
+        if client_key.startswith("sk-") and master_key == client_key:
+            pass_("secrets init generated a mirrored sk- master/client key pair")
+        else:
+            fail("secrets init did not mirror LITELLM_API_KEY / LITELLM_MASTER_KEY")
+        mode = (project / "litellm" / ".env").stat().st_mode & 0o777
+        if mode == 0o600:
+            pass_("litellm/.env is 0600")
+        else:
+            fail(f"litellm/.env mode is {oct(mode)}, want 0600")
+
+        if LITELLM_ENABLED:
+            print(f"[e2e] pre-pulling {LITELLM_IMAGE}")
+            for _ in range(3):
+                if engine(["pull", LITELLM_IMAGE]).returncode == 0:
+                    break
+                time.sleep(10)
+            else:
+                fail(f"could not pre-pull {LITELLM_IMAGE} after 3 tries")
 
         print("[e2e] doctor")
         proc = agentctl_cmd("doctor")
@@ -262,6 +330,32 @@ def main() -> int:
             pass_("deployed agent reached healthy (/healthz 200)")
         else:
             fail(f"agent never became healthy on 127.0.0.1:{port}")
+
+        if LITELLM_ENABLED:
+            if litellm_wait_healthy(project_name):
+                pass_("litellm sidecar reached healthy (/health/liveliness)")
+            else:
+                fail("litellm sidecar never became healthy")
+            agent_name = agent_container_name()
+            cfg = engine(["exec", agent_name, "cat", "/home/node/.openclaw/openclaw.json"])
+            if "http://litellm:4000" in cfg.stdout:
+                pass_("openclaw.json carries the seeded sidecar baseUrl")
+            else:
+                fail("seeded models.providers.litellm.baseUrl missing from openclaw.json")
+            # model-net reachability + auth enforcement: /v1/models must
+            # answer 401 (not connection-refused, not 200) without the key.
+            probe = (
+                "import sys, urllib.request, urllib.error\n"
+                "try:\n"
+                "    urllib.request.urlopen('http://litellm:4000/v1/models', timeout=5)\n"
+                "    sys.exit(1)\n"
+                "except urllib.error.HTTPError as e:\n"
+                "    sys.exit(0 if e.code == 401 else 1)\n"
+            )
+            if engine(["exec", agent_name, "python3", "-c", probe]).returncode == 0:
+                pass_("proxy /v1/models reachable from the agent and 401s without auth")
+            else:
+                fail("proxy probe failed (reachability or the 401 contract)")
 
         proc = agentctl_cmd("deploy")
         if proc.returncode == 0:
@@ -296,8 +390,11 @@ def main() -> int:
 
         print("[e2e] destroy semantics")
         agentctl_cmd("destroy")
-        if container_state(project_name) is None:
-            pass_("destroy removed the containers")
+        if (
+            container_state(project_name) is None
+            and container_state(project_name, "litellm") is None
+        ):
+            pass_("destroy removed the containers (agent + litellm)")
         else:
             fail("containers survive destroy")
         data_vol = f"{project_name}_agent-data"
@@ -314,12 +411,18 @@ def main() -> int:
 
         print("[e2e] dev overlay")
         proc = agentctl_cmd("dev", "up")
-        if proc.returncode == 0 and wait_healthy(port, token):
+        dev_healthy = proc.returncode == 0 and wait_healthy(port, token)
+        if LITELLM_ENABLED:
+            dev_healthy = dev_healthy and litellm_wait_healthy(project_name)
+        if dev_healthy:
             pass_("dev up boots the overlay stack to healthy")
         else:
             fail(f"dev up failed:\n{indent(proc.stdout + proc.stderr)}")
         agentctl_cmd("dev", "down")
-        if container_state(project_name) is None:
+        if (
+            container_state(project_name) is None
+            and container_state(project_name, "litellm") is None
+        ):
             pass_("dev down removed the stack")
         else:
             fail("containers survive dev down")
