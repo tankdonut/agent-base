@@ -591,6 +591,91 @@ class ReconcileConfigPhases(EntrypointTestCase):
             bind_calls,
         )
 
+    def test_litellm_baseurl_seeded_for_litellm_auth(self) -> None:
+        spec_doc = copy.deepcopy(MINIMAL_SPEC)
+        spec_doc["setup"] = {"auth_choice": "litellm-api-key"}
+        spec = self.load_spec_with(spec_doc, {"LITELLM_API_KEY": "sk-canary-litellm-ZZZ"})
+        out, err = self.capture(lambda: entrypoint.reconcile_config(spec, os.environ))
+        self.assertIn(
+            [
+                "openclaw",
+                "config",
+                "set",
+                "models.providers.litellm.baseUrl",
+                "http://litellm:4000",
+            ],
+            self.calls_with("openclaw", "config", "set"),
+        )
+        # The proxy key is load-gated env, never a logged value.
+        self.assertNotIn("sk-canary-litellm-ZZZ", out + err)
+
+    def test_litellm_baseurl_not_seeded_when_spec_owns_path(self) -> None:
+        spec_doc = copy.deepcopy(MINIMAL_SPEC)
+        spec_doc["setup"] = {"auth_choice": "litellm-api-key"}
+        spec_doc["config"] = [
+            {"path": "models.providers.litellm.baseUrl", "value": "https://llm.example.com"}
+        ]
+        spec = self.load_spec_with(spec_doc, {"LITELLM_API_KEY": "sk-litellm"})
+        self.capture(lambda: entrypoint.reconcile_config(spec, os.environ))
+        url_calls = [
+            c
+            for c in self.calls_with("openclaw", "config", "set")
+            if c[3] == "models.providers.litellm.baseUrl"
+        ]
+        self.assertEqual(
+            [
+                [
+                    "openclaw",
+                    "config",
+                    "set",
+                    "models.providers.litellm.baseUrl",
+                    "https://llm.example.com",
+                ]
+            ],
+            url_calls,
+        )
+
+    def test_litellm_baseurl_seed_skips_when_already_current(self) -> None:
+        self.write_openclaw_config(
+            json.dumps({"models": {"providers": {"litellm": {"baseUrl": "http://litellm:4000"}}}})
+        )
+        spec_doc = copy.deepcopy(MINIMAL_SPEC)
+        spec_doc["setup"] = {"auth_choice": "litellm-api-key"}
+        spec = self.load_spec_with(spec_doc, {"LITELLM_API_KEY": "sk-litellm"})
+        self.capture(lambda: entrypoint.reconcile_config(spec, os.environ))
+        url_calls = [
+            c
+            for c in self.calls_with("openclaw", "config", "set")
+            if c[3] == "models.providers.litellm.baseUrl"
+        ]
+        self.assertEqual([], url_calls)
+
+    def test_litellm_baseurl_seed_follows_gateway_bind(self) -> None:
+        spec_doc = copy.deepcopy(MINIMAL_SPEC)
+        spec_doc["setup"] = {"auth_choice": "litellm-api-key"}
+        spec = self.load_spec_with(spec_doc, {"LITELLM_API_KEY": "sk-litellm"})
+        self.capture(lambda: entrypoint.reconcile_config(spec, os.environ))
+        paths = [c[3] for c in self.calls_with("openclaw", "config", "set")]
+        self.assertEqual(
+            [
+                "channels.telegram.dmPolicy",
+                "tools.deny",
+                "gateway.bind",
+                "models.providers.litellm.baseUrl",
+            ],
+            paths,
+        )
+
+    def test_non_litellm_auth_never_seeds_baseurl(self) -> None:
+        spec = self.load_default_spec()
+        self.capture(lambda: entrypoint.reconcile_config(spec, os.environ))
+        url_calls = [
+            c
+            for c in self.calls_with("openclaw", "config", "set")
+            if c[3] == "models.providers.litellm.baseUrl"
+        ]
+        self.assertEqual([], url_calls)
+
     def test_entries_applied_in_spec_order(self) -> None:
         spec_doc = copy.deepcopy(MINIMAL_SPEC)
         spec_doc["config"] = [

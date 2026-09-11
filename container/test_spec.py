@@ -279,6 +279,27 @@ class AuthChoiceEnvGate(SpecTestCase):
         spec = self.load(variant, env={})
         self.assertEqual("manual", spec.auth_choice)
 
+    def test_litellm_auth_choice_requires_litellm_api_key(self) -> None:
+        variant = copy.deepcopy(MINIMAL)
+        variant["setup"] = {"auth_choice": "litellm-api-key"}
+        message = self.load_expect_error(variant, env={}, containing="LITELLM_API_KEY")
+        self.assertIn("setup.auth_choice", message)
+
+    def test_litellm_api_key_present_loads(self) -> None:
+        variant = copy.deepcopy(MINIMAL)
+        variant["setup"] = {"auth_choice": "litellm-api-key"}
+        spec = self.load(variant, env={"LITELLM_API_KEY": "sk-litellm"})
+        self.assertEqual("litellm-api-key", spec.auth_choice)
+
+    def test_litellm_gate_is_exact_match(self) -> None:
+        # The CLI token is exactly "litellm-api-key"; near-misses flow to
+        # setup untouched (the loader never guesses auth tokens).
+        for choice in ("litellm", "litellm-api", "litellm-api-key-x"):
+            variant = copy.deepcopy(MINIMAL)
+            variant["setup"] = {"auth_choice": choice}
+            spec = self.load(variant, env={})
+            self.assertEqual(choice, spec.auth_choice)
+
     def test_template_errors_take_precedence_over_auth_gate(self) -> None:
         # Locks the fail order: {env:...} resolution fires before the gate,
         # matching the documented error-precedence of the golden example.

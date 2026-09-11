@@ -92,6 +92,7 @@ from pathlib import Path
 
 import seed_automations
 from spec import (
+    LITELLM_AUTH_CHOICE,
     RemoteMcpServer,
     Spec,
     SpecError,
@@ -373,6 +374,15 @@ def _snapshot_base_plugins() -> None:
 # guard never fires configure nothing).
 TOOLS_DENY_DEFAULT = ("cron", "subagents", "sessions_spawn", "nodes")
 
+# LiteLLM sidecar deployments: openclaw's litellm provider defaults its
+# baseUrl to loopback (http://localhost:4000) — unreachable when the proxy
+# runs as a compose sibling. The blessed deployment shape names the service
+# "litellm" (docs/standard-agent.md "Model providers via LiteLLM"), so the
+# sidecar DNS URL is seeded unless the spec owns the path; deployments
+# pointing at an external proxy set it with a config entry instead.
+LITELLM_BASEURL_PATH = "models.providers.litellm.baseUrl"
+LITELLM_BASEURL_DEFAULT = "http://litellm:4000"
+
 
 def reconcile_config(spec: Spec, env: Mapping[str, str]) -> None:
     """Apply spec config entries in spec order via config_set. Entries whose
@@ -411,6 +421,12 @@ def reconcile_config(spec: Spec, env: Mapping[str, str]) -> None:
     if not any(entry.path == "gateway.bind" for entry in spec.config_entries):
         log("Seeding gateway.bind=lan (published ports must reach the gateway)")
         config_set("gateway.bind", "lan")
+
+    if spec.auth_choice == LITELLM_AUTH_CHOICE and not any(
+        entry.path == LITELLM_BASEURL_PATH for entry in spec.config_entries
+    ):
+        log("Seeding models.providers.litellm.baseUrl (litellm sidecar DNS name)")
+        config_set(LITELLM_BASEURL_PATH, LITELLM_BASEURL_DEFAULT)
 
     _seed_plugins_allow(spec, env)
 
