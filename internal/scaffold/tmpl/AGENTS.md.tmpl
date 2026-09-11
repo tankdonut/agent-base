@@ -37,7 +37,9 @@ Operate this repo with agentctl; `./make.sh` is a thin shim over it.
 | ---- | ------- |
 | `agent/spec.json` | Declarative boot contract; the loader is fail-closed |
 | `agent/Dockerfile` | Thin image over ghcr.io/tankdonut/agent-base |
-| `agent/.env` | Secrets (gitignored); created from `agent/.env.example` |
+| `agent/.env` | Agent secrets (gitignored); created from `agent/.env.example` |
+| `litellm/config.yaml` | Model routing: `litellm/<alias>` → upstream providers |
+| `litellm/.env` | Proxy + provider secrets (gitignored); NEVER enters the agent container |
 | `agent/automations/` | Cron jobs as frontmatter-markdown files |
 | `agent/workspace/` | Persona and memory seed content |
 | `agent/skills/`, `knowledge/content/` | Skill and doc seed content |
@@ -48,8 +50,14 @@ Operate this repo with agentctl; `./make.sh` is a thin shim over it.
 
 - The spec loader is fail-closed: an unknown key or unresolvable ref
   aborts the boot. Run `agentctl validate` after every `spec.json` edit.
-- Secrets live only in `agent/.env` (gitignored) and `{env:NAME}` refs —
-  never as literal values in `spec.json`, never committed, never logged.
+- Secrets live only in env files (`agent/.env`, `litellm/.env` — both
+  gitignored) and `{env:NAME}` refs — never as literal values in
+  `spec.json`, never committed, never logged.
+- Model/provider configuration lives in the LiteLLM sidecar: provider
+  API keys ONLY in `litellm/.env`, routing in `litellm/config.yaml`
+  (`litellm/<alias>` model ids). The agent container holds nothing but
+  `LITELLM_API_KEY` (mirrored from `LITELLM_MASTER_KEY` by
+  `agentctl secrets init`; `secrets check` enforces the match).
 - Automations are image-baked (`agent/automations/`), never bind-mounted:
   writable cron prompts would be an agent self-modification surface.
 - Content under `agent/workspace/`, `agent/skills/`, and

@@ -16,12 +16,12 @@ const envExampleWithToken = `# contract
 
 func TestSecretsInit(t *testing.T) {
 	root := writeProject(t, map[string]string{"agent/.env.example": envExampleWithToken})
-	path, err := SecretsInit(root)
+	paths, err := SecretsInit(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if path != filepath.Join(root, "agent", ".env") {
-		t.Errorf("returned path = %q", path)
+	if len(paths) != 1 || paths[0] != filepath.Join(root, "agent", ".env") {
+		t.Errorf("returned paths = %v", paths)
 	}
 	data, err := os.ReadFile(filepath.Join(root, "agent", ".env"))
 	if err != nil {
@@ -63,6 +63,95 @@ func TestSecretsInit(t *testing.T) {
 	otherData, _ := os.ReadFile(filepath.Join(other, "agent", ".env"))
 	if m2 := re.FindStringSubmatch(string(otherData)); m2 != nil && m2[1] == m[1] {
 		t.Error("two inits produced identical tokens")
+	}
+}
+
+const litellmEnvExample = `# LiteLLM proxy secrets — provider keys live ONLY here; the agent
+# container never sees this file.
+#LITELLM_MASTER_KEY=
+#OPENAI_API_KEY=
+`
+
+func TestSecretsInitLitellm(t *testing.T) {
+	root := writeProject(t, map[string]string{
+		"agent/.env.example":   envExampleWithToken,
+		"litellm/.env.example": litellmEnvExample,
+	})
+	paths, err := SecretsInit(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) != 2 {
+		t.Fatalf("paths = %v, want agent/.env and litellm/.env", paths)
+	}
+	if paths[0] != filepath.Join(root, "agent", ".env") || paths[1] != filepath.Join(root, "litellm", ".env") {
+		t.Fatalf("paths = %v", paths)
+	}
+	aenv, err := os.ReadFile(paths[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	lenv, err := os.ReadFile(paths[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	masterRe := regexp.MustCompile(`(?m)^LITELLM_MASTER_KEY=(sk-[0-9a-f]{48})$`)
+	m := masterRe.FindStringSubmatch(string(lenv))
+	if m == nil {
+		t.Fatalf("LITELLM_MASTER_KEY not set to sk-<48hex>:\n%s", lenv)
+	}
+	if !strings.Contains(string(aenv), "LITELLM_API_KEY="+m[1]) {
+		t.Errorf("agent/.env LITELLM_API_KEY does not mirror the master key:\n%s", aenv)
+	}
+	if strings.Contains(string(aenv), "OPENAI_API_KEY=") {
+		t.Error("provider keys must never leak into agent/.env")
+	}
+	if !strings.Contains(string(aenv), "#ZAI_API_KEY=") {
+		t.Error("unrelated commented lines must be preserved")
+	}
+	for _, p := range paths {
+		fi, err := os.Stat(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fi.Mode().Perm() != 0o600 {
+			t.Errorf("%s mode = %o, want 600", p, fi.Mode().Perm())
+		}
+	}
+}
+
+func TestSecretsInitLitellmRefusals(t *testing.T) {
+	fixtures := map[string]string{
+		"agent/.env.example":   envExampleWithToken,
+		"litellm/.env.example": litellmEnvExample,
+		"litellm/.env":         "LITELLM_MASTER_KEY=sk-existing\n",
+	}
+	root := writeProject(t, fixtures)
+	_, err := SecretsInit(root)
+	if err == nil || !strings.Contains(err.Error(), "secrets edit") {
+		t.Fatalf("err = %v, want refusal pointing at secrets edit", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "agent", ".env")); !os.IsNotExist(err) {
+		t.Error("agent/.env must not be created when litellm/.env already exists")
+	}
+	existing, _ := os.ReadFile(filepath.Join(root, "litellm", ".env"))
+	if string(existing) != "LITELLM_MASTER_KEY=sk-existing\n" {
+		t.Error("existing litellm/.env must not be touched")
+	}
+
+	linkRoot := writeProject(t, map[string]string{
+		"agent/.env.example":   envExampleWithToken,
+		"litellm/.env.example": litellmEnvExample,
+	})
+	if err := os.Symlink("../outside-litellm.env", filepath.Join(linkRoot, "litellm", ".env")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := SecretsInit(linkRoot); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("err = %v, want symlink refusal", err)
+	}
+	if _, err := os.Stat(filepath.Join(linkRoot, "outside-litellm.env")); !os.IsNotExist(err) {
+		t.Error("init wrote through the dangling symlink")
 	}
 }
 
@@ -231,5 +320,108 @@ func TestSecretsCheckMissingEnvFile(t *testing.T) {
 	root := writeProject(t, map[string]string{"agent/spec.json": "{}"})
 	if _, err := SecretsCheck(root); err == nil || !strings.Contains(err.Error(), "secrets init") {
 		t.Fatalf("err = %v, want pointer at secrets init", err)
+	}
+}
+
+const litellmSpec = `{
+  "specVersion": 1,
+  "setup": {"auth_choice": "litellm-api-key"},
+  "model": {"fallback": "litellm/glm-5.2"},
+  "config": [],
+  "mcp_servers": []
+}`
+
+func TestSecretsCheckLitellm(t *testing.T) {
+	tests := []struct {
+		name    string
+		files   map[string]string
+		wantN   int
+		wantErr string
+	}{
+		{
+			name: "mirrored keys pass",
+			files: map[string]string{
+				"agent/spec.json":      litellmSpec,
+				"agent/.env":           "LITELLM_API_KEY=sk-same\n",
+				"litellm/.env.example": litellmEnvExample,
+				"litellm/.env":         "LITELLM_MASTER_KEY=sk-same\n",
+			},
+			wantN: 1,
+		},
+		{
+			name: "mismatch names both vars, never values",
+			files: map[string]string{
+				"agent/spec.json":      litellmSpec,
+				"agent/.env":           "LITELLM_API_KEY=sk-agent-side\n",
+				"litellm/.env.example": litellmEnvExample,
+				"litellm/.env":         "LITELLM_MASTER_KEY=sk-proxy-side\n",
+			},
+			wantErr: "LITELLM_API_KEY (agent/.env) does not match LITELLM_MASTER_KEY (litellm/.env)",
+		},
+		{
+			name: "missing master key",
+			files: map[string]string{
+				"agent/spec.json":      litellmSpec,
+				"agent/.env":           "LITELLM_API_KEY=sk-same\n",
+				"litellm/.env.example": litellmEnvExample,
+				"litellm/.env":         "#LITELLM_MASTER_KEY=\n",
+			},
+			wantErr: "missing or empty in litellm/.env: LITELLM_MASTER_KEY",
+		},
+		{
+			name: "missing litellm/.env with example present",
+			files: map[string]string{
+				"agent/spec.json":      litellmSpec,
+				"agent/.env":           "LITELLM_API_KEY=sk-same\n",
+				"litellm/.env.example": litellmEnvExample,
+			},
+			wantErr: "litellm/.env not found",
+		},
+		{
+			name: "mismatch error never carries key values",
+			files: map[string]string{
+				"agent/spec.json":      litellmSpec,
+				"agent/.env":           "LITELLM_API_KEY=sk-agent-side\n",
+				"litellm/.env.example": litellmEnvExample,
+				"litellm/.env":         "LITELLM_MASTER_KEY=sk-proxy-side\n",
+			},
+			wantErr: "does not match",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := writeProject(t, tt.files)
+			n, err := SecretsCheck(root)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("err = %v, want containing %q", err, tt.wantErr)
+				}
+				if strings.Contains(err.Error(), "sk-agent-side") || strings.Contains(err.Error(), "sk-proxy-side") {
+					t.Fatalf("error leaks key values: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if n != tt.wantN {
+				t.Errorf("checked = %d, want %d", n, tt.wantN)
+			}
+		})
+	}
+}
+
+func TestSecretsCheckLegacyProjectWithoutLitellm(t *testing.T) {
+	// Projects without litellm/.env.example keep the single-file contract.
+	root := writeProject(t, map[string]string{
+		"agent/spec.json": fixtureSpec,
+		"agent/.env":      "FALLBACK_MODEL=m\nPROVIDER_KEY=k\nZAI_API_KEY=z\n",
+	})
+	n, err := SecretsCheck(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 3 {
+		t.Errorf("checked = %d, want 3", n)
 	}
 }

@@ -1,0 +1,22 @@
+# LiteLLM proxy configuration (docs: docs.litellm.ai docs/proxy/configs).
+# The service mounts this file read-only at /app/proxy_server_config.yaml
+# (compose.yml) and runs db-less: LITELLM_MASTER_KEY (litellm/.env) is the
+# only auth surface — no virtual keys/budgets/teams (those need a
+# database).
+#
+# model_list stays EMPTY by design: the stock scaffold must boot healthy
+# without provider credentials. Add one entry per model the agent may
+# use — model_name is the client-facing alias the agent references as
+# litellm/<model_name> (spec.json model.fallback / automations.model).
+# Prefer the actual model name as the alias (model identity stays legible
+# end to end); a distinct alias is a deliberate indirection (load-balance
+# pools, re-pointing without a spec edit):
+#
+# model_list:
+#   - model_name: glm-5.2
+#     litellm_params:
+#       model: zai/glm-5.2                # <provider>/<upstream-model>
+#       api_key: os.environ/ZAI_API_KEY   # indirection: key stays in litellm/.env
+#
+# After edits: `agentctl restart` (the proxy re-reads config at boot).
+model_list: []

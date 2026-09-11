@@ -21,14 +21,19 @@ go install ./agent-base/cmd/agentctl   # from a clone of tankdonut/agent-base
 Then:
 
 ```sh
-agentctl secrets init   # agent/.env from agent/.env.example (+ generated gateway token)
-agentctl secrets edit   # fill in real values (ZAI_API_KEY is required)
-agentctl secrets check  # verify every required var is set
+agentctl secrets init   # agent/.env + litellm/.env (gateway token, LiteLLM master/client keys)
+agentctl secrets edit   # fill in real values (provider keys go in litellm/.env ONLY)
+agentctl secrets check  # verify every required var is set (+ master/client key match)
 agentctl deploy         # build + start the stack (podman or docker, auto-detected)
 agentctl dev up         # dev overlay: bind-mounted seed content, no rebuild
 ```
 
 `./make.sh <command>` works as a shim for the same commands.
+
+Models: `litellm/config.yaml` routes `litellm/<alias>` model ids (spec's
+`model.fallback` / `automations.model`) to upstream providers; provider
+API keys live only in `litellm/.env` — the agent container holds nothing
+but the proxy key.
 
 Gateway: <http://localhost:{{.GatewayPort}}/healthz> — loopback-only,
 token-authenticated when OPENCLAW_GATEWAY_TOKEN is set.
@@ -40,7 +45,9 @@ token-authenticated when OPENCLAW_GATEWAY_TOKEN is set.
 | `.agentctl.yaml` | Optional agentctl config (platform, compose.engine, compose.gateway_port); defaults apply while commented out |
 | `agent/spec.json` | Declarative boot contract (fail-closed loader) |
 | `agent/Dockerfile` | Thin project image: FROM agent-base + five COPY lines |
-| `agent/.env` | Secrets (gitignored), created from `agent/.env.example` |
+| `agent/.env` | Agent secrets (gitignored), created from `agent/.env.example` |
+| `litellm/config.yaml` | Model routing: `litellm/<alias>` → upstream providers |
+| `litellm/.env` | Proxy + provider secrets (gitignored); NEVER enters the agent container |
 | `agent/automations/` | Cron jobs, image-baked (never bind-mounted) |
 | `agent/workspace/`, `agent/skills/`, `knowledge/content/` | Seed content for the data volume |
 | `compose.yml` / `compose.dev.yml` | Production service + dev overlay |

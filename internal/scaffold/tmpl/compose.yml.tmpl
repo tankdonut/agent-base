@@ -37,11 +37,21 @@ services:
       - /tmp
     env_file:
       - agent/.env
-    # Dedicated network with nothing else on it: sibling containers must
-    # not share L2 with the gateway port (a bearer-auth-only surface). A
-    # host-process reverse proxy reaches it via the 127.0.0.1 bind below.
+    # Two networks: agent-net stays dedicated to the gateway port (a
+    # bearer-auth-only surface — no unrelated sibling shares its L2; a
+    # host-process reverse proxy reaches it via the 127.0.0.1 bind
+    # below). model-net carries exactly the agent and its LiteLLM proxy:
+    # the proxy CAN reach the gateway over it — accepted, the gateway is
+    # token-gated on every interface; keeping the pair on their own
+    # network is what keeps every other sibling off the gateway L2.
     networks:
       - agent-net
+      - model-net
+    # Boot ordering only (service_started): the gateway serves healthz
+    # before the proxy settles; a broken proxy surfaces as model-call
+    # errors + its own healthcheck, not as a dead agent.
+    depends_on:
+      - litellm
     volumes:
       - agent-data:/home/node/.openclaw
       # Verified upgrade backups land here before any image-version
@@ -81,8 +91,48 @@ services:
     # `label=disable` under security_opt (rationale in agent-base
     # templates/compose.agent.yml).
 
+  # Model/provider home: EVERY provider API key lives only in
+  # litellm/.env (env_file below) — the agent container never sees them
+  # and holds only the proxy key (LITELLM_API_KEY in agent/.env, mirrored
+  # from LITELLM_MASTER_KEY by `agentctl secrets init`). DB-less mode:
+  # the master key is the whole auth surface (no virtual keys/budgets —
+  # those need a database). Version tag is pinned; Renovate
+  # (renovate.json) bumps + digest-pins it.
+  litellm:
+    image: ghcr.io/berriai/litellm:v1.100.0
+    command: ["--config", "/app/proxy_server_config.yaml", "--port", "4000"]
+    restart: unless-stopped
+    env_file:
+      - litellm/.env
+    # Read-only config mount; the Z suffix relabels for rootless-podman
+    # SELinux hosts (spike-verified; a no-op elsewhere). The proxy
+    # config carries no secrets — keys arrive via env indirection
+    # (os.environ/NAME).
+    volumes:
+      - ./litellm/config.yaml:/app/proxy_server_config.yaml:ro,Z
+    networks:
+      - model-net
+    # No published ports: the proxy is agent-reachable only (model-net),
+    # never host-reachable.
+    healthcheck:
+      # The image ships no curl; its venv python3 serves the probe.
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:4000/health/liveliness', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1g
+
 networks:
   agent-net: {}
+  model-net: {}
 
 volumes:
   agent-data:

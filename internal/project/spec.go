@@ -91,3 +91,23 @@ func sortedNames(set map[string]bool) []string {
 func (s SpecInfo) RequiresZAIKey() bool {
 	return strings.HasPrefix(s.AuthChoice, "zai-")
 }
+
+// RequiresLitellmKey reports whether the spec's auth provider load-gates
+// on LITELLM_API_KEY (litellm-api-key: same fail-closed contract).
+func (s SpecInfo) RequiresLitellmKey() bool {
+	return s.AuthChoice == "litellm-api-key"
+}
+
+// AuthEnvKey returns the env var the spec's auth choice load-gates on,
+// "" when none. Mirrors container/spec.py required_env_for_auth_choice
+// so agentctl's validate and secrets surfaces never drift from the
+// image loader's gate.
+func (s SpecInfo) AuthEnvKey() string {
+	switch {
+	case s.RequiresZAIKey():
+		return "ZAI_API_KEY"
+	case s.RequiresLitellmKey():
+		return "LITELLM_API_KEY"
+	}
+	return ""
+}

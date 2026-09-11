@@ -1,6 +1,8 @@
 package compose
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -97,6 +99,37 @@ func TestUpGatesOnEnvFile(t *testing.T) {
 	}
 	if len(r.calls) != 0 {
 		t.Errorf("gate failure must not exec anything, got %v", r.calls)
+	}
+}
+
+func TestUpGatesOnLitellmEnvFile(t *testing.T) {
+	// A shipped litellm/.env.example makes litellm/.env required too.
+	root := writeProject(t, map[string]string{
+		"agent/spec.json":      fixtureSpec,
+		"agent/.env":           "X=1\n",
+		"litellm/.env.example": "#LITELLM_MASTER_KEY=\n", // no litellm/.env
+	})
+	r := newFakeRunner("podman")
+	if err := Up(r, "podman", root); err == nil || !strings.Contains(err.Error(), "litellm/.env") {
+		t.Fatalf("Up without litellm/.env: err = %v, want gate error naming litellm/.env", err)
+	}
+	if len(r.calls) != 0 {
+		t.Errorf("gate failure must not exec anything, got %v", r.calls)
+	}
+	// Providing the file lifts the gate.
+	if err := os.WriteFile(filepath.Join(root, "litellm", ".env"), []byte("LITELLM_MASTER_KEY=sk-x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Up(r, "podman", root); err != nil {
+		t.Fatalf("Up with both env files: %v", err)
+	}
+	// Projects without the example keep the single-file contract.
+	legacy := writeProject(t, map[string]string{
+		"agent/spec.json": fixtureSpec,
+		"agent/.env":      "X=1\n",
+	})
+	if err := Up(r, "podman", legacy); err != nil {
+		t.Fatalf("Up on a legacy project: %v", err)
 	}
 }
 

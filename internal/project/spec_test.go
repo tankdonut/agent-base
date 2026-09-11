@@ -56,3 +56,53 @@ func TestRequiredEnvVars(t *testing.T) {
 		t.Errorf("RequiredEnvVars(no zai) = %v, want [ALWAYS]", got)
 	}
 }
+
+func TestRequiresLitellmKey(t *testing.T) {
+	tests := []struct {
+		choice string
+		want   bool
+	}{
+		{"litellm-api-key", true},
+		{"litellm", false},
+		{"litellm-api", false},
+		{"litellm-api-key-x", false},
+		{"zai-coding-global", false},
+		{"anthropic", false},
+	}
+	for _, tt := range tests {
+		if got := (SpecInfo{AuthChoice: tt.choice}).RequiresLitellmKey(); got != tt.want {
+			t.Errorf("RequiresLitellmKey(%q) = %v, want %v", tt.choice, got, tt.want)
+		}
+	}
+}
+
+func TestAuthEnvKey(t *testing.T) {
+	tests := []struct {
+		choice string
+		want   string
+	}{
+		{"zai-coding-global", "ZAI_API_KEY"},
+		{"zai-coding-cn", "ZAI_API_KEY"},
+		{"litellm-api-key", "LITELLM_API_KEY"},
+		{"litellm", ""},
+		{"anthropic", ""},
+		{"", ""},
+	}
+	for _, tt := range tests {
+		if got := (SpecInfo{AuthChoice: tt.choice}).AuthEnvKey(); got != tt.want {
+			t.Errorf("AuthEnvKey(%q) = %q, want %q", tt.choice, got, tt.want)
+		}
+	}
+}
+
+func TestRequiredEnvVarsLitellm(t *testing.T) {
+	info := SpecInfo{
+		EnvRefs:    []string{"FOO"},
+		IfEnvNames: []string{"OPT"},
+		AuthChoice: "litellm-api-key",
+	}
+	want := []string{"FOO", "LITELLM_API_KEY"}
+	if got := RequiredEnvVars(info); !reflect.DeepEqual(got, want) {
+		t.Errorf("RequiredEnvVars = %v, want %v", got, want)
+	}
+}

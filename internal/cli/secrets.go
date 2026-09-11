@@ -30,11 +30,11 @@ func SecretsEdit(r process.Runner, editor, envPath string) error {
 func newSecretsCmd() *cobra.Command {
 	secrets := &cobra.Command{
 		Use:   "secrets",
-		Short: "Manage agent/.env",
+		Short: "Manage agent/.env (and litellm/.env when the project ships one)",
 	}
 	var init = &cobra.Command{
 		Use:   "init",
-		Short: "Create agent/.env from the example with a generated gateway token",
+		Short: "Create agent/.env (plus litellm/.env when present) with generated secrets",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runSecretsInit(cmd)
@@ -59,7 +59,7 @@ func newSecretsCmd() *cobra.Command {
 	}
 	var edit = &cobra.Command{
 		Use:   "edit",
-		Short: "Edit agent/.env in $EDITOR (default vi)",
+		Short: "Edit agent/.env (then litellm/.env) in $EDITOR (default vi)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			root, err := chdirProject()
@@ -67,7 +67,14 @@ func newSecretsCmd() *cobra.Command {
 				return err
 			}
 			editor := os.Getenv("EDITOR")
-			return SecretsEdit(newRunner(), editor, filepath.Join(root, "agent", ".env"))
+			if err := SecretsEdit(newRunner(), editor, filepath.Join(root, "agent", ".env")); err != nil {
+				return err
+			}
+			litellmPath := filepath.Join(root, "litellm", ".env")
+			if _, err := os.Stat(litellmPath); err == nil {
+				return SecretsEdit(newRunner(), editor, litellmPath)
+			}
+			return nil
 		},
 	}
 	secrets.AddCommand(init, check, edit)
@@ -89,11 +96,14 @@ func runSecretsInit(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	path, err := project.SecretsInit(root)
+	paths, err := project.SecretsInit(root)
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "wrote %s (mode 0600) with a generated OPENCLAW_GATEWAY_TOKEN\n", path)
+	fmt.Fprintf(cmd.OutOrStdout(), "wrote %s (mode 0600) with a generated OPENCLAW_GATEWAY_TOKEN\n", paths[0])
+	for _, p := range paths[1:] {
+		fmt.Fprintf(cmd.OutOrStdout(), "wrote %s (mode 0600) with a generated LITELLM_MASTER_KEY mirrored into agent/.env as LITELLM_API_KEY\n", p)
+	}
 	fmt.Fprintln(cmd.OutOrStdout(), "fill in the remaining vars with `agentctl secrets edit`")
 	return nil
 }

@@ -38,6 +38,23 @@ func TestValidateArgv(t *testing.T) {
 				"ghcr.io/tankdonut/agent-base:2026.08.28", "--validate-spec",
 			},
 		},
+		{
+			name: "litellm auth adds gated key after sorted refs",
+			spec: `{"setup": {"auth_choice": "litellm-api-key"}, "config": [{"path": "x", "value": "{env:FOO}"}]}`,
+			wantTail: []string{
+				"-e", "FOO=dummy",
+				"-e", "LITELLM_API_KEY=dummy",
+				"ghcr.io/tankdonut/agent-base:2026.08.28", "--validate-spec",
+			},
+		},
+		{
+			name: "litellm near-miss auth adds no key",
+			spec: `{"setup": {"auth_choice": "litellm"}, "config": [{"path": "x", "value": "{env:FOO}"}]}`,
+			wantTail: []string{
+				"-e", "FOO=dummy",
+				"ghcr.io/tankdonut/agent-base:2026.08.28", "--validate-spec",
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

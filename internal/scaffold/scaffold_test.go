@@ -31,7 +31,7 @@ func validConfig(dir string) Config {
 		ProjectName: filepath.Base(dir),
 		AgentName:   "TestBot",
 		BaseTag:     "2026.08.28",
-		Model:       "zai/glm-5.2",
+		Model:       "litellm/glm-5.2",
 		GatewayPort: 18789,
 		Telegram:    true,
 	}
@@ -194,6 +194,94 @@ func TestRunComposeCarriesHardeningBaseline(t *testing.T) {
 	}
 	if strings.Contains(compose, "security_opt:\n      - label=disable") {
 		t.Error("compose.yml activates label=disable instead of documenting it as a rootless-podman fallback")
+	}
+}
+
+func TestRunComposeCarriesLitellmStack(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := Run(validConfig(dir)); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	b, err := os.ReadFile(filepath.Join(dir, "compose.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	compose := string(b)
+	for _, want := range []string{
+		"image: ghcr.io/berriai/litellm:v1.100.0",
+		"--config",
+		"/app/proxy_server_config.yaml",
+		"./litellm/config.yaml:/app/proxy_server_config.yaml:ro,Z",
+		"litellm/.env",
+		"model-net",
+		"depends_on:",
+		"- litellm",
+		"/health/liveliness",
+		"      - agent-net\n      - model-net",
+	} {
+		if !strings.Contains(compose, want) {
+			t.Errorf("compose.yml lacks the litellm stack entry %q", want)
+		}
+	}
+	// The proxy publishes nothing: the only ports: key belongs to agent.
+	if got := strings.Count(compose, "\n    ports:"); got != 1 {
+		t.Errorf("compose.yml has %d ports: keys, want exactly 1 (agent only)", got)
+	}
+}
+
+func TestRunScaffoldedSpecIsLitellm(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := Run(validConfig(dir)); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	spec, err := os.ReadFile(filepath.Join(dir, "agent", "spec.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`"auth_choice": "litellm-api-key"`,
+		`"fallback": "litellm/glm-5.2"`,
+		`"model": "litellm/glm-5.2"`,
+	} {
+		if !strings.Contains(string(spec), want) {
+			t.Errorf("spec.json lacks %q:\n%s", want, spec)
+		}
+	}
+	aenv, err := os.ReadFile(filepath.Join(dir, "agent", ".env.example"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(aenv), "#LITELLM_API_KEY=") {
+		t.Errorf("agent/.env.example lacks the LITELLM_API_KEY row:\n%s", aenv)
+	}
+	// No fillable rows for provider/master keys: prose may NAME them (the
+	// isolation rule itself), but a `#NAME=` row is what secrets init
+	// could fill — and those keys must never live in agent/.env.
+	for _, banned := range []string{"#ZAI_API_KEY=", "#LITELLM_MASTER_KEY=", "#OPENAI_API_KEY=", "#ANTHROPIC_API_KEY="} {
+		if strings.Contains(string(aenv), banned) {
+			t.Errorf("agent/.env.example carries a fillable %s row — provider/master keys must never surface there", banned)
+		}
+	}
+	lenv, err := os.ReadFile(filepath.Join(dir, "litellm", ".env.example"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(lenv), "#LITELLM_MASTER_KEY=") {
+		t.Errorf("litellm/.env.example lacks the LITELLM_MASTER_KEY row:\n%s", lenv)
+	}
+	lcfg, err := os.ReadFile(filepath.Join(dir, "litellm", "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(lcfg), "model_list: []") || !strings.Contains(string(lcfg), "os.environ/") {
+		t.Errorf("litellm/config.yaml lacks the empty-list boot shape or the env-indirection example:\n%s", lcfg)
+	}
+	renovate, err := os.ReadFile(filepath.Join(dir, "renovate.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(renovate), "ghcr.io/berriai/litellm") {
+		t.Error("renovate.json does not manage the litellm image pin")
 	}
 }
 

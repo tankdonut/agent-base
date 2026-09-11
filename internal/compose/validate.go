@@ -38,8 +38,8 @@ func Validate(r process.Runner, engine, root string) error {
 
 	argv := []string{"run", "--rm", "--env-file", "agent/.env.example"}
 	dummies := append([]string{}, info.EnvRefs...)
-	if info.RequiresZAIKey() && !contains(dummies, "ZAI_API_KEY") {
-		dummies = append(dummies, "ZAI_API_KEY")
+	if k := info.AuthEnvKey(); k != "" && !contains(dummies, k) {
+		dummies = append(dummies, k)
 	}
 	for _, name := range dummies {
 		argv = append(argv, "-e", name+"=dummy")

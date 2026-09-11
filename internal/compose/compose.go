@@ -20,11 +20,18 @@ func composeArgv(engine string, dev bool, verb ...string) []string {
 
 // RequireEnvFile is the secrets gate for start commands: compose mounts
 // agent/.env via env_file, so a missing file fails deep inside the
-// engine. Fail early with the fix instead. Exported for platform
+// engine. Fail early with the fix instead. Projects shipping a LiteLLM
+// sidecar (litellm/.env.example) must also have litellm/.env — the
+// proxy's env_file — with the same early failure. Exported for platform
 // adapters that gate their own deploy paths.
 func RequireEnvFile(root string) error {
 	if _, err := os.Stat(filepath.Join(root, "agent", ".env")); err != nil {
 		return fmt.Errorf("agent/.env not found — run `agentctl secrets init` first")
+	}
+	if _, err := os.Stat(filepath.Join(root, "litellm", ".env.example")); err == nil {
+		if _, err := os.Stat(filepath.Join(root, "litellm", ".env")); err != nil {
+			return fmt.Errorf("litellm/.env not found — run `agentctl secrets init` first")
+		}
 	}
 	return nil
 }

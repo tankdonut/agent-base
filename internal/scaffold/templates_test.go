@@ -29,7 +29,7 @@ func sampleData(telegram bool) data {
 		ComposeProject: "my-agent",
 		AgentName:      "My Agent",
 		BaseTag:        "2026.08.28",
-		Model:          "zai/glm-5.2",
+		Model:          "litellm/glm-5.2",
 		GatewayPort:    18789,
 		Telegram:       telegram,
 	}
@@ -56,6 +56,8 @@ var manifest = []string{
 	"compose.dev.yml",
 	"compose.yml",
 	"knowledge/content/index.md",
+	"litellm/.env.example",
+	"litellm/config.yaml",
 	"make.sh",
 	"renovate.json",
 }
@@ -113,6 +115,8 @@ func TestMode(t *testing.T) {
 		{"compose.yml", 0o644},
 		{"agent/spec.json", 0o644},
 		{"agent/.env.example", 0o644},
+		{"litellm/config.yaml", 0o644},
+		{"litellm/.env.example", 0o644},
 		{"agent/automations/daily-briefing.md", 0o644},
 		{".github/workflows/ci.yml", 0o644},
 	}
