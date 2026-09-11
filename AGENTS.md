@@ -24,16 +24,17 @@ cmd/         agentctl CLI — operator tool for downstream agent repos (scaffold
 container/   Image contract: entrypoint.py (boot), spec.py (loader), seed_automations.py
              (cron reconciler), Dockerfile, colocated test_*.py (never shipped)
 docs/        standard-agent.md — the whole agent contract + Freya/Mimir migration guides
+             (incl. "Model providers via LiteLLM")
 tests/       e2e surface (image-side, python stdlib): smoke_test.py (real-image
              fixture boots + graceful-shutdown drain), agentctl_e2e.py (front
              door: init → doctor → deploy → health → stop/start → destroy
              volume semantics → dev overlay), contract_test.py + contract/
              (real-CLI drift gate: emitted-flag cross-check vs --help + clean
              shim-free boot + upgrade-path warm-volume reboot from the last
-             published release), fixtures/* (freya-like, mimir-like —
-             boot-tested spec+automations trees; input for smoke; consult,
-             don't copy whole), shim/openclaw (fake CLI; asserts via
-             invocation log)
+             published release), fixtures/* (freya-like, mimir-like,
+             litellm-like — boot-tested spec+automations trees; input for
+             smoke; consult, don't copy whole), shim/openclaw (fake CLI;
+             asserts via invocation log)
 internal/    agentctl engine, layered by import direction:
              project + process (foundations: repo contract readers,
              Runner/engine policy — import nothing internal), compose
@@ -46,7 +47,9 @@ internal/    agentctl engine, layered by import direction:
              embedded tmpl/ tree)
 scripts/     check-image-refs.sh only (release-time GHCR tag gate)
 examples/    Image-contract examples: spec.example.json (golden), env.example,
-             compose snippets, workspace skeletons
+             compose snippets (prod template incl. the LiteLLM sidecar),
+             litellm/config.example.yaml (golden proxy config), workspace
+             skeletons
 ```
 
 ## Where To Look
@@ -58,6 +61,7 @@ examples/    Image-contract examples: spec.example.json (golden), env.example,
 | Cron reconcile behavior | `container/seed_automations.py` |
 | Graceful shutdown / drain behavior | `container/entrypoint.py` — `supervise`, `ShutdownSupervisor`, `parse_shutdown_grace` |
 | Env var contract (base vs project) | `examples/env.example`, `docs/standard-agent.md#environment-contract` |
+| LiteLLM sidecar (model/provider config home) | `docs/standard-agent.md#model-providers-via-litellm`, `examples/litellm/config.example.yaml`, scaffold `internal/scaffold/tmpl/litellm/` |
 | Smoke failure | `logs/smoke-*.log` (kept on failure, deleted on success) + `tests/smoke_test.py` |
 | Migration guides | `docs/standard-agent.md#migrations` |
 | Scaffold a new downstream agent repo | `cmd/agentctl` — `go run ./cmd/agentctl init <dir>` |
@@ -73,7 +77,7 @@ Symbols relative to `container/`.
 | `backup_before_upgrade` | fn | entrypoint.py:1427 | Verified backup on `AGENT_BASE_VERSION` delta (warm volume); failure aborts — data safety beats availability for migrations |
 | `load_agent_spec` | fn | entrypoint.py:153 | Fail-closed load; `AGENT_SPEC_PATH` override |
 | `first_boot_setup` | fn | entrypoint.py:277 | One-time setup; gated on `openclaw.json` absent; snapshots base plugin installs to `{data}/agent-managed-plugins` |
-| `reconcile_config` / `reconcile_mcp` / `reconcile_plugins` | fn | entrypoint.py:367 / :569 / :710 | Idempotent reconcile; warn-never-raise; config writes batch via `config set --batch-json` where possible (`config_set_batch`); seeds `plugins.allow` when unowned (`_seed_plugins_allow`); `features.gateway_auth` retires the legacy config pair instead of writing it (`_retire_legacy_gateway_auth_pair` — the env var is the gateway's active surface); MCP entries re-register on flag drift (args-digest marker under `{data}`), removal gated on `features.mcp_prune`, plugin prune on `features.plugin_prune` (ownership markers under `{data}`); MCP + plugin orphan reports are warn-only |
+| `reconcile_config` / `reconcile_mcp` / `reconcile_plugins` | fn | entrypoint.py:367 / :569 / :710 | Idempotent reconcile; warn-never-raise; config writes batch via `config set --batch-json` where possible (`config_set_batch`); seeds `plugins.allow` when unowned (`_seed_plugins_allow`); seeds `gateway.bind=lan` unless the spec owns the path; seeds `models.providers.litellm.baseUrl=http://litellm:4000` for `litellm-api-key` specs unless the spec owns the path; `features.gateway_auth` retires the legacy config pair instead of writing it (`_retire_legacy_gateway_auth_pair` — the env var is the gateway's active surface); MCP entries re-register on flag drift (args-digest marker under `{data}`), removal gated on `features.mcp_prune`, plugin prune on `features.plugin_prune` (ownership markers under `{data}`); MCP + plugin orphan reports are warn-only |
 | `authenticate_gh` | fn | entrypoint.py:835 | gh auth from `AGENT_GIT_TOKEN`; every boot, non-fatal |
 | `seed_content` | fn | entrypoint.py:884 | workspace first boot only; skills + docs full replace every boot |
 | `post_startup` | fn | entrypoint.py:1295 | Forked child: gateway wait ≤180s, cron seed in-process, memory reindex, stable doctor skills reconcile (`disable_unavailable_skills` — two-run confirmed, heals proven by re-enable + re-check, batched writes, heal retries deferred until image change via `{data}/doctor-heal-attempts`), diagnostics with per-finding detail lines (doctor/security reports to `{data}/logs`, boot summary `{data}/status.json`) |

@@ -130,6 +130,30 @@ delegation grants `memory` + `pids` but **not** CPU limits unless you extend
 the delegate list. Do not mix: pick rootful Docker or rootless Podman and
 keep host docs consistent with it.
 
+## Model provider sidecar (LiteLLM)
+
+The production compose template ships a LiteLLM proxy sidecar
+(`ghcr.io/berriai/litellm`, version-pinned) holding **all** model/provider
+configuration: upstream routing in `litellm/config.yaml` (golden:
+`examples/litellm/config.example.yaml`), provider API keys only in the
+litellm service env file. The agent container holds nothing but the proxy
+key. The contract details live in
+[docs/standard-agent.md "Model providers via LiteLLM"](standard-agent.md#model-providers-via-litellm);
+the operator surface:
+
+| Task | How |
+| --- | --- |
+| Add or reroute a model | Edit `litellm/config.yaml` (`model_list`), add the provider key to the litellm env file if new, `agentctl restart litellm`. The agent references models as `litellm/<alias>` in spec.json — no rebuild. |
+| Rotate the proxy master key | Edit `LITELLM_MASTER_KEY` (litellm env) **and** `LITELLM_API_KEY` (agent env) to the same new `sk-…` value, then restart the stack. `agentctl secrets check` catches a half-rotation (values compared, never printed). |
+| Upgrade the proxy | Renovate bumps + digest-pins the image tag; `agentctl deploy` rolls it. The proxy is stateless (db-less), so there is no volume to migrate. |
+| Health | `docker/podman compose ps` shows the service healthcheck (`/health/liveliness`); `agentctl logs litellm` (or `compose logs litellm`) for proxy logs. |
+| Capacity | The template caps the sidecar at 1 CPU / 1 GiB; raise alongside the agent's limits if model traffic grows — keep the sum below host RAM. |
+
+The sidecar publishes **no** ports: it is reachable only by the agent over
+`model-net`. There is no database in this shape — no virtual keys, budgets,
+or spend tracking; if you later need per-key budgets, stand up Postgres and
+`DATABASE_URL` per the LiteLLM production docs, independent of the agent.
+
 ## Gateway auth and network exposure
 
 The gateway is the control plane: its bearer token is root-equivalent
@@ -345,6 +369,7 @@ WantedBy=multi-user.target
 - [ ] `OPENCLAW_GATEWAY_TOKEN` set via the canonical `gateway.auth.token` spec path, and the boot log confirms auth applied — never rely on the gateway key alone (the upstream gateway fails closed, so misconfiguration surfaces as lockout: test remote access once before depending on it).
 - [ ] Token treated as root-equivalent: header-only transport, no query strings, no copies in proxy logs.
 - [ ] Dedicated compose network; only the proxy shares it or reaches the port.
+- [ ] Provider API keys live only in the litellm service env file — never in the agent env, `litellm/config.yaml`, git, or logs; `agentctl secrets check` passes (includes the master/client key match).
 - [ ] `read_only`, `cap_drop: [ALL]`, `no-new-privileges` active (template defaults).
 - [ ] Image provenance verified (`gh attestation verify` or digest pinning via Renovate `pinDigests`).
 - [ ] `/backups` volume declared; backup aborts fail loudly (exit 1 + marker retry), so an aborted boot is a *feature* — investigate, don't force past it.

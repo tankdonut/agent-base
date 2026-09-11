@@ -120,6 +120,88 @@ image bumps). `OPENCLAW_SUPERVISOR_MODE=external` is a stricter variant
 (fuses restart handoff to the supervisor) that the base does not set —
 its contract needs design before adoption.
 
+## Model providers via LiteLLM
+
+`setup.auth_choice: "litellm-api-key"` points the agent at a LiteLLM
+proxy as its only model-provider surface. The deployed shape is a
+sidecar on its own compose network (`model-net`: exactly the agent and
+the proxy — `agent-net` keeps every other sibling off the gateway L2;
+the gateway remains token-gated on every interface, which is what makes
+pairing the two acceptable).
+
+- **The proxy is the home of all provider configuration.** Upstream
+  models and routing live in `litellm/config.yaml` (`model_list`
+  entries; golden: `examples/litellm/config.example.yaml`), provider
+  API keys live only in the litellm service env (`litellm/.env`,
+  referenced from the yaml as `os.environ/NAME` — never as literals).
+- **The agent holds one key.** `LITELLM_API_KEY` in the agent env is
+  the proxy's master key (mirrored from `LITELLM_MASTER_KEY`;
+  `agentctl secrets init` generates the pair from one value,
+  `secrets check` enforces the match). OpenClaw's setup consumes the
+  var natively and stores it in its agent sqlite store inside `{data}`;
+  the loader gates the boot on it exactly like `ZAI_API_KEY` for zai
+  choices.
+- **Models are proxy aliases.** `model.fallback`, `automations.model`,
+  and per-job `model:` headers reference `litellm/<model_name>` ids
+  matching the proxy's `model_list` aliases. Prefer the actual model
+  name as the alias (the scaffold default is `litellm/glm-5.2`) so model
+  identity stays legible end to end; a distinct alias is a deliberate
+  indirection (load-balance pools, re-pointing a route without a spec
+  edit).
+- **baseUrl is seeded, not trusted to defaults.** OpenClaw's own
+  litellm provider defaults its base URL to loopback
+  (`http://localhost:4000`) — unreachable when the proxy is a compose
+  sibling. The base seeds `models.providers.litellm.baseUrl` to
+  `http://litellm:4000` (the blessed sidecar DNS name) on every
+  reconcile when the auth choice is `litellm-api-key` and no spec
+  config entry owns the path — the same ownership rule as the
+  `gateway.bind=lan` seed. Deployments pointing at an external proxy
+  own the path instead:
+
+  ```json
+  {"path": "models.providers.litellm.baseUrl", "value": "https://llm.example.com"}
+  ```
+
+The proxy runs db-less in this shape (no Postgres):
+`LITELLM_MASTER_KEY` is the whole auth surface — no virtual keys,
+budgets, or teams, which is the right trade for a single-agent
+deployment. The compose `healthcheck` probes `/health/liveliness` (the
+image ships no curl; its python3 serves the probe), the service
+publishes no ports (agent-reachable only), and the image tag is
+version-pinned (`ghcr.io/berriai/litellm`) with Renovate managing
+bumps and digest pins.
+
+Scaffolds (`agentctl init`) default to this shape: `secrets init`
+writes both env files, `compose.yml` carries the sidecar, and the
+deploy/stop/start/destroy verbs manage the whole stack. The pinned
+OpenClaw CLI enables its `litellm` plugin and writes the provider +
+auth profile itself during first-boot setup — including a default
+`litellm/claude-opus-4-6` model entry that your `model_list` aliases
+supersede.
+
+### Migrating an existing agent to LiteLLM
+
+Auth changes do **not** re-run setup on a warm volume: `first_boot_setup`
+is gated on `{data}/openclaw.json` being absent, so flipping
+`setup.auth_choice` alone leaves OpenClaw without the litellm provider,
+plugin entry, and auth profile — the baseUrl seed alone is not enough.
+The blessed path is a fresh volume:
+
+1. Export what matters from the old stack (`openclaw backup create`
+   inside the running agent container; persona content re-seeds from
+   the image anyway).
+2. Adopt the litellm scaffold shape (`litellm/` tree, the compose service
+   and `model-net`, spec `auth_choice: "litellm-api-key"`, model refs
+   `litellm/<alias>`).
+3. `agentctl destroy --volumes`, `secrets init`, `secrets check`,
+   `deploy`.
+
+Running the same setup command in-place inside the running container is
+the escape hatch (`openclaw setup --non-interactive --auth-choice
+litellm-api-key …` with `LITELLM_API_KEY` exported), but it sits outside
+the base's gates and is not covered by the test surface — verify with
+`openclaw models list` before retiring the old provider key.
+
 ## Upgrades
 
 Bumping a consumer's base image tag is the upgrade path; the base makes
@@ -189,7 +271,7 @@ and every error message starts with the JSON path of the offending node
 | --- | --- | --- |
 | `specVersion` | (none) | Must be `1`. Anything else is rejected before any other check. |
 | `agent` | `name` | Required, non-empty. Reaches logs and seed messages. |
-| `setup` | `auth_choice` | Required. Passed to `openclaw setup --auth-choice` on first boot (e.g. `zai-coding-global`). `zai-coding-*` choices require `ZAI_API_KEY` in the environment — the loader fails closed naming the var, and a setup that still fails aborts the boot with a named-var hint (exit 1) instead of crash-looping. |
+| `setup` | `auth_choice` | Required. Passed to `openclaw setup --auth-choice` on first boot (e.g. `litellm-api-key`, `zai-coding-global`). `zai-coding-*` choices require `ZAI_API_KEY`; `litellm-api-key` requires `LITELLM_API_KEY` (exact token — near-misses are not gated) — the loader fails closed naming the var, and a setup that still fails aborts the boot with a named-var hint (exit 1) instead of crash-looping. See [Model providers via LiteLLM](#model-providers-via-litellm). |
 | `model` | `fallback` | Required. Registered via `openclaw models fallbacks add` on first boot. |
 | `automations` | `model` | Required. Model for cron agent turns. No default exists by design (see decisions below). |
 | `config` | `path`, `value`, `strict`, `if_env`, `split_csv` | `path` and `value` required; the rest are optional booleans / string lists. Applied in spec order. `path` accepts `{env:...}` tokens (chat IDs stop being baked into git); resolution mirrors `value`, including the guard deferral above. An item may instead be exactly `{"include": "<preset>"}` — see `presets`. |
@@ -385,7 +467,9 @@ wrapper entrypoint.
 3. **Reconcile** (when `AGENT_MANAGE_CONFIG=1`): `reconcile_config`, then
    `reconcile_mcp`, then `reconcile_plugins`, as described above. All
    idempotent; failures warn and never raise, so a flaky registration cannot
-   take the gateway down.
+   take the gateway down. For `litellm-api-key` specs this phase also seeds
+   `models.providers.litellm.baseUrl` (see
+   [Model providers via LiteLLM](#model-providers-via-litellm)).
 4. **gh auth** (`authenticate_gh`, only when `features.gh_auth` is true):
    `gh auth login --with-token` from `AGENT_GIT_TOKEN`.
 5. **Seed** (`seed_content`): the table above, unless
@@ -577,6 +661,7 @@ teardown.
 | `TELEGRAM_CHAT_ID` is base-standard | Cron delivery needs one chat target the reconciler can read directly. All other `TELEGRAM_*` names stay project-side in spec refs (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_USERS`, `TELEGRAM_TOPIC_*`). |
 | Docs at `{data}/workspace/docs`, never `{data}/docs` | Docs are workspace-adjacent reference material seeded every boot. Migrating agents (Mimir layout) move once in a wrapper entrypoint. |
 | `automations.model` is required per project | A baked default would silently drift models between agents sharing one image. No default, no drift. Per-job `model:` headers are overrides, not defaults — the global stays explicit. |
+| Model/provider configuration lives on a LiteLLM sidecar (scaffold default) | The agent process never holds provider keys — one proxy key in, all routing on the proxy (`litellm/config.yaml`). Model changes are a config review + restart, not an image rebuild. Direct provider auth (`zai-coding-*`) remains supported for single-provider deployments. |
 | Seeded jobs get a bounded tool allow-list | A scheduled turn reaching the `cron` tool can self-replicate jobs (OWASP ASI06); the base default excludes recursion, spawn, and browser tools. Per-job `tools:` / spec `automations.default_tools` / `["*"]` escape hatches keep this the operator's call. |
 | Cron trigger scripts sit behind `AGENT_AUTOMATION_TRIGGERS=1` | Trigger evaluation runs headless with the owning agent's FULL tool policy (including `exec`) — not the job's `--tools` list. Arming that gateway-wide just because a header appeared in a markdown file would weaken the default posture; the env opt-in keeps unattended exec an explicit deployment decision. |
 | Base sets `tools.deny` (cron, subagents, sessions_spawn, nodes) unless the spec configures `tools.*` | Same recursion/spawn surfaces denied for the agent's own turns; `heartbeat_respond` stays allowed so heartbeats work. Any spec entry under `tools.*` signals operator ownership and the base default stands down. |

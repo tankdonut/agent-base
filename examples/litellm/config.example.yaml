@@ -1,0 +1,36 @@
+# Golden LiteLLM proxy configuration for a standard-agent deployment.
+#
+# The compose sidecar mounts this read-only at
+# /app/proxy_server_config.yaml and runs db-less: LITELLM_MASTER_KEY (in
+# the litellm service env file, never here) is the only auth surface —
+# no virtual keys, budgets, or teams (those need a database).
+#
+# model_name is the client-facing alias; the agent references it as
+# litellm/<model_name> in spec.json (model.fallback, automations.model,
+# per-job `model:` headers). Prefer the actual model name as the alias —
+# model identity stays legible end to end; a distinct alias is a
+# deliberate indirection (load-balance pools, re-pointing without a spec
+# edit). litellm_params.model names the upstream <provider>/<model>;
+# api_key uses os.environ/ indirection so provider keys live only in the
+# litellm service env — never in this file, never in the agent container.
+#
+# After edits: restart the litellm service (`agentctl restart litellm` or
+# compose restart) — the proxy reads config at boot.
+model_list:
+  - model_name: glm-5.2
+    litellm_params:
+      model: zai/glm-5.2
+      api_key: os.environ/ZAI_API_KEY
+  - model_name: claude-opus-4-6
+    litellm_params:
+      model: anthropic/claude-opus-4-6
+      api_key: os.environ/ANTHROPIC_API_KEY
+  # Custom OpenAI-compatible endpoints use base_url:
+  # - model_name: openrouter-auto
+  #   litellm_params:
+  #     model: openrouter/auto
+  #     base_url: https://openrouter.ai/api/v1
+  #     api_key: os.environ/OPENROUTER_API_KEY
+
+litellm_settings:
+  drop_params: true
