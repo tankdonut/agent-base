@@ -6,7 +6,8 @@ together.
 Builds the agentctl binary and a local agent-base:e2e image, scaffolds a
 throwaway project (implausible base tag 2000.01.01, telegram off, random
 gateway port),
-then walks the front door: doctor → deploy → health → status/logs →
+then walks the front door: doctor → validate (real-image spec gate,
+positive + fail-closed halves) → deploy → health → status/logs →
 idempotent redeploy → stop/start → destroy (volume kept, then gone) →
 dev overlay. Any failure keeps the full command log under logs/.
 
@@ -320,6 +321,34 @@ def main() -> int:
             pass_("doctor passes on a fresh scaffold")
         else:
             fail(f"doctor failed on the scaffolded project:\n{indent(proc.stdout + proc.stderr)}")
+
+        # The base image's real spec gate — 0 on the scaffold, 1 naming
+        # the offending JSON path on a broken spec.
+        print("[e2e] validate")
+        proc = agentctl_cmd("validate")
+        if proc.returncode == 0:
+            pass_("validate: base image parses spec + automations")
+        else:
+            fail(f"validate failed:\n{indent(proc.stdout + proc.stderr)}")
+        spec_path = project / "agent" / "spec.json"
+        original_spec = spec_path.read_text(encoding="utf-8")
+        spec_path.write_text(
+            '{\n  "specVersion": 1,\n  "agent": {"name": "x"},\n  "bogus_key": true\n}',
+            encoding="utf-8",
+        )
+        try:
+            proc = agentctl_cmd("validate")
+            if proc.returncode == 1 and "bogus_key" in (proc.stdout + proc.stderr):
+                pass_("validate fails closed on a broken spec, naming the JSON path")
+            else:
+                fail(f"validate on a broken spec: rc={proc.returncode} (want 1 naming bogus_key)")
+        finally:
+            spec_path.write_text(original_spec, encoding="utf-8")
+        proc = agentctl_cmd("validate")
+        if proc.returncode == 0:
+            pass_("validate green again after restoring the spec")
+        else:
+            fail(f"validate still failing after restore:\n{indent(proc.stdout + proc.stderr)}")
 
         token = read_gateway_token(project)
         print("[e2e] deploy → healthy")

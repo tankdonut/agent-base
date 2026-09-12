@@ -100,10 +100,11 @@ const fixtureSpec = `{
 func TestSecretsCanary(t *testing.T) {
 	const canary = "CANARY-7f3a9d1c-value"
 	root := writeProject(t, map[string]string{
-		"agent/spec.json":    fixtureSpec,
-		"agent/Dockerfile":   fixtureDockerfile,
-		"agent/.env.example": "#FALLBACK_MODEL=\n",
-		"agent/.env":         "FALLBACK_MODEL=m\nPROVIDER_KEY=" + canary + "\nTELEGRAM_ALLOWED_USERS=" + canary + "\nZAI_API_KEY=" + canary + "\nOPENCLAW_GATEWAY_TOKEN=" + canary + "\n",
+		"agent/spec.json":           fixtureSpec,
+		"agent/Dockerfile":          fixtureDockerfile,
+		"agent/.env.example":        "#FALLBACK_MODEL=\n",
+		"agent/automations/jobs.md": "---\nname: probe\n---\nbody\n",
+		"agent/.env":                "FALLBACK_MODEL=m\nPROVIDER_KEY=" + canary + "\nTELEGRAM_ALLOWED_USERS=" + canary + "\nZAI_API_KEY=" + canary + "\nOPENCLAW_GATEWAY_TOKEN=" + canary + "\n",
 	})
 	r := newFakeRunner("podman", "git")
 	for _, fn := range []func() error{

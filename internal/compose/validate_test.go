@@ -1,6 +1,8 @@
 package compose
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -9,6 +11,7 @@ func TestValidateArgv(t *testing.T) {
 	tests := []struct {
 		name     string
 		spec     string
+		scripts  bool
 		wantTail []string // the -e block, image, and --validate-spec
 	}{
 		{
@@ -55,14 +58,30 @@ func TestValidateArgv(t *testing.T) {
 				"ghcr.io/tankdonut/agent-base:2026.08.28", "--validate-spec",
 			},
 		},
+		{
+			name: "shipped scripts sibling is mounted read-only",
+			spec: fixtureSpec,
+			wantTail: []string{
+				"-e", "FALLBACK_MODEL=dummy",
+				"-e", "PROVIDER_KEY=dummy",
+				"-e", "TELEGRAM_ALLOWED_USERS=dummy",
+				"-e", "ZAI_API_KEY=dummy",
+				"ghcr.io/tankdonut/agent-base:2026.08.28", "--validate-spec",
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			root := writeProject(t, map[string]string{
-				"agent/Dockerfile":   fixtureDockerfile,
-				"agent/spec.json":    tt.spec,
-				"agent/.env.example": "#A=1\n",
-			})
+			files := map[string]string{
+				"agent/Dockerfile":          fixtureDockerfile,
+				"agent/spec.json":           tt.spec,
+				"agent/.env.example":        "#A=1\n",
+				"agent/automations/jobs.md": "---\nname: probe\n---\nbody\n",
+			}
+			if tt.name == "shipped scripts sibling is mounted read-only" {
+				files["agent/scripts/probe.py"] = "pass\n"
+			}
+			root := writeProject(t, files)
 			r := newFakeRunner("podman")
 			if err := Validate(r, "podman", root); err != nil {
 				t.Fatal(err)
@@ -70,7 +89,17 @@ func TestValidateArgv(t *testing.T) {
 			if len(r.calls) != 1 {
 				t.Fatalf("calls = %v, want exactly one", r.calls)
 			}
-			want := append([]string{"podman", "run", "--rm", "--env-file", "agent/.env.example"}, tt.wantTail...)
+			want := []string{
+				"podman", "run", "--rm",
+				"--security-opt", "label=disable",
+				"-v", filepath.Join(root, "agent", "spec.json") + ":/opt/agent/spec.json:ro",
+				"-v", filepath.Join(root, "agent", "automations") + ":/opt/agent/automations:ro",
+			}
+			if tt.name == "shipped scripts sibling is mounted read-only" {
+				want = append(want, "-v", filepath.Join(root, "agent", "scripts")+":/opt/agent/scripts:ro")
+			}
+			want = append(want, "--env-file", "agent/.env.example")
+			want = append(want, tt.wantTail...)
 			assertCalls(t, r.calls, [][]string{want})
 		})
 	}
@@ -78,9 +107,10 @@ func TestValidateArgv(t *testing.T) {
 
 func TestValidateDigestTagCarriedIntoImage(t *testing.T) {
 	root := writeProject(t, map[string]string{
-		"agent/Dockerfile":   "FROM ghcr.io/tankdonut/agent-base:2026.08.28@sha256:abc\n",
-		"agent/spec.json":    `{"setup": {"auth_choice": "none"}}`,
-		"agent/.env.example": "#A=1\n",
+		"agent/Dockerfile":          "FROM ghcr.io/tankdonut/agent-base:2026.08.28@sha256:abc\n",
+		"agent/spec.json":           `{"setup": {"auth_choice": "none"}}`,
+		"agent/.env.example":        "#A=1\n",
+		"agent/automations/jobs.md": "---\nname: probe\n---\nbody\n",
 	})
 	r := newFakeRunner("docker")
 	if err := Validate(r, "docker", root); err != nil {
@@ -100,5 +130,30 @@ func TestValidateMissingInputs(t *testing.T) {
 	noExample := writeProject(t, map[string]string{"agent/spec.json": "{}", "agent/Dockerfile": fixtureDockerfile})
 	if err := Validate(newFakeRunner("podman"), "podman", noExample); err == nil || !strings.Contains(err.Error(), ".env.example") {
 		t.Errorf("missing .env.example: err = %v, want .env.example error", err)
+	}
+	noAutomations := writeProject(t, map[string]string{
+		"agent/Dockerfile":   fixtureDockerfile,
+		"agent/spec.json":    "{}",
+		"agent/.env.example": "#A=1\n",
+	})
+	if err := Validate(newFakeRunner("podman"), "podman", noAutomations); err == nil || !strings.Contains(err.Error(), "agent/automations") {
+		t.Errorf("missing automations: err = %v, want agent/automations error", err)
+	}
+	// A file at the automations path is not a directory: fail the same way.
+	notDir := writeProject(t, map[string]string{
+		"agent/Dockerfile":          fixtureDockerfile,
+		"agent/spec.json":           "{}",
+		"agent/.env.example":        "#A=1\n",
+		"agent/automations/jobs.md": "---\nname: probe\n---\nbody\n",
+	})
+	// Remove the directory but keep a file in its place.
+	if err := os.RemoveAll(filepath.Join(notDir, "agent", "automations")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(notDir, "agent", "automations"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := Validate(newFakeRunner("podman"), "podman", notDir); err == nil || !strings.Contains(err.Error(), "agent/automations") {
+		t.Errorf("file at automations path: err = %v, want agent/automations error", err)
 	}
 }
