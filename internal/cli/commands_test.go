@@ -292,6 +292,24 @@ func TestDoctorFailsWhenImagePreDatesLitellmSeed(t *testing.T) {
 	}
 }
 
+func TestDoctorIgnoresHarnessTagEra(t *testing.T) {
+	root := litellmFixture(t)
+	addLitellmSidecar(t, root)
+	if err := os.WriteFile(filepath.Join(root, "agent", "Dockerfile"),
+		[]byte("FROM ghcr.io/tankdonut/agent-base:2000.01.01\nCOPY agent/spec.json /opt/agent/spec.json\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := stubbedRunner(t, "podman")
+	r.runOutputOK = true
+	out, err := execIn(t, root, "doctor")
+	if err != nil {
+		t.Fatalf("harness tags are local-build overrides, not eras: %v\n%s", err, out)
+	}
+	if strings.Contains(out, "predates the litellm seed") {
+		t.Errorf("year-2000 tag must not trip the era check:\n%s", out)
+	}
+}
+
 func TestDoctorSkipsGateWithoutEngine(t *testing.T) {
 	root := fixtureProject(t)
 	stubbedRunner(t)

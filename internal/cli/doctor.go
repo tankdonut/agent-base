@@ -76,8 +76,8 @@ func runDoctor(out io.Writer) error {
 	// providers the report is advisory only — direct-provider
 	// deployments remain supported.
 	if specOK && info.AuthChoice == "litellm-api-key" {
-		if tagOK && tagDate(tag).Before(litellmSeedDay) {
-			fail("pinned base image %s predates the litellm seed (%s) — bump agent/Dockerfile; the old image never seeds baseUrl and its loader does not gate the key", tag, litellmSeedDay.Format("2006.01.02"))
+		if day := tagDate(tag); tagOK && !day.IsZero() && day.Year() >= 2026 && day.Before(litellmSeedDay) {
+			fail("pinned base image %s predates the litellm seed (2026.09.12) — bump agent/Dockerfile; the old image never seeds baseUrl and its loader does not gate the key", tag)
 			failed = true
 		}
 		if _, err := os.Stat(filepath.Join(root, "litellm", ".env.example")); err != nil {
