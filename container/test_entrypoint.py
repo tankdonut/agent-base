@@ -2557,6 +2557,134 @@ class PluginsAllowSeed(EntrypointTestCase):
         self.assertEqual([], self._allow_calls())
 
 
+class AgentsModelsAllowlistSeed(EntrypointTestCase):
+    """The base merges its default models into an existing
+    agents.defaults.models allowlist: the openclaw setup zai-coding-* auth
+    choices seed a pinned list that lags the GLM release train, so newer
+    models (incl. the base default fallback) get rejected with "model not
+    allowed". An absent map means allow-any — the seed never creates one —
+    and anything an env-active spec entry owns is never clobbered."""
+
+    def _models_calls(self) -> list[list[str]]:
+        return self.calls_with("openclaw", "config", "set", "agents.defaults.models")
+
+    def _seed(self, spec: entrypoint.Spec) -> None:
+        self.capture(lambda: entrypoint.reconcile_config(spec, os.environ))
+
+    def _stale_setup_allowlist(self) -> dict[str, object]:
+        return {
+            "agents": {"defaults": {"models": {"zai/glm-4.7": {"alias": "old"}, "zai/glm-5.2": {}}}}
+        }
+
+    def test_merges_base_defaults_and_spec_models(self) -> None:
+        self.write_openclaw_config(json.dumps(self._stale_setup_allowlist()))
+        self._seed(self.load_default_spec())
+        calls = self._models_calls()
+        self.assertEqual(1, len(calls))
+        self.assertEqual("--strict-json", calls[0][5])
+        self.assertEqual(
+            {
+                "zai/glm-4.7": {"alias": "old"},
+                "zai/glm-5.2": {},
+                "zai/glm-5.3": {},
+                "zai/glm-5.3-flash": {},
+            },
+            json.loads(calls[0][4]),
+        )
+
+    def test_idempotent_when_allowlist_current(self) -> None:
+        self.write_openclaw_config(
+            json.dumps(
+                {
+                    "agents": {
+                        "defaults": {
+                            "models": {
+                                "zai/glm-4.7": {},
+                                "zai/glm-5.2": {},
+                                "zai/glm-5.3": {},
+                                "zai/glm-5.3-flash": {},
+                            }
+                        }
+                    }
+                }
+            )
+        )
+        self._seed(self.load_default_spec())
+        self.assertEqual([], self._models_calls())
+
+    def test_absent_allowlist_is_never_created(self) -> None:
+        self.write_openclaw_config(json.dumps({"gateway": {"bind": "lan"}}))
+        self._seed(self.load_default_spec())
+        self.assertEqual([], self._models_calls())
+
+    def test_spec_entry_owns_the_path(self) -> None:
+        self.write_openclaw_config(json.dumps(self._stale_setup_allowlist()))
+        spec_dict = copy.deepcopy(MINIMAL_SPEC)
+        spec_dict["config"] = [{"path": "agents.defaults.models", "value": {"zai/glm-4.7": {}}}]
+        self._seed(self.load_spec_with(spec_dict))
+        self.assertEqual(1, len(self._models_calls()))
+        self.assertEqual('{"zai/glm-4.7": {}}', self._models_calls()[0][4])
+
+    def test_per_key_spec_entry_owns_the_path(self) -> None:
+        self.write_openclaw_config(json.dumps(self._stale_setup_allowlist()))
+        spec_dict = copy.deepcopy(MINIMAL_SPEC)
+        spec_dict["config"] = [
+            {"path": "agents.defaults.models.zai/glm-4.7", "value": {"alias": "mine"}}
+        ]
+        self._seed(self.load_spec_with(spec_dict))
+        self.assertEqual([], self._models_calls())
+
+    def test_unsatisfied_guard_entry_does_not_own_the_path(self) -> None:
+        self.write_openclaw_config(json.dumps(self._stale_setup_allowlist()))
+        spec_dict = copy.deepcopy(MINIMAL_SPEC)
+        spec_dict["config"] = [
+            {"path": "agents.defaults.models", "value": {"x": {}}, "if_env": ["NEVER_SET"]}
+        ]
+        self._seed(self.load_spec_with(spec_dict))
+        self.assertEqual(1, len(self._models_calls()))
+
+    def test_provider_wildcard_suppresses_redundant_refs(self) -> None:
+        self.write_openclaw_config(json.dumps({"agents": {"defaults": {"models": {"zai/*": {}}}}}))
+        self._seed(self.load_default_spec())
+        self.assertEqual([], self._models_calls())
+
+    def test_non_map_allowlist_warns_and_stands_down(self) -> None:
+        self.write_openclaw_config(json.dumps({"agents": {"defaults": {"models": "x"}}}))
+        spec = self.load_default_spec()
+        out, err = self.capture(lambda: entrypoint.reconcile_config(spec, os.environ))
+        self.assertIn("is not a map", err)
+        self.assertEqual([], self._models_calls())
+
+    def test_litellm_spec_merges_only_spec_models(self) -> None:
+        self.write_openclaw_config(
+            json.dumps({"agents": {"defaults": {"models": {"litellm/glm-5.1": {}}}}})
+        )
+        spec_dict = copy.deepcopy(MINIMAL_SPEC)
+        spec_dict["setup"] = {"auth_choice": "litellm-api-key"}
+        spec_dict["model"] = {"fallback": "litellm/glm-5.2"}
+        spec_dict["automations"] = {"model": "litellm/glm-5.2"}
+        spec = self.load_spec_with(spec_dict, env_extra={"LITELLM_API_KEY": "k"})
+        self._seed(spec)
+        calls = self._models_calls()
+        self.assertEqual(1, len(calls))
+        self.assertEqual({"litellm/glm-5.1": {}, "litellm/glm-5.2": {}}, json.loads(calls[0][4]))
+
+    def test_bare_model_refs_are_not_seeded(self) -> None:
+        self.write_openclaw_config(
+            json.dumps({"agents": {"defaults": {"models": {"zai/glm-4.7": {}}}}})
+        )
+        spec_dict = copy.deepcopy(MINIMAL_SPEC)
+        spec_dict["model"] = {"fallback": "glm-5.3-flash"}
+        spec = self.load_spec_with(spec_dict)
+        self._seed(spec)
+        calls = self._models_calls()
+        self.assertEqual(1, len(calls))
+        self.assertEqual(
+            {"zai/glm-4.7": {}, "zai/glm-5.3": {}, "zai/glm-5.3-flash": {}},
+            json.loads(calls[0][4]),
+        )
+
+
 class PostStartupDiagnostics(PostStartupFlow):
     """X7: post_startup surfaces doctor counts, persists reports when
     findings exist, runs a warn-only security audit, and writes a boot

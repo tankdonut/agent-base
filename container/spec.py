@@ -757,7 +757,7 @@ def _parse_features(root: Mapping[str, JSONValue]) -> Features:
     )
 
 
-_ZAI_AUTH_PREFIX = "zai-coding-"
+ZAI_AUTH_PREFIX = "zai-coding-"
 
 # Exact CLI token for the LiteLLM provider auth choice (openclaw setup
 # --auth-choice). Near-miss tokens are NOT gated: the loader never guesses
@@ -776,7 +776,7 @@ def required_env_for_auth_choice(auth_choice: str) -> str | None:
     key lives on the proxy; the agent holds only the proxy key — and
     setup consumes LITELLM_API_KEY natively (exact match). The same
     crash-loop argument applies: gate before any container work runs."""
-    if auth_choice.startswith(_ZAI_AUTH_PREFIX):
+    if auth_choice.startswith(ZAI_AUTH_PREFIX):
         return "ZAI_API_KEY"
     if auth_choice == LITELLM_AUTH_CHOICE:
         return "LITELLM_API_KEY"

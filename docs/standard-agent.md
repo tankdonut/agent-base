@@ -281,7 +281,7 @@ and every error message starts with the JSON path of the offending node
 | `specVersion` | (none) | Must be `1`. Anything else is rejected before any other check. |
 | `agent` | `name` | Required, non-empty. Reaches logs and seed messages. |
 | `setup` | `auth_choice` | Required. Passed to `openclaw setup --auth-choice` on first boot (e.g. `litellm-api-key`, `zai-coding-global`). `zai-coding-*` choices require `ZAI_API_KEY`; `litellm-api-key` requires `LITELLM_API_KEY` (exact token — near-misses are not gated) — the loader fails closed naming the var, and a setup that still fails aborts the boot with a named-var hint (exit 1) instead of crash-looping. See [Model providers via LiteLLM](#model-providers-via-litellm). |
-| `model` | `fallback`, `thinking` | `fallback` required. Registered via `openclaw models fallbacks add` on first boot. `thinking` optional: the reasoning effort, seeded to `agents.defaults.thinkingDefault` (openclaw's global thinking default, resolved per turn) on every boot unless a config entry owns that path. Allowed values are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `adaptive`, `max` — anything else is a load error. Providers map the level onto their own request field (e.g. the Z.AI provider sends `reasoning_effort`; for GLM-5.x an explicit `off` still maps to that API's lowest effort — see the provider's thinking-level docs). |
+| `model` | `fallback`, `thinking` | `fallback` required. Registered via `openclaw models fallbacks add` on first boot. `thinking` optional: the reasoning effort, seeded to `agents.defaults.thinkingDefault` (openclaw's global thinking default, resolved per turn) on every boot unless a config entry owns that path. Allowed values are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `adaptive`, `max` — anything else is a load error. Providers map the level onto their own request field (e.g. the Z.AI provider sends `reasoning_effort`; for GLM-5.x an explicit `off` still maps to that API's lowest effort — see the provider's thinking-level docs). On every reconcile the base also merges `fallback` (and `automations.model`, plus the current GLM 5.3 series for `zai-coding-*` specs) into an existing `agents.defaults.models` allowlist when any referenced model is missing from it — see the `agents.defaults.models` note below. |
 | `automations` | `model` | Required. Model for cron agent turns. No default exists by design (see decisions below). |
 | `config` | `path`, `value`, `strict`, `if_env`, `split_csv` | `path` and `value` required; the rest are optional booleans / string lists. Applied in spec order. `path` accepts `{env:...}` tokens (chat IDs stop being baked into git); resolution mirrors `value`, including the guard deferral above. An item may instead be exactly `{"include": "<preset>"}` — see `presets`. |
 | `presets` | name → list of config entries | Named groups spliced into `config` in place via `{"include": ...}`. Names are `lowercase-identifier-ish`. Fail-closed: unknown names, nesting (include inside a preset), and malformed shapes are load errors. Spliced entries behave identically to inline ones (templating, guard deferral, split_csv). |
@@ -479,6 +479,32 @@ wrapper entrypoint.
    take the gateway down. For `litellm-api-key` specs this phase also seeds
    `models.providers.litellm.baseUrl` (see
    [Model providers via LiteLLM](#model-providers-via-litellm)).
+
+   `agents.defaults.models` is the model allowlist: once the map has
+   entries, only those refs (plus `provider/*` wildcards and fallbacks)
+   are allowed — an absent or empty map means every catalog-visible model
+   is allowed. The `openclaw setup` `zai-coding-*` auth choices seed it with
+   a pinned list that lags the GLM release train
+   (`zai/glm-4.7`, `zai/glm-5.2`), so a newer model — e.g. the current
+   base default `zai/glm-5.3-flash` — gets rejected with
+   "model not allowed" (cron `payload.model`, isolated runs). On every
+   reconcile the base therefore MERGES the missing refs into an existing
+   map — the current GLM 5.3 series (`zai/glm-5.3-flash`, `zai/glm-5.3`)
+   for `zai-coding-*` specs, plus every spec-referenced model
+   (`model.fallback`, `automations.model`; bare refs without a provider
+   prefix are skipped). It never creates the map (that would newly
+   restrict an allow-any deployment), never rewrites a non-map value
+   (warns and stands down), and never touches it when an env-active spec
+   config entry owns the path (`agents.defaults.models` or any
+   `agents.defaults.models.*` key). To add models yourself, spec a
+   config entry per key:
+
+   ```json
+   {"path": "agents.defaults.models.zai/glm-5.4", "value": {}}
+   ```
+
+   Owning any `agents.defaults.models.*` path opts the deployment out of
+   the base merge — the spec then owns the allowlist entirely.
 4. **gh auth** (`authenticate_gh`, only when `features.gh_auth` is true):
    `gh auth login --with-token` from `AGENT_GIT_TOKEN`.
 5. **Seed** (`seed_content`): the table above, unless

@@ -95,6 +95,7 @@ from pathlib import Path
 import seed_automations
 from spec import (
     LITELLM_AUTH_CHOICE,
+    ZAI_AUTH_PREFIX,
     RemoteMcpServer,
     Spec,
     SpecError,
@@ -392,6 +393,23 @@ LITELLM_BASEURL_DEFAULT = "http://litellm:4000"
 # owns the path.
 THINKING_DEFAULT_PATH = "agents.defaults.thinkingDefault"
 
+# The agents.defaults.models map doubles as the model allowlist: once it
+# has entries, only those refs (plus `provider/*` wildcards and fallbacks)
+# are allowed — an ABSENT/empty map means allow-any (verified in the
+# pinned gateway source: parseConfiguredModelVisibilityEntries → allowAny
+# when the map has no entries). The openclaw setup zai-coding-* auth
+# choices seed it with a pinned list that lags the GLM release train
+# ([zai/glm-4.7, zai/glm-5.2]), so newer models — including the current
+# base default fallback — are rejected with "model not allowed" (cron
+# payload.model, isolated runs). The seed MERGES into an existing map —
+# never creates one, so allow-any deployments stay unrestricted — adding
+# the current GLM 5.3 series for zai-coding-* specs plus every
+# spec-referenced model (model.fallback, automations.model). An
+# env-active spec config entry under agents.defaults.models.* is
+# operator ownership — the base stands down.
+AGENTS_MODELS_PATH = "agents.defaults.models"
+ZAI_CODING_DEFAULT_MODELS = ("zai/glm-5.3-flash", "zai/glm-5.3")
+
 
 def reconcile_config(spec: Spec, env: Mapping[str, str]) -> None:
     """Apply spec config entries in spec order via config_set. Entries whose
@@ -443,6 +461,8 @@ def reconcile_config(spec: Spec, env: Mapping[str, str]) -> None:
         log("Seeding agents.defaults.thinkingDefault (spec model.thinking)")
         config_set(THINKING_DEFAULT_PATH, json.dumps(spec.model_thinking), "--strict-json")
 
+    _seed_agents_default_models(spec, env)
+
     _seed_plugins_allow(spec, env)
 
     if spec.features.gateway_auth:
@@ -492,6 +512,42 @@ def _retire_legacy_gateway_auth_pair(spec: Spec, env: Mapping[str, str]) -> None
             warn(f"config unset failed: {path}")
         else:
             log(f"retired legacy gateway-auth key '{path}' (env var is the active surface)")
+
+
+def _seed_agents_default_models(spec: Spec, env: Mapping[str, str]) -> None:
+    """Merge the base's default models into an existing agents.defaults.models
+    allowlist (semantics in the AGENTS_MODELS_PATH block above). Absent map =
+    allow-any, so the seed never creates one; a non-map value warns and stands
+    down (ambiguous shape, never a silent rewrite). Failures warn via
+    config_set and never raise."""
+    if any(
+        (entry.path == AGENTS_MODELS_PATH or entry.path.startswith(f"{AGENTS_MODELS_PATH}."))
+        and entry.env_guard_satisfied(env)
+        for entry in spec.config_entries
+    ):
+        return
+    config = read_openclaw_config()
+    if config is None:
+        return
+    current = lookup_config_path(config, AGENTS_MODELS_PATH)
+    if current is _MISSING:
+        return
+    if not isinstance(current, dict):
+        warn(f"{AGENTS_MODELS_PATH} is not a map — leaving it untouched")
+        return
+    wanted: set[str] = set()
+    if spec.auth_choice.startswith(ZAI_AUTH_PREFIX):
+        wanted.update(ZAI_CODING_DEFAULT_MODELS)
+    for ref in (spec.model_fallback, spec.automations_model):
+        if "/" in ref:
+            wanted.add(ref)
+    wildcards = {key[:-2] for key in current if key.endswith("/*")}
+    wanted = {ref for ref in wanted if ref not in current and ref.split("/", 1)[0] not in wildcards}
+    if not wanted:
+        return
+    merged = {**current, **{ref: {} for ref in sorted(wanted)}}
+    log(f"Adding models to the {AGENTS_MODELS_PATH} allowlist ({', '.join(sorted(wanted))})")
+    config_set(AGENTS_MODELS_PATH, json.dumps(merged), "--strict-json")
 
 
 PLUGINS_ALLOW_PATH = "plugins.allow"
