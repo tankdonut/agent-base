@@ -7,7 +7,8 @@
     "auth_choice": "zai-coding-global"
   },
   "model": {
-    "fallback": "zai/glm-4.7"
+    "fallback": "zai/glm-5.3-flash",
+    "thinking": "high"
   },
   "config": [
     {
@@ -83,6 +84,6 @@
     "gateway_auth": true
   },
   "automations": {
-    "model": "zai/glm-4.7"
+    "model": "zai/glm-5.3-flash"
   }
 }

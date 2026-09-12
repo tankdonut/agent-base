@@ -272,7 +272,7 @@ and every error message starts with the JSON path of the offending node
 | `specVersion` | (none) | Must be `1`. Anything else is rejected before any other check. |
 | `agent` | `name` | Required, non-empty. Reaches logs and seed messages. |
 | `setup` | `auth_choice` | Required. Passed to `openclaw setup --auth-choice` on first boot (e.g. `litellm-api-key`, `zai-coding-global`). `zai-coding-*` choices require `ZAI_API_KEY`; `litellm-api-key` requires `LITELLM_API_KEY` (exact token — near-misses are not gated) — the loader fails closed naming the var, and a setup that still fails aborts the boot with a named-var hint (exit 1) instead of crash-looping. See [Model providers via LiteLLM](#model-providers-via-litellm). |
-| `model` | `fallback` | Required. Registered via `openclaw models fallbacks add` on first boot. |
+| `model` | `fallback`, `thinking` | `fallback` required. Registered via `openclaw models fallbacks add` on first boot. `thinking` optional: the reasoning effort, seeded to `agents.defaults.thinkingDefault` (openclaw's global thinking default, resolved per turn) on every boot unless a config entry owns that path. Allowed values are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `adaptive`, `max` — anything else is a load error. Providers map the level onto their own request field (e.g. the Z.AI provider sends `reasoning_effort`; for GLM-5.x an explicit `off` still maps to that API's lowest effort — see the provider's thinking-level docs). |
 | `automations` | `model` | Required. Model for cron agent turns. No default exists by design (see decisions below). |
 | `config` | `path`, `value`, `strict`, `if_env`, `split_csv` | `path` and `value` required; the rest are optional booleans / string lists. Applied in spec order. `path` accepts `{env:...}` tokens (chat IDs stop being baked into git); resolution mirrors `value`, including the guard deferral above. An item may instead be exactly `{"include": "<preset>"}` — see `presets`. |
 | `presets` | name → list of config entries | Named groups spliced into `config` in place via `{"include": ...}`. Names are `lowercase-identifier-ish`. Fail-closed: unknown names, nesting (include inside a preset), and malformed shapes are load errors. Spliced entries behave identically to inline ones (templating, guard deferral, split_csv). |
@@ -961,14 +961,14 @@ boot; `make.sh secrets check` enforces exactly that set:
   "specVersion": 1,
   "agent": { "name": "Freya" },
   "setup": { "auth_choice": "zai-coding-global" },
-  "model": { "fallback": "zai/glm-4.7" },
+  "model": { "fallback": "zai/glm-5.3-flash" },
   "config": [
     { "path": "channels.telegram.dmPolicy", "value": "allowlist" },
     { "path": "channels.telegram.allowFrom", "value": "{env:TELEGRAM_ALLOWED_USERS}", "split_csv": true, "if_env": ["TELEGRAM_ALLOWED_USERS"] },
     { "path": "agents.defaults.heartbeat.target", "value": "telegram", "if_env": ["TELEGRAM_CHAT_ID"] },
     { "path": "agents.defaults.heartbeat.to", "value": "{env:TELEGRAM_CHAT_ID}", "strict": true, "if_env": ["TELEGRAM_CHAT_ID"] },
     { "path": "agents.defaults.heartbeat.directPolicy", "value": "allow", "strict": true, "if_env": ["TELEGRAM_CHAT_ID"] },
-    { "path": "agents.defaults.utilityModel", "value": "zai/glm-4.7" },
+    { "path": "agents.defaults.utilityModel", "value": "zai/glm-5.3-flash" },
     { "path": "tools.web.search.enabled", "value": true },
     { "path": "tools.web.search.provider", "value": "duckduckgo" },
     { "path": "agents.defaults.memorySearch.enabled", "value": true },
@@ -1024,7 +1024,7 @@ boot; `make.sh secrets check` enforces exactly that set:
     { "name": "grow-approval-gate", "source": "/opt/seed/plugins/grow-approval-gate" }
   ],
   "features": { "gh_auth": true, "gateway_auth": true },
-  "automations": { "model": "zai/glm-4.7" }
+  "automations": { "model": "zai/glm-5.3-flash" }
 }
 ```
 
@@ -1240,14 +1240,14 @@ COPY --chown=node:node knowledge/content/  /opt/seed/docs/
   "specVersion": 1,
   "agent": { "name": "Mimir" },
   "setup": { "auth_choice": "zai-coding-global" },
-  "model": { "fallback": "zai/glm-4.7" },
+  "model": { "fallback": "zai/glm-5.3-flash" },
   "config": [
     { "path": "channels.telegram.dmPolicy", "value": "allowlist" },
     { "path": "channels.telegram.allowFrom", "value": "{env:TELEGRAM_ALLOWED_USERS}", "split_csv": true, "if_env": ["TELEGRAM_ALLOWED_USERS"] },
     { "path": "agents.defaults.heartbeat.target", "value": "telegram", "if_env": ["TELEGRAM_CHAT_ID"] },
     { "path": "agents.defaults.heartbeat.to", "value": "{env:TELEGRAM_CHAT_ID}", "strict": true, "if_env": ["TELEGRAM_CHAT_ID"] },
     { "path": "agents.defaults.heartbeat.directPolicy", "value": "allow", "strict": true, "if_env": ["TELEGRAM_CHAT_ID"] },
-    { "path": "agents.defaults.utilityModel", "value": "zai/glm-4.7" },
+    { "path": "agents.defaults.utilityModel", "value": "zai/glm-5.3-flash" },
     { "path": "tools.web.search.enabled", "value": true },
     { "path": "tools.web.search.provider", "value": "duckduckgo" },
     { "path": "agents.defaults.memorySearch.enabled", "value": true },
