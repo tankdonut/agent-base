@@ -201,6 +201,7 @@ class Spec:
     auth_choice: str
     model_fallback: str
     automations_model: str
+    model_thinking: str | None = None
     automations_default_tools: tuple[str, ...] = ()
     config_entries: list[ConfigEntry] = field(default_factory=list)
     channels: list[Channel] = field(default_factory=list)
@@ -390,7 +391,13 @@ _TOP_LEVEL_KEYS = frozenset(
 )
 _AGENT_KEYS = frozenset({"name"})
 _SETUP_KEYS = frozenset({"auth_choice"})
-_MODEL_KEYS = frozenset({"fallback"})
+_MODEL_KEYS = frozenset({"fallback", "thinking"})
+# Reasoning effort levels openclaw's thinking-default resolver accepts
+# (resolveThinkingDefault); providers map the level onto their own request
+# field (e.g. the Z.AI provider sends reasoning_effort).
+_THINKING_LEVELS = frozenset(
+    {"off", "minimal", "low", "medium", "high", "xhigh", "adaptive", "max"}
+)
 _CONFIG_ENTRY_KEYS = frozenset({"path", "value", "strict", "if_env", "split_csv"})
 _INCLUDE_ONLY_KEYS = frozenset({"include"})
 _PRESET_NAME_RE = re.compile(r"[a-z0-9][a-z0-9_-]*")
@@ -814,6 +821,16 @@ def load_spec(path: Path, env: Mapping[str, str]) -> Spec:
     agent_name = _expect_str(_require_key(agent, "name", "agent"), "agent.name")
     auth_choice = _expect_str(_require_key(setup, "auth_choice", "setup"), "setup.auth_choice")
     model_fallback = _expect_str(_require_key(model, "fallback", "model"), "model.fallback")
+    thinking_raw = model.get("thinking")
+    if thinking_raw is not None and (
+        not isinstance(thinking_raw, str) or thinking_raw not in _THINKING_LEVELS
+    ):
+        _fail(
+            "model.thinking",
+            "invalid thinking level "
+            f"{thinking_raw!r} (one of: {', '.join(sorted(_THINKING_LEVELS))})",
+        )
+    model_thinking = thinking_raw
     automations_model = _expect_str(
         _require_key(automations, "model", "automations"), "automations.model"
     )
@@ -848,6 +865,7 @@ def load_spec(path: Path, env: Mapping[str, str]) -> Spec:
         agent_name=agent_name,
         auth_choice=auth_choice,
         model_fallback=model_fallback,
+        model_thinking=model_thinking,
         automations_model=automations_model,
         automations_default_tools=automations_default_tools,
         config_entries=config_entries,

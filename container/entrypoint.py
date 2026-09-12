@@ -383,6 +383,13 @@ TOOLS_DENY_DEFAULT = ("cron", "subagents", "sessions_spawn", "nodes")
 LITELLM_BASEURL_PATH = "models.providers.litellm.baseUrl"
 LITELLM_BASEURL_DEFAULT = "http://litellm:4000"
 
+# Reasoning effort (openclaw "thinking level"): spec model.thinking seeds
+# agents.defaults.thinkingDefault, the global default openclaw resolves per
+# turn (providers map it onto their own request field, e.g. Z.AI's
+# reasoning_effort). Seeded only when the spec sets it and no config entry
+# owns the path.
+THINKING_DEFAULT_PATH = "agents.defaults.thinkingDefault"
+
 
 def reconcile_config(spec: Spec, env: Mapping[str, str]) -> None:
     """Apply spec config entries in spec order via config_set. Entries whose
@@ -427,6 +434,12 @@ def reconcile_config(spec: Spec, env: Mapping[str, str]) -> None:
     ):
         log("Seeding models.providers.litellm.baseUrl (litellm sidecar DNS name)")
         config_set(LITELLM_BASEURL_PATH, LITELLM_BASEURL_DEFAULT)
+
+    if spec.model_thinking is not None and not any(
+        entry.path == THINKING_DEFAULT_PATH for entry in spec.config_entries
+    ):
+        log("Seeding agents.defaults.thinkingDefault (spec model.thinking)")
+        config_set(THINKING_DEFAULT_PATH, json.dumps(spec.model_thinking), "--strict-json")
 
     _seed_plugins_allow(spec, env)
 

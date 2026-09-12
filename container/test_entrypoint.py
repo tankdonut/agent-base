@@ -54,8 +54,8 @@ MINIMAL_SPEC: dict[str, object] = {
     "specVersion": 1,
     "agent": {"name": "t-agent"},
     "setup": {"auth_choice": "zai-coding-global"},
-    "model": {"fallback": "zai/glm-4.7"},
-    "automations": {"model": "zai/glm-4.7"},
+    "model": {"fallback": "zai/glm-5.3-flash"},
+    "automations": {"model": "zai/glm-5.3-flash"},
     "config": [
         {"path": "channels.telegram.dmPolicy", "value": "allowlist"},
         # Guarded literal: exercises if_env skip/apply without making the
@@ -405,8 +405,8 @@ class ConfigSetSkipMatrix(EntrypointTestCase):
 
     def test_nested_path_through_non_dict_segment(self) -> None:
         self.write_openclaw_config('{"agents": {"defaults": "flat"}}')
-        self.call("agents.defaults.utilityModel", "zai/glm-4.7")
-        self.assert_applied("agents.defaults.utilityModel", "zai/glm-4.7")
+        self.call("agents.defaults.utilityModel", "zai/glm-5.3-flash")
+        self.assert_applied("agents.defaults.utilityModel", "zai/glm-5.3-flash")
 
 
 class FirstBootSequence(EntrypointTestCase):
@@ -432,7 +432,9 @@ class FirstBootSequence(EntrypointTestCase):
         result = self.boot()
         self.assertEqual(0, result.code)
         self.assertEqual(self.SETUP_CMD, self.calls[0])
-        self.assertEqual(["openclaw", "models", "fallbacks", "add", "zai/glm-4.7"], self.calls[1])
+        self.assertEqual(
+            ["openclaw", "models", "fallbacks", "add", "zai/glm-5.3-flash"], self.calls[1]
+        )
         self.assertEqual(
             ["openclaw", "channels", "add", "--channel", "telegram", "--use-env"], self.calls[2]
         )
@@ -444,12 +446,14 @@ class FirstBootSequence(EntrypointTestCase):
     def test_auth_choice_and_fallback_come_from_spec(self) -> None:
         spec = copy.deepcopy(MINIMAL_SPEC)
         spec["setup"] = {"auth_choice": "zai-coding-cn"}
-        spec["model"] = {"fallback": "zai/glm-4.6"}
+        spec["model"] = {"fallback": "zai/glm-5.3-flash"}
         self._write_spec(spec)
         self.boot()
         self.assertIn("--auth-choice", self.calls[0])
         self.assertIn("zai-coding-cn", self.calls[0])
-        self.assertEqual(["openclaw", "models", "fallbacks", "add", "zai/glm-4.6"], self.calls[1])
+        self.assertEqual(
+            ["openclaw", "models", "fallbacks", "add", "zai/glm-5.3-flash"], self.calls[1]
+        )
 
     def test_warm_boot_skips_first_boot_entirely(self) -> None:
         self.write_openclaw_config("{}")
@@ -468,8 +472,8 @@ class FirstBootEnvGate(EntrypointTestCase):
         return entrypoint.Spec(
             agent_name="t-agent",
             auth_choice="zai-coding-global",
-            model_fallback="zai/glm-4.7",
-            automations_model="zai/glm-4.7",
+            model_fallback="zai/glm-5.3-flash",
+            automations_model="zai/glm-5.3-flash",
         )
 
     def test_setup_failure_aborts_cleanly_naming_env_var(self) -> None:
@@ -498,8 +502,8 @@ class FirstBootEnvGate(EntrypointTestCase):
         spec = entrypoint.Spec(
             agent_name="t-agent",
             auth_choice="manual",
-            model_fallback="zai/glm-4.7",
-            automations_model="zai/glm-4.7",
+            model_fallback="zai/glm-5.3-flash",
+            automations_model="zai/glm-5.3-flash",
         )
         err = io.StringIO()
         with self.assertRaises(SystemExit) as ctx, redirect_stderr(err):
@@ -675,6 +679,81 @@ class ReconcileConfigPhases(EntrypointTestCase):
             if c[3] == "models.providers.litellm.baseUrl"
         ]
         self.assertEqual([], url_calls)
+
+    def test_thinking_default_seeded_when_spec_sets_it(self) -> None:
+        spec_doc = copy.deepcopy(MINIMAL_SPEC)
+        spec_doc["model"] = {"fallback": "zai/glm-5.3-flash", "thinking": "high"}
+        spec = self.load_spec_with(spec_doc)
+        out, _err = self.capture(lambda: entrypoint.reconcile_config(spec, os.environ))
+        thinking_calls = [
+            c
+            for c in self.calls_with("openclaw", "config", "set")
+            if c[3] == "agents.defaults.thinkingDefault"
+        ]
+        self.assertEqual(
+            [
+                [
+                    "openclaw",
+                    "config",
+                    "set",
+                    "agents.defaults.thinkingDefault",
+                    '"high"',
+                    "--strict-json",
+                ]
+            ],
+            thinking_calls,
+        )
+        self.assertIn("Seeding agents.defaults.thinkingDefault", out)
+
+    def test_thinking_default_not_seeded_when_spec_owns_path(self) -> None:
+        spec_doc = copy.deepcopy(MINIMAL_SPEC)
+        spec_doc["model"] = {"fallback": "zai/glm-5.3-flash", "thinking": "high"}
+        spec_doc["config"] = [
+            {"path": "agents.defaults.thinkingDefault", "value": "low", "strict": True}
+        ]
+        spec = self.load_spec_with(spec_doc)
+        self.capture(lambda: entrypoint.reconcile_config(spec, os.environ))
+        thinking_calls = [
+            c
+            for c in self.calls_with("openclaw", "config", "set")
+            if c[3] == "agents.defaults.thinkingDefault"
+        ]
+        self.assertEqual(
+            [
+                [
+                    "openclaw",
+                    "config",
+                    "set",
+                    "agents.defaults.thinkingDefault",
+                    '"low"',
+                    "--strict-json",
+                ]
+            ],
+            thinking_calls,
+        )
+
+    def test_thinking_default_seed_skips_when_already_current(self) -> None:
+        self.write_openclaw_config(json.dumps({"agents": {"defaults": {"thinkingDefault": "max"}}}))
+        spec_doc = copy.deepcopy(MINIMAL_SPEC)
+        spec_doc["model"] = {"fallback": "zai/glm-5.3-flash", "thinking": "max"}
+        spec = self.load_spec_with(spec_doc)
+        self.capture(lambda: entrypoint.reconcile_config(spec, os.environ))
+        thinking_calls = [
+            c
+            for c in self.calls_with("openclaw", "config", "set")
+            if c[3] == "agents.defaults.thinkingDefault"
+        ]
+        self.assertEqual([], thinking_calls)
+
+    def test_thinking_default_never_seeded_without_spec_thinking(self) -> None:
+        spec = self.load_default_spec()
+        self.capture(lambda: entrypoint.reconcile_config(spec, os.environ))
+        thinking_calls = [
+            c
+            for c in self.calls_with("openclaw", "config", "set")
+            if c[3] == "agents.defaults.thinkingDefault"
+        ]
+        self.assertEqual([], thinking_calls)
 
     def test_entries_applied_in_spec_order(self) -> None:
         spec_doc = copy.deepcopy(MINIMAL_SPEC)
@@ -1418,7 +1497,7 @@ class PostStartupFlow(EntrypointTestCase):
 
     def test_seed_automations_invoked_in_process_with_spec_model(self) -> None:
         self.run_post_startup()
-        self.assertEqual([["--model", "zai/glm-4.7"]], self.automation_argv)
+        self.assertEqual([["--model", "zai/glm-5.3-flash"]], self.automation_argv)
 
     def test_cron_failure_is_non_fatal_warning(self) -> None:
         with mock.patch.object(entrypoint.seed_automations, "main", side_effect=SystemExit(1)):
@@ -2388,7 +2467,7 @@ class ToolsDenyDefault(EntrypointTestCase):
     def test_post_startup_passes_default_tools_flag(self) -> None:
         spec_dict = copy.deepcopy(MINIMAL_SPEC)
         spec_dict["automations"] = {
-            "model": "zai/glm-4.7",
+            "model": "zai/glm-5.3-flash",
             "default_tools": ["read"],
         }
         spec = self.load_spec_with(spec_dict)
@@ -2780,7 +2859,7 @@ class MainFlow(EntrypointTestCase):
         self.assertEqual([0], result.exit_codes)
         result.supervise.assert_not_called()
         self.assertTrue(self.has_call("openclaw", "health"))
-        self.assertEqual([["--model", "zai/glm-4.7"]], self.automation_argv)
+        self.assertEqual([["--model", "zai/glm-5.3-flash"]], self.automation_argv)
 
     def test_missing_command_exits_two(self) -> None:
         self.assertEqual(2, entrypoint.main([]))

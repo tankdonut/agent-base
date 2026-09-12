@@ -30,6 +30,7 @@ from typing import cast
 from unittest import mock
 
 from spec import (
+    _THINKING_LEVELS,
     SPEC_VERSION_SUPPORTED,
     Features,
     LocalMcpServer,
@@ -48,8 +49,8 @@ MINIMAL: dict[str, object] = {
     "specVersion": 1,
     "agent": {"name": "t-agent"},
     "setup": {"auth_choice": "zai-coding-global"},
-    "model": {"fallback": "zai/glm-4.7"},
-    "automations": {"model": "zai/glm-4.7"},
+    "model": {"fallback": "zai/glm-5.3-flash"},
+    "automations": {"model": "zai/glm-5.3-flash"},
 }
 
 BASE_ENV: Mapping[str, str] = {
@@ -116,8 +117,9 @@ class GoldenExampleSpec(SpecTestCase):
 
         self.assertEqual("example-agent", spec.agent_name)
         self.assertEqual("zai-coding-global", spec.auth_choice)
-        self.assertEqual("zai/glm-4.7", spec.model_fallback)
-        self.assertEqual("zai/glm-4.7", spec.automations_model)
+        self.assertEqual("zai/glm-5.3-flash", spec.model_fallback)
+        self.assertEqual("high", spec.model_thinking)
+        self.assertEqual("zai/glm-5.3-flash", spec.automations_model)
         self.assertEqual(Features(gh_auth=True, gateway_auth=True), spec.features)
 
         by_path = {entry.path: entry for entry in spec.config_entries}
@@ -172,6 +174,41 @@ class GoldenExampleSpec(SpecTestCase):
         with self.assertRaises(SpecError) as ctx:
             load_spec(EXAMPLE_SPEC, {})
         self.assertIn("TELEGRAM_BOT_TOKEN", str(ctx.exception))
+
+
+class ModelThinking(SpecTestCase):
+    """model.thinking: optional reasoning-effort level, fail-closed value set."""
+
+    def test_absent_thinking_resolves_to_none(self) -> None:
+        spec = self.load(copy.deepcopy(MINIMAL))
+        self.assertIsNone(spec.model_thinking)
+
+    def test_every_allowed_level_parses(self) -> None:
+        for level in sorted(_THINKING_LEVELS):
+            with self.subTest(level=level):
+                spec_doc = copy.deepcopy(MINIMAL)
+                spec_doc["model"] = {"fallback": "zai/glm-5.3-flash", "thinking": level}
+                spec = self.load(spec_doc)
+                self.assertEqual(level, spec.model_thinking)
+
+    def test_invalid_level_fails_closed(self) -> None:
+        spec_doc = copy.deepcopy(MINIMAL)
+        spec_doc["model"] = {"fallback": "zai/glm-5.3-flash", "thinking": "medium+"}
+        message = self.load_expect_error(spec_doc, containing="model.thinking")
+        self.assertIn("'medium+'", message)
+        self.assertIn("one of:", message)
+
+    def test_non_string_thinking_fails_closed(self) -> None:
+        for bad in (5, True, ["high"], {"level": "high"}):
+            with self.subTest(bad=bad):
+                spec_doc = copy.deepcopy(MINIMAL)
+                spec_doc["model"] = {"fallback": "zai/glm-5.3-flash", "thinking": bad}
+                self.load_expect_error(spec_doc, containing="model.thinking")
+
+    def test_unknown_model_subkey_still_rejected(self) -> None:
+        spec_doc = copy.deepcopy(MINIMAL)
+        spec_doc["model"] = {"fallback": "zai/glm-5.3-flash", "effort": "high"}
+        self.load_expect_error(spec_doc, containing="model.effort")
 
 
 class SpecVersionGate(SpecTestCase):
@@ -320,7 +357,7 @@ class AutomationsDefaultTools(SpecTestCase):
     def test_valid_list_accepted(self) -> None:
         variant = copy.deepcopy(MINIMAL)
         variant["automations"] = {
-            "model": "zai/glm-4.7",
+            "model": "zai/glm-5.3-flash",
             "default_tools": ["read", "exec", "bundle-mcp"],
         }
         spec = self.load(variant, env={"ZAI_API_KEY": "zai-key"})
@@ -328,7 +365,7 @@ class AutomationsDefaultTools(SpecTestCase):
 
     def test_star_means_unrestricted(self) -> None:
         variant = copy.deepcopy(MINIMAL)
-        variant["automations"] = {"model": "zai/glm-4.7", "default_tools": ["*"]}
+        variant["automations"] = {"model": "zai/glm-5.3-flash", "default_tools": ["*"]}
         spec = self.load(variant, env={"ZAI_API_KEY": "zai-key"})
         self.assertEqual(("*",), spec.automations_default_tools)
 
@@ -336,7 +373,7 @@ class AutomationsDefaultTools(SpecTestCase):
         for bad in ([], ["read", ""], ["read write"], [42], "read"):
             with self.subTest(bad=bad):
                 variant = copy.deepcopy(MINIMAL)
-                variant["automations"] = {"model": "zai/glm-4.7", "default_tools": bad}
+                variant["automations"] = {"model": "zai/glm-5.3-flash", "default_tools": bad}
                 self.load_expect_error(
                     variant, env={"ZAI_API_KEY": "zai-key"}, containing="default_tools"
                 )
