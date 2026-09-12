@@ -11,21 +11,21 @@ else.
 The image distills two agents that already ran this pipeline as bespoke
 scripts:
 
-- **Freya** (grow-agent): the value-compared config fast path, first-boot
+- **grow-agent**: the value-compared config fast path, first-boot
   channel setup, cron seeding, memory reindex with retry and degraded-mode
   detection, and the GitHub-auth bootstrap.
-- **Mimir** (trade-agent): remote MCP servers with env-templated URLs and
+- **trade-agent**: remote MCP servers with env-templated URLs and
   headers, the six-server registration matrix, and docs as image-baked
   reference content replaced every boot.
 
-Their `FREYA_*` / `MIMIR_*` environment names are gone. One `AGENT_*`
+Their legacy per-project environment names are gone. One `AGENT_*`
 vocabulary covers both, declared per project in `spec.json`.
 
 This document is the contract. The code in `container/` is its
 implementation: `spec.py` (loader), `entrypoint.py` (boot phases),
 `seed_automations.py` (cron reconciler). Worked specs live in
-`examples/spec.example.json` (golden example) and `tests/tests/fixtures/*freya-like/`
-plus `tests/tests/fixtures/*mimir-like/` (real boot-tested fixtures; consult them rather
+`examples/spec.example.json` (golden example) and `tests/tests/fixtures/*grow-agent-like/`
+plus `tests/tests/fixtures/*trade-agent-like/` (real boot-tested fixtures; consult them rather
 than copying them whole).
 
 ## Quick start
@@ -411,10 +411,10 @@ spec config entry) so the OAuth callback URL is reachable.
 ### Worked examples
 
 - `examples/spec.example.json`: one entry per feature, annotated by shape.
-- `tests/tests/fixtures/*freya-like/spec.json`: local stdio servers with `--env` pairs,
+- `tests/tests/fixtures/*grow-agent-like/spec.json`: local stdio servers with `--env` pairs,
   `split_csv` allowFrom, heartbeat entries behind `if_env`, a local plugin,
   `gh_auth` enabled.
-- `tests/tests/fixtures/*mimir-like/spec.json`: six servers mixing remote URLs
+- `tests/tests/fixtures/*trade-agent-like/spec.json`: six servers mixing remote URLs
   (one key-templated query param, one bearer-token header) with local npx
   commands, `gh_auth` disabled, a different automation model.
 
@@ -657,9 +657,9 @@ teardown.
 
 | Decision | Why |
 | --- | --- |
-| `AGENT_*` prefix replaces `FREYA_*` / `MIMIR_*` | One vocabulary across projects; the base cannot accidentally special-case one agent's names. |
+| `AGENT_*` prefix replaces the legacy per-project names | One vocabulary across projects; the base cannot accidentally special-case one agent's names. |
 | `TELEGRAM_CHAT_ID` is base-standard | Cron delivery needs one chat target the reconciler can read directly. All other `TELEGRAM_*` names stay project-side in spec refs (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_USERS`, `TELEGRAM_TOPIC_*`). |
-| Docs at `{data}/workspace/docs`, never `{data}/docs` | Docs are workspace-adjacent reference material seeded every boot. Migrating agents (Mimir layout) move once in a wrapper entrypoint. |
+| Docs at `{data}/workspace/docs`, never `{data}/docs` | Docs are workspace-adjacent reference material seeded every boot. Migrating agents (trade-agent layout) move once in a wrapper entrypoint. |
 | `automations.model` is required per project | A baked default would silently drift models between agents sharing one image. No default, no drift. Per-job `model:` headers are overrides, not defaults — the global stays explicit. |
 | Model/provider configuration lives on a LiteLLM sidecar (scaffold default) | The agent process never holds provider keys — one proxy key in, all routing on the proxy (`litellm/config.yaml`). Model changes are a config review + restart, not an image rebuild. Direct provider auth (`zai-coding-*`) remains supported for single-provider deployments. |
 | Seeded jobs get a bounded tool allow-list | A scheduled turn reaching the `cron` tool can self-replicate jobs (OWASP ASI06); the base default excludes recursion, spawn, and browser tools. Per-job `tools:` / spec `automations.default_tools` / `["*"]` escape hatches keep this the operator's call. |
@@ -894,20 +894,20 @@ Each guide below is the exact cutover for that project onto
 volumes: the base swap changes the image and entrypoint only, never volume
 data.
 
-### Freya (grow-agent)
+### grow-agent
 
 #### 1. What changes
 
 | File | Action | Notes |
 | --- | --- | --- |
-| `freya/Dockerfile` | replace | Thin FROM + COPYs (below); no ENTRYPOINT, the base carries tini and the entrypoint chain. |
-| `freya/spec.json` | create | Declarative boot contract (below). |
-| `freya/scripts/automations/` | rename to `freya/automations/` | Base contract location; content unchanged (six jobs, `topic-env` headers stay). |
-| `freya/scripts/freya_entrypoint.py` | delete | Boot logic lives in the base entrypoint. |
-| `freya/scripts/seed_automations.py` | delete | The base ships `seed_automations.py`. |
-| `freya/scripts/test_freya_entrypoint.py`, `freya/scripts/test_seed_automations.py` | delete | The boot pipeline's suite lives in this repo (`container/`). |
-| `freya/skills/persist-state/SKILL.md`, `freya/skills/persist-state/scripts/persist-state.sh` | edit | Rename `FREYA_GIT_TOKEN` to `AGENT_GIT_TOKEN` (env read + error text). |
-| `freya/.env.example` | edit | Renames per the table below. |
+| `agent/Dockerfile` | replace | Thin FROM + COPYs (below); no ENTRYPOINT, the base carries tini and the entrypoint chain. |
+| `agent/spec.json` | create | Declarative boot contract (below). |
+| `agent/scripts/automations/` | rename to `agent/automations/` | Base contract location; content unchanged (six jobs, `topic-env` headers stay). |
+| `agent/scripts/entrypoint.py` | delete | Boot logic lives in the base entrypoint. |
+| `agent/scripts/seed_automations.py` | delete | The base ships `seed_automations.py`. |
+| `agent/scripts/test_entrypoint.py`, `agent/scripts/test_seed_automations.py` | delete | The boot pipeline's suite lives in this repo (`container/`). |
+| `agent/skills/persist-state/SKILL.md`, `agent/skills/persist-state/scripts/persist-state.sh` | edit | Rename the legacy git-token env name to `AGENT_GIT_TOKEN` (env read + error text). |
+| `agent/.env.example` | edit | Renames per the table below. |
 | `compose.yml` | edit | Port interpolation rename only. |
 | `compose.dev.yml` | edit | `AGENT_SKIP_SEED=1` plus `/opt/seed/*` mounts. |
 | `make.sh` | edit | New `REQUIRED_VARS` (below). |
@@ -915,7 +915,7 @@ data.
 #### 2. Thin Dockerfile
 
 The base image already has python3 (no pip), gh, tini, the entrypoint
-chain, and the `node` user. Freya adds the `ac-infinity-mcp` console
+chain, and the `node` user. grow-agent adds the `ac-infinity-mcp` console
 script, the approvals plugin, and its content. Build context stays the
 repo root:
 
@@ -934,10 +934,10 @@ COPY tools/ac-infinity-mcp /tmp/ac-infinity-mcp
 RUN pip3 install --break-system-packages --no-cache-dir /tmp/ac-infinity-mcp \
     && rm -rf /tmp/ac-infinity-mcp
 
-COPY --chown=node:node freya/spec.json     /opt/agent/spec.json
-COPY --chown=node:node freya/automations/  /opt/agent/automations/
-COPY --chown=node:node freya/workspace/    /opt/seed/workspace/
-COPY --chown=node:node freya/skills/       /opt/seed/skills/
+COPY --chown=node:node agent/spec.json     /opt/agent/spec.json
+COPY --chown=node:node agent/automations/  /opt/agent/automations/
+COPY --chown=node:node agent/workspace/    /opt/seed/workspace/
+COPY --chown=node:node agent/skills/       /opt/seed/skills/
 COPY --chown=node:node knowledge/content/  /opt/seed/docs/
 
 # Local plugin seed path: /opt/seed/plugins/<name>. Plugins are not part of
@@ -959,7 +959,7 @@ boot; `make.sh secrets check` enforces exactly that set:
 ```json
 {
   "specVersion": 1,
-  "agent": { "name": "Freya" },
+  "agent": { "name": "grow-agent" },
   "setup": { "auth_choice": "zai-coding-global" },
   "model": { "fallback": "zai/glm-5.3-flash" },
   "config": [
@@ -999,7 +999,7 @@ boot; `make.sh secrets check` enforces exactly that set:
     { "path": "plugins.entries.grow-approval-gate.enabled", "value": true },
     { "path": "plugins.entries.grow-approval-gate.hooks.allowConversationAccess", "value": true },
     { "path": "plugins.entries.grow-approval-gate.config.gatedTools", "value": ["set_port_mode", "set_stage_thresholds", "calibrate_sensor"] },
-    { "path": "plugins.entries.grow-approval-gate.config.agentName", "value": "Freya", "strict": true }
+    { "path": "plugins.entries.grow-approval-gate.config.agentName", "value": "Grow Agent", "strict": true }
   ],
   "channels": [
     { "type": "telegram" }
@@ -1029,7 +1029,7 @@ boot; `make.sh secrets check` enforces exactly that set:
 ```
 
 Replace `-1001234567890` with the real supergroup ID. The approvals target
-always carries `threadId` (Freya's deployment uses forum topics); deployments
+always carries `threadId` (grow-agent's deployment uses forum topics); deployments
 without the approvals topic delete that field and the
 `TELEGRAM_TOPIC_APPROVALS` references. No `plugins.allow` entry and no
 `gateway.auth.token`/`secrets.providers.default` pair: the base seeds the
@@ -1040,20 +1040,22 @@ reload.
 
 #### 4. Env and secret changes
 
-| Old name | New name | Read by |
-| --- | --- | --- |
-| `FREYA_SKIP_SEED` | `AGENT_SKIP_SEED` | Base, dev overlay. |
-| `FREYA_MANAGE_CONFIG` | `AGENT_MANAGE_CONFIG` | Base, optional. |
-| `FREYA_MEMORY_REINDEX` | `AGENT_MEMORY_REINDEX` | Base, optional. |
-| `FREYA_GIT_TOKEN` | `AGENT_GIT_TOKEN` | Base `gh auth` (features.gh_auth) and the persist-state skill (edited). |
-| `TELEGRAM_HOME_CHANNEL` | `TELEGRAM_CHAT_ID` | Spec heartbeat/approvals templates and cron delivery. |
-| `FREYA_GATEWAY_PORT` | `AGENT_GATEWAY_PORT` | Compose port interpolation, host-side only. |
+The legacy per-project env names rename onto the standard vocabulary:
+
+| Standard name | Read by |
+| --- | --- |
+| `AGENT_SKIP_SEED` (was the legacy skip-seed flag) | Base, dev overlay. |
+| `AGENT_MANAGE_CONFIG` (was the legacy manage-config flag) | Base, optional. |
+| `AGENT_MEMORY_REINDEX` (was the legacy reindex flag) | Base, optional. |
+| `AGENT_GIT_TOKEN` (was the legacy git-token name) | Base `gh auth` (features.gh_auth) and the persist-state skill (edited). |
+| `TELEGRAM_CHAT_ID` (was `TELEGRAM_HOME_CHANNEL`) | Spec heartbeat/approvals templates and cron delivery. |
+| `AGENT_GATEWAY_PORT` (was the legacy gateway-port name) | Compose port interpolation, host-side only. |
 
 Unchanged: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_USERS`, `ZAI_API_KEY`,
 `OPENCLAW_GATEWAY_TOKEN`, `AC_INFINITY_EMAIL`/`AC_INFINITY_PASSWORD`,
 `AUTOMATION_MODEL` (manual-run fallback; the boot always passes
-`automations.model`), `FREYA_GIT_NAME`/`FREYA_GIT_EMAIL`/`FREYA_GIT_REMOTE`
-(skill-side), and the `TELEGRAM_TOPIC_*` family (automation `topic-env`
+`automations.model`), the legacy git identity/remote names (skill-side), and
+the `TELEGRAM_TOPIC_*` family (automation `topic-env`
 headers). New required entries: `TELEGRAM_APPROVERS`,
 `TELEGRAM_TOPIC_APPROVALS`, `TELEGRAM_GROUP_ID`,
 `TELEGRAM_GROUP_ALLOWED_USERS`. `make.sh` becomes:
@@ -1077,9 +1079,9 @@ REQUIRED_VARS=(
 
 #### 5. Compose changes
 
-Only the `ports` line and the dev overlay change in the `freya` service;
-`build.dockerfile: freya/Dockerfile`, `env_file: freya/.env`,
-`security_opt`, the healthcheck, and the `freya-data` volume (it persists)
+Only the `ports` line and the dev overlay change in the `agent` service;
+`build.dockerfile: agent/Dockerfile`, `env_file: agent/.env`,
+`security_opt`, the healthcheck, and the `agent-data` volume (it persists)
 all stay:
 
 ```yaml
@@ -1093,28 +1095,28 @@ volume-side):
 
 ```yaml
 services:
-  freya:
+  agent:
     userns_mode: keep-id
     environment:
       - AGENT_SKIP_SEED=1
     volumes:
-      - ./freya/workspace:/opt/seed/workspace:z
-      - ./freya/skills:/opt/seed/skills:z
+      - ./agent/workspace:/opt/seed/workspace:z
+      - ./agent/skills:/opt/seed/skills:z
       - ./knowledge/content:/opt/seed/docs:z
     restart: ""
 ```
 
 #### 6. One-time manual ops
 
-The base drops Freya's legacy state migrations (tent-state renames,
+The base drops grow-agent's legacy state migrations (tent-state renames,
 strain-to-crop, legacy layout moves). The old image ran them every boot, so
 an up-to-date volume already satisfies them; run the equivalent by hand once
 (ordered before the first new-image boot), or accept the seed defaults on
 volumes restored from old backups:
 
 ```sh
-podman compose -f compose.yml stop freya
-podman run --rm -i -v freya-data:/data docker.io/library/python:3.12-slim python3 - <<'EOF'
+podman compose -f compose.yml stop agent
+podman run --rm -i -v agent-data:/data docker.io/library/python:3.12-slim python3 - <<'EOF'
 import json
 import shutil
 from pathlib import Path
@@ -1150,7 +1152,7 @@ if legacy_journal.is_dir():
 if (data / "docs").is_dir():
     shutil.rmtree(data / "docs")
 
-print("freya state migration complete")
+print("agent state migration complete")
 EOF
 ```
 
@@ -1159,13 +1161,13 @@ pre-workspace paths; the new reconcile sees the name and skips re-registering,
 so unset it once and the first standard boot re-adds it with `{data}` paths:
 
 ```sh
-podman run --rm -v freya-data:/home/node/.openclaw \
+podman run --rm -v agent-data:/home/node/.openclaw \
   --entrypoint openclaw ghcr.io/tankdonut/agent-base:2026.08.24.1 \
   mcp unset grow-docs
 ```
 
 Pre-JSON volumes (no `tent-state.json` at all): copy
-`freya/workspace/journal/tent-state.json` from the repo into the volume's
+`agent/workspace/journal/tent-state.json` from the repo into the volume's
 `workspace/journal/` and set `active_run.stage` by hand from the
 `**Current Stage:**` line of `docs/journal/tent-state.md` before the first
 boot; the docs reseed overwrites that markdown file, so it is the only
@@ -1173,9 +1175,9 @@ record. Then run the first validation locally (the same command CI uses):
 
 ```sh
 podman run --rm \
-  -v ./freya/spec.json:/opt/agent/spec.json:ro \
-  -v ./freya/automations:/opt/agent/automations:ro \
-  --env-file freya/.env \
+  -v ./agent/spec.json:/opt/agent/spec.json:ro \
+  -v ./agent/automations:/opt/agent/automations:ro \
+  --env-file agent/.env \
   --entrypoint python3 \
   ghcr.io/tankdonut/agent-base:2026.08.24.1 \
   /opt/agent/entrypoint.py --validate-spec
@@ -1195,12 +1197,12 @@ python hook to remove.
 #### 8. Rollback
 
 The pre-migration commit still builds the old bespoke image (old Dockerfile
-plus `freya/scripts/`), and `freya-data` is untouched by the swap: rolling
+plus `agent/scripts/`), and `agent-data` is untouched by the swap: rolling
 back is a checkout, a rebuild, and restoring the old env names
-(`TELEGRAM_HOME_CHANNEL`, `FREYA_*`) in `freya/.env`. State written by the
-standard image is layout-compatible with the old entrypoint.
+(`TELEGRAM_HOME_CHANNEL` and the legacy project names) in `agent/.env`. State
+written by the standard image is layout-compatible with the old entrypoint.
 
-### Mimir (trade-agent)
+### trade-agent
 
 #### 1. What changes
 
@@ -1209,19 +1211,19 @@ standard image is layout-compatible with the old entrypoint.
 | `agent/Dockerfile` | replace | Thin FROM + COPYs (below). |
 | `agent/spec.json` | create | Declarative boot contract (below). |
 | `agent/scripts/automations/` | rename to `agent/automations/` | Four jobs, unchanged. |
-| `agent/scripts/mimir_entrypoint.py` | delete | Boot logic lives in the base entrypoint. |
+| `agent/scripts/entrypoint.py` | delete | Boot logic lives in the base entrypoint. |
 | `agent/scripts/seed_automations.py` | delete | The base ships `seed_automations.py`. |
-| `agent/scripts/test_mimir_entrypoint.py`, `agent/scripts/test_seed_automations.py` | delete | Suites live in this repo. |
+| `agent/scripts/test_entrypoint.py`, `agent/scripts/test_seed_automations.py` | delete | Suites live in this repo. |
 | `agent/.env.example` | edit | `AGENT_*` optional entries, load-time-required var notes. |
 | `compose.yml` | no change | Same build path, volume, env wiring. |
-| `compose.dev.yml` | edit | `MIMIR_SKIP_SEED` rename. |
+| `compose.dev.yml` | edit | Legacy skip-seed env rename. |
 | `make.sh` | edit | `secrets_check` additions (below); `write_agent_env` vars unchanged. |
 | `.pre-commit-config.yaml` | edit | Drop the `python-test` hook. |
 
 #### 2. Thin Dockerfile
 
 The base carries python3, tini, the entrypoint chain, and the `node` user;
-Mimir adds only content. Build context stays the repo root:
+trade-agent adds only content. Build context stays the repo root:
 
 ```dockerfile
 FROM ghcr.io/tankdonut/agent-base:2026.08.24.1
@@ -1238,7 +1240,7 @@ COPY --chown=node:node knowledge/content/  /opt/seed/docs/
 ```json
 {
   "specVersion": 1,
-  "agent": { "name": "Mimir" },
+  "agent": { "name": "trade-agent" },
   "setup": { "auth_choice": "zai-coding-global" },
   "model": { "fallback": "zai/glm-5.3-flash" },
   "config": [
@@ -1287,11 +1289,11 @@ the index. `automations.model` is `zai/glm-5.2` per project decision.
 
 #### 4. Env and secret changes
 
-| Old name | New name | Where |
-| --- | --- | --- |
-| `MIMIR_SKIP_SEED` | `AGENT_SKIP_SEED` | `compose.dev.yml`. |
-| `MIMIR_MANAGE_CONFIG` | `AGENT_MANAGE_CONFIG` | Optional, `secrets/agent.env`. |
-| `MIMIR_MEMORY_REINDEX` | `AGENT_MEMORY_REINDEX` | Optional, `secrets/agent.env`. |
+| Standard name | Where |
+| --- | --- |
+| `AGENT_SKIP_SEED` (was the legacy skip-seed flag) | `compose.dev.yml`. |
+| `AGENT_MANAGE_CONFIG` (was the legacy manage-config flag) | Optional, `secrets/agent.env`. |
+| `AGENT_MEMORY_REINDEX` (was the legacy reindex flag) | Optional, `secrets/agent.env`. |
 
 `TELEGRAM_CHAT_ID` (already the base standard), `AUTOMATION_MODEL`
 (manual-run fallback only), and `write_agent_env`'s variable list are
@@ -1336,7 +1338,7 @@ an operation.
 
 #### 7. Test and CI changes
 
-Delete `agent/scripts/test_mimir_entrypoint.py` and
+Delete `agent/scripts/test_entrypoint.py` and
 `agent/scripts/test_seed_automations.py` with the scripts, and remove the
 pre-commit hook that ran them:
 

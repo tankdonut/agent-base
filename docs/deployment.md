@@ -408,10 +408,10 @@ The rest of the playbook:
   its agent's loopback port:
 
   ```caddyfile
-  freya.example.com {
+  grow-agent.example.com {
       reverse_proxy 127.0.0.1:18789
   }
-  mimir.example.com {
+  trade-agent.example.com {
       reverse_proxy 127.0.0.1:18790
   }
   ```

@@ -23,7 +23,7 @@
 cmd/         agentctl CLI — operator tool for downstream agent repos (scaffold first)
 container/   Image contract: entrypoint.py (boot), spec.py (loader), seed_automations.py
              (cron reconciler), Dockerfile, colocated test_*.py (never shipped)
-docs/        standard-agent.md — the whole agent contract + Freya/Mimir migration guides
+docs/        standard-agent.md — the whole agent contract + grow-agent/trade-agent migration guides
              (incl. "Model providers via LiteLLM")
 tests/       e2e surface (image-side, python stdlib): smoke_test.py (real-image
              fixture boots + graceful-shutdown drain), agentctl_e2e.py (front
@@ -31,7 +31,7 @@ tests/       e2e surface (image-side, python stdlib): smoke_test.py (real-image
              volume semantics → dev overlay), contract_test.py + contract/
              (real-CLI drift gate: emitted-flag cross-check vs --help + clean
              shim-free boot + upgrade-path warm-volume reboot from the last
-             published release), fixtures/* (freya-like, mimir-like,
+             published release), fixtures/* (grow-agent-like, trade-agent-like,
              litellm-like — boot-tested spec+automations trees; input for
              smoke; consult, don't copy whole), shim/openclaw (fake CLI;
              asserts via invocation log)
@@ -114,7 +114,7 @@ Symbols relative to `container/`.
 ## Unique Styles
 
 - `# allow: SIZE_OK` header marks contractually-single test files exempt from size ceilings.
-- Meta-tests: an AST audit of `entrypoint.py` forbids legacy `FREYA_` / `MIMIR_` env names; import-safety classes assert importing never boots.
+- Meta-tests: import-safety classes assert importing never boots.
 - Secrets canary tests: plant a canary, assert it reaches CLI argv but never captured stdout/stderr.
 - Smoke asserts phase order by line number in the shim invocation log (`tests/shim/openclaw`), plus proof-of-absence checks (e.g. no `memory index` on clean status).
 
@@ -132,6 +132,6 @@ Symbols relative to `container/`.
 | Agent contract + project extension guide | `docs/standard-agent.md` |
 | Deployment guide (host prep, proxy, platforms) | `docs/deployment.md` |
 | Production compose template | `examples/compose.prod.agent.yml` |
-| Migration guides (Freya, Mimir) | `docs/standard-agent.md#migrations` |
+| Migration guides (grow-agent, trade-agent) | `docs/standard-agent.md#migrations` |
 | Spec schema golden example | `examples/spec.example.json` |
 | Env contract (base vs project vars) | `examples/env.example` |
