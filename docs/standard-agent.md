@@ -198,6 +198,13 @@ The blessed path is a fresh volume:
 3. `agentctl destroy --volumes`, `secrets init`, `secrets check`,
    `deploy`.
 
+`agentctl doctor` reports migration readiness at every step: a `warn`
+line names any provider still off the sidecar (with this section as the
+pointer), litellm specs fail closed on a missing tree or a compose file
+without the sidecar + `model-net`, and — when a compose engine and the
+pinned image are local — the report runs the real-image spec gate
+(the same `--validate-spec` pass `agentctl validate` performs).
+
 Running the same setup command in-place inside the running container is
 the escape hatch (`openclaw setup --non-interactive --auth-choice
 litellm-api-key …` with `LITELLM_API_KEY` exported), but it sits outside

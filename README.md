@@ -43,7 +43,7 @@ agentctl deploy                          # ship the checked-out tree (check → 
 agentctl dev up                          # local loop: hot-reload overlay
 agentctl status · logs · stop · start · destroy
 agentctl platform ls · set · check       # deployment platform management
-agentctl doctor                          # pre-flight report
+agentctl doctor                          # pre-flight report (incl. litellm shape + real-image spec gate)
 agentctl secrets init                    # secrets: init/check/edit
 agentctl validate                        # spec gate via the base image
 ```
