@@ -9,7 +9,7 @@ import (
 
 // Version is the single agentctl version constant, date-versioned in the
 // same YYYY.MM.DD[.N] scheme as the agent-base image tags.
-const Version = "2026.09.12"
+const Version = "2026.09.12.1"
 
 // NewRootCommand builds the full agentctl command tree: repo tooling
 // (init, platform, secrets, worktree, validate, doctor), the local dev
