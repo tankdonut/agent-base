@@ -1,3 +1,3 @@
-# mimir-like
+# trade-agent-like
 
 Trade-agent fixture for the standard-agent base image.

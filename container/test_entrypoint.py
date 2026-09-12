@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Self-contained unittest suite for container/entrypoint.py.
 
-Ports the freya/mimir config fast-path matrices to the generic module and
+Ports the grow-agent/trade-agent config fast-path matrices to the generic module and
 locks the spec-driven behaviour: first-boot sequence, config/mcp/plugin
 reconciliation, gh auth, content-seeding semantics, the post-startup memory
 ladder (force/incremental/skip, degraded detection, retry), fork/supervise
@@ -69,16 +69,16 @@ MINIMAL_SPEC: dict[str, object] = {
     ],
 }
 
-FREYA_ENV = {
+GROW_AGENT_ENV = {
     "TELEGRAM_ALLOWED_USERS": "111, 222",
     "TELEGRAM_CHAT_ID": "-100123",
     "AC_INFINITY_EMAIL": "grower@example.com",
     "AC_INFINITY_PASSWORD": "ac-secret",
-    "AGENT_GIT_TOKEN": "ghp-freya-token",
+    "AGENT_GIT_TOKEN": "ghp-grow-agent-token",
     "ZAI_API_KEY": "zai-key",
 }
 
-MIMIR_ENV = {
+TRADE_AGENT_ENV = {
     "TELEGRAM_CHAT_ID": "-100999",
     "ALPHAVANTAGE_API_KEY": "av-key",
     "LUNARCRUSH_API_KEY": "lc-key",
@@ -121,10 +121,10 @@ class ModuleImportSafety(unittest.TestCase):
                 and isinstance(node.args[0].value, str)
             ):
                 consulted.append(node.args[0].value)
-        for legacy in consulted:
+        for consulted_name in consulted:
             self.assertFalse(
-                legacy.startswith(("FREYA_", "MIMIR_", "TELEGRAM_")),
-                f"legacy env name consulted: {legacy}",
+                consulted_name.startswith("TELEGRAM_"),
+                f"legacy env name consulted: {consulted_name}",
             )
         for standard in (
             "AGENT_SPEC_PATH",
@@ -314,7 +314,7 @@ class EntrypointTestCase(unittest.TestCase):
 
 
 class ConfigSetSkipMatrix(EntrypointTestCase):
-    """Ported from freya/mimir: config_set only shells out when the stored
+    """Ported from grow-agent/trade-agent: config_set only shells out when the stored
     value actually differs; missing/malformed/ambiguous shapes hit the CLI."""
 
     def call(self, key: str, value: str, *extra: str) -> tuple[str, str]:
@@ -2883,13 +2883,13 @@ class ValidateSpecMode(EntrypointTestCase):
         out, err = self.capture(run_validate)
         return code_holder[0], out, err
 
-    def test_freya_fixture_validates_without_mutation(self) -> None:
+    def test_grow_agent_fixture_validates_without_mutation(self) -> None:
         with mock.patch.dict(
             os.environ,
             {
-                "AGENT_SPEC_PATH": str(FIXTURES / "freya-like" / "spec.json"),
-                "AGENT_AUTOMATIONS_DIR": str(FIXTURES / "freya-like" / "automations"),
-                **FREYA_ENV,
+                "AGENT_SPEC_PATH": str(FIXTURES / "grow-agent-like" / "spec.json"),
+                "AGENT_AUTOMATIONS_DIR": str(FIXTURES / "grow-agent-like" / "automations"),
+                **GROW_AGENT_ENV,
             },
         ):
             code, out, err = self.validate()
@@ -2898,13 +2898,13 @@ class ValidateSpecMode(EntrypointTestCase):
         self.assertIn("spec validation passed", out)
         self.assertEqual([], self.calls)
 
-    def test_mimir_fixture_validates_without_mutation(self) -> None:
+    def test_trade_agent_fixture_validates_without_mutation(self) -> None:
         with mock.patch.dict(
             os.environ,
             {
-                "AGENT_SPEC_PATH": str(FIXTURES / "mimir-like" / "spec.json"),
-                "AGENT_AUTOMATIONS_DIR": str(FIXTURES / "mimir-like" / "automations"),
-                **MIMIR_ENV,
+                "AGENT_SPEC_PATH": str(FIXTURES / "trade-agent-like" / "spec.json"),
+                "AGENT_AUTOMATIONS_DIR": str(FIXTURES / "trade-agent-like" / "automations"),
+                **TRADE_AGENT_ENV,
             },
         ):
             code, out, err = self.validate()
@@ -2927,9 +2927,9 @@ class ValidateSpecMode(EntrypointTestCase):
         with mock.patch.dict(
             os.environ,
             {
-                "AGENT_SPEC_PATH": str(FIXTURES / "freya-like" / "spec.json"),
-                "AGENT_AUTOMATIONS_DIR": str(FIXTURES / "freya-like" / "automations"),
-                **{k: v for k, v in FREYA_ENV.items() if k != "AC_INFINITY_PASSWORD"},
+                "AGENT_SPEC_PATH": str(FIXTURES / "grow-agent-like" / "spec.json"),
+                "AGENT_AUTOMATIONS_DIR": str(FIXTURES / "grow-agent-like" / "automations"),
+                **{k: v for k, v in GROW_AGENT_ENV.items() if k != "AC_INFINITY_PASSWORD"},
             },
         ):
             code, _out, err = self.validate()
@@ -2940,9 +2940,9 @@ class ValidateSpecMode(EntrypointTestCase):
         with mock.patch.dict(
             os.environ,
             {
-                "AGENT_SPEC_PATH": str(FIXTURES / "freya-like" / "spec.json"),
-                "AGENT_AUTOMATIONS_DIR": str(FIXTURES / "freya-like" / "automations"),
-                **{k: v for k, v in FREYA_ENV.items() if k != "TELEGRAM_ALLOWED_USERS"},
+                "AGENT_SPEC_PATH": str(FIXTURES / "grow-agent-like" / "spec.json"),
+                "AGENT_AUTOMATIONS_DIR": str(FIXTURES / "grow-agent-like" / "automations"),
+                **{k: v for k, v in GROW_AGENT_ENV.items() if k != "TELEGRAM_ALLOWED_USERS"},
             },
         ):
             code, _out, _err = self.validate()
@@ -2979,9 +2979,9 @@ class FixtureBoots(EntrypointTestCase):
         ):
             return self.boot()
 
-    def test_freya_like_full_boot(self) -> None:
+    def test_grow_agent_like_full_boot(self) -> None:
         with mock.patch.object(entrypoint.shutil, "which", return_value="/usr/bin/gh"):
-            result = self.boot_fixture("freya-like", FREYA_ENV)
+            result = self.boot_fixture("grow-agent-like", GROW_AGENT_ENV)
         self.assertEqual(0, result.code)
         result.supervise.assert_called_once_with(["openclaw", "gateway"], 600, forward_pids=(1234,))
 
@@ -3031,19 +3031,19 @@ class FixtureBoots(EntrypointTestCase):
             self.has_call("openclaw", "plugins", "install", "/opt/seed/plugins/grow-approval-gate")
         )
         self.assertEqual([["gh", "auth", "login", "--with-token"]], self.calls_with("gh"))
-        self.assertEqual(["ghp-freya-token"], self.stdin_inputs)
+        self.assertEqual(["ghp-grow-agent-token"], self.stdin_inputs)
         self.assertEqual(
-            "# freya-like\n\nGrow-tent agent fixture for the standard-agent base image.\n",
+            "# grow-agent-like\n\nGrow-tent agent fixture for the standard-agent base image.\n",
             (self.data / "workspace" / "AGENTS.md").read_text("utf-8"),
         )
-        self.assertTrue((self.data / "skills" / ".keep").is_file())
+        self.assertTrue((self.data / "skills" / ".gitkeep").is_file())
 
-    def test_freya_like_fails_closed_without_declared_env(self) -> None:
+    def test_grow_agent_like_fails_closed_without_declared_env(self) -> None:
         # heartbeat.to templates {env:TELEGRAM_CHAT_ID}; templates resolve
         # Unguarded refs stay fail-closed: a boot without the required
         # AC credentials aborts loudly instead of running half-configured.
-        env = {k: v for k, v in FREYA_ENV.items() if k != "AC_INFINITY_EMAIL"}
-        fixture = FIXTURES / "freya-like"
+        env = {k: v for k, v in GROW_AGENT_ENV.items() if k != "AC_INFINITY_EMAIL"}
+        fixture = FIXTURES / "grow-agent-like"
         with (
             mock.patch.dict(
                 os.environ,
@@ -3060,16 +3060,16 @@ class FixtureBoots(EntrypointTestCase):
         self.assertIn("AC_INFINITY_EMAIL", str(ctx.exception))
         self.assertEqual([], self.calls)
 
-    def test_freya_like_boots_without_optional_chat_env(self) -> None:
+    def test_grow_agent_like_boots_without_optional_chat_env(self) -> None:
         # Optional-secret pattern (X6): TELEGRAM_CHAT_ID is guarded
         # everywhere it appears, so a boot without it succeeds — the
         # heartbeat entries skip instead of aborting the load.
-        env = {k: v for k, v in FREYA_ENV.items() if k != "TELEGRAM_CHAT_ID"}
-        result = self.boot_fixture("freya-like", env)
+        env = {k: v for k, v in GROW_AGENT_ENV.items() if k != "TELEGRAM_CHAT_ID"}
+        result = self.boot_fixture("grow-agent-like", env)
         self.assertEqual(0, result.code)
 
-    def test_mimir_like_full_boot_registers_all_six_servers(self) -> None:
-        result = self.boot_fixture("mimir-like", MIMIR_ENV)
+    def test_trade_agent_like_full_boot_registers_all_six_servers(self) -> None:
+        result = self.boot_fixture("trade-agent-like", TRADE_AGENT_ENV)
         self.assertEqual(0, result.code)
         added = [c[3] for c in self.calls_with("openclaw", "mcp", "add")]
         self.assertEqual(
@@ -3112,8 +3112,8 @@ class FixtureBoots(EntrypointTestCase):
         self.assertTrue((self.data / "workspace" / "AGENTS.md").is_file())
         self.assertFalse((self.data / "skills").exists())
 
-    def test_mimir_like_boot_phase_order(self) -> None:
-        self.boot_fixture("mimir-like", MIMIR_ENV)
+    def test_trade_agent_like_boot_phase_order(self) -> None:
+        self.boot_fixture("trade-agent-like", TRADE_AGENT_ENV)
         config_idx = self.index_of("openclaw", "config", "set")
         llama_idx = self.index_of("openclaw", "plugins", "install")
         mcp_idx = self.index_of("openclaw", "mcp", "add", "trade-agent")

@@ -1,7 +1,7 @@
 {
   "specVersion": 1,
   "agent": {
-    "name": "freya-like"
+    "name": "grow-agent-like"
   },
   "setup": {
     "auth_choice": "zai-coding-global"
@@ -47,7 +47,7 @@
     },
     {
       "path": "plugins.entries.grow-approval-gate.config.agentName",
-      "value": "Freya",
+      "value": "Grow Agent",
       "strict": true
     }
   ],

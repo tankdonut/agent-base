@@ -1,7 +1,7 @@
 {
   "specVersion": 1,
   "agent": {
-    "name": "mimir-like"
+    "name": "trade-agent-like"
   },
   "setup": {
     "auth_choice": "zai-coding-global"

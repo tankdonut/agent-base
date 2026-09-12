@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Image smoke test: build agent-base once, boot each fixture (freya-like,
-mimir-like, litellm-like) against the fake openclaw CLI (tests/shim/openclaw),
+"""Image smoke test: build agent-base once, boot each fixture (grow-agent-like,
+trade-agent-like, litellm-like) against the fake openclaw CLI (tests/shim/openclaw),
 and assert the boot's phase order from the shim's invocation log.
 
 Three scenarios:
@@ -38,8 +38,8 @@ ENGINE = os.environ.get("SMOKE_ENGINE") or (shutil.which("podman") and "podman")
 # fixtures need ZAI_API_KEY, the litellm fixture LITELLM_API_KEY. Every
 # other -e flag in build_common is dummy env shared by all fixtures.
 FIXTURE_ENV: dict[str, dict[str, str]] = {
-    "freya-like": {"ZAI_API_KEY": "smoke-zai-key"},
-    "mimir-like": {"ZAI_API_KEY": "smoke-zai-key"},
+    "grow-agent-like": {"ZAI_API_KEY": "smoke-zai-key"},
+    "trade-agent-like": {"ZAI_API_KEY": "smoke-zai-key"},
     "litellm-like": {"LITELLM_API_KEY": "smoke-litellm-key"},
 }
 
@@ -162,7 +162,7 @@ def build_common(fixture: str) -> list[str]:
         "-v",
         f"{f}/docs:/opt/seed/docs:ro",
     ]
-    # Not every fixture ships skills (mimir-like does not); the image's
+    # Not every fixture ships skills (trade-agent-like does not); the image's
     # empty /opt/seed/skills placeholder covers it.
     if (f / "skills").is_dir():
         args += ["-v", f"{f}/skills:/opt/seed/skills:ro"]
@@ -296,7 +296,7 @@ def smoke_drain() -> None:
     name = f"agent-base-smoke-drain-{os.getpid()}"
     run_log = LOGDIR / "smoke-drain.run.log"
     drain_log = LOGDIR / "smoke-drain.log"
-    common = build_common("freya-like")
+    common = build_common("grow-agent-like")
 
     run([ENGINE, "rm", "-f", name])
     proc = run(common + ["-d", "--name", name, IMAGE, "python3", "-u", "-c", GATEWAY])
@@ -374,8 +374,8 @@ def main() -> int:
     else:
         fail("image HEALTHCHECK missing (was the build OCI-format?)")
 
-    smoke_fixture("freya-like", "ac-infinity", triggers="yes")
-    smoke_fixture("mimir-like", "trade-agent")
+    smoke_fixture("grow-agent-like", "ac-infinity", triggers="yes")
+    smoke_fixture("trade-agent-like", "trade-agent")
     smoke_fixture("litellm-like", None)
     smoke_drain()
 
