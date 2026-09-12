@@ -30,12 +30,13 @@ Every boot (declarative reconciliation — idempotent, self-healing volumes):
 
 Content-seeding standard (owner decision): docs live at {data}/workspace/
 docs — there is no {data}/docs destination. Agents migrating from a legacy
-{data}/docs layout (mimir) migrate once in their wrapper entrypoint before
-calling seed_content; this module never writes {data}/docs.
+{data}/docs layout (trade-agent) migrate once in their wrapper entrypoint
+before calling seed_content; this module never writes {data}/docs.
 
-Standard environment contract (replaces the freya/mimir FREYA_*/MIMIR_*
-names; TELEGRAM_* are NOT special here — they appear inside project
-spec.json files via {env:...} templating, if_env guards, and split_csv):
+Standard environment contract (replaces the legacy per-project env names of
+grow-agent and trade-agent; TELEGRAM_* are NOT special here — they appear
+inside project spec.json files via {env:...} templating, if_env guards, and
+split_csv):
 
   AGENT_SPEC_PATH        Override the spec.json location (default
                          /opt/agent/spec.json; used by tests and fixtures).
@@ -71,9 +72,10 @@ never their values.
 Run tests: python3 -m unittest discover -s container -p "test_entrypoint.py" -v
 """
 
-# allow: SIZE_OK — a port of the 860-line freya entrypoint (plus mimir's
-# remote-MCP paths) collapsed to generic spec-driven form; every phase
-# function is a documented extension surface for wrapper entrypoints.
+# allow: SIZE_OK — a port of the 860-line grow-agent entrypoint (plus
+# trade-agent's remote-MCP paths) collapsed to generic spec-driven form;
+# every phase function is a documented extension surface for wrapper
+# entrypoints.
 
 from __future__ import annotations
 
@@ -170,7 +172,7 @@ def load_agent_spec(env: Mapping[str, str]) -> Spec:
     return load_spec(path, env)
 
 
-# --- config reconciliation (value-compared fast path, ported from freya) ---
+# --- config reconciliation (value-compared fast path, ported from grow-agent) ---
 
 _MISSING = object()
 
@@ -985,7 +987,7 @@ def seed_content(spec: Spec, env: Mapping[str, str]) -> None:
     log(f"Seeded workspace, skills, and docs for {spec.agent_name}")
 
 
-# --- post-startup (forked child; ported from freya) ---
+# --- post-startup (forked child; ported from grow-agent) ---
 
 
 def wait_for_gateway(timeout_s: int = 180) -> bool:

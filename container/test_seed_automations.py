@@ -3,7 +3,7 @@
 # in this repo); one suite per behavior class for the reconciler module.
 """Merged unittest suite for the standard-agent seed_automations module.
 
-Union of the freya and mimir suites, rebased onto the standard contract:
+Union of the grow-agent and trade-agent suites, rebased onto the standard contract:
 
 - LoaderSchema — fail-closed header parsing (unknown key/token, duplicate
   key/name, name/stem mismatch, every-xor-cron, deliver enum, bad

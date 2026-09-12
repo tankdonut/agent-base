@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # allow: SIZE_OK — contractually a single-file module (exactly two files
 # land in this repo); a cohesive idempotent reconciler ported verbatim in
-# structure from the freya/mimir originals.
+# structure from the grow-agent/trade-agent originals.
 """Reconcile scheduled OpenClaw cron jobs from markdown specs (idempotent).
 
 Job specs live as markdown files in the automations directory next to this
@@ -29,7 +29,7 @@ that fail-closed. Script content participates in currency: editing the
 file heals the stored job via one ``cron edit --trigger-script``, and
 dropping the header heals via ``--clear-trigger``.
 
-Standard agent contract (union of the freya and mimir originals):
+Standard agent contract (union of the grow-agent and trade-agent originals):
 
   AGENT_AUTOMATIONS_DIR  Override the automations directory (default:
                          <script dir>/automations).

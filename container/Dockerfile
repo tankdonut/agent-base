@@ -1,7 +1,7 @@
 # agent-base — the standard-agent base image.
 #
 # Distilled from the two source agents this repo unifies:
-#   - ../grow-agent/freya/Dockerfile       (local MCP + plugins + seeds)
+#   - ../grow-agent/Dockerfile             (local MCP + plugins + seeds)
 #   - ../trade-agent/agent/Dockerfile      (remote MCP + every-boot reconcile)
 #
 # Projects extend this image with a thin Dockerfile that COPYs their
