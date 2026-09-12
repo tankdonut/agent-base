@@ -16,9 +16,10 @@ import (
 // the cli-level twin of the foundation packages' fakes, so command
 // wiring tests run hermetically (no docker/podman on the host).
 type stubRunner struct {
-	calls    [][]string
-	look     map[string]bool
-	failArgv [][]string
+	calls       [][]string
+	look        map[string]bool
+	failArgv    [][]string
+	runOutputOK bool
 }
 
 func newStubRunner(look ...string) *stubRunner {
@@ -41,6 +42,9 @@ func (s *stubRunner) Run(env []string, name string, args ...string) error {
 }
 
 func (s *stubRunner) RunOutput(env []string, name string, args ...string) ([]byte, error) {
+	if s.runOutputOK {
+		return nil, nil
+	}
 	return nil, fmt.Errorf("fake: output capture not configured")
 }
 
@@ -79,8 +83,10 @@ func fixtureProject(t *testing.T) string {
   "setup": {"auth_choice": "zai-coding-global"},
   "model": {"fallback": "{env:FALLBACK_MODEL}"}
 }`,
-		"agent/Dockerfile": "FROM ghcr.io/tankdonut/agent-base:2026.09.05\nCOPY agent/spec.json /opt/agent/spec.json\n",
-		"agent/.env":       "FALLBACK_MODEL=m\nZAI_API_KEY=k\n",
+		"agent/Dockerfile":          "FROM ghcr.io/tankdonut/agent-base:2026.09.05\nCOPY agent/spec.json /opt/agent/spec.json\n",
+		"agent/.env.example":        "#FALLBACK_MODEL=\n",
+		"agent/.env":                "FALLBACK_MODEL=m\nZAI_API_KEY=k\n",
+		"agent/automations/jobs.md": "---\nname: probe\ncron: 0 9 * * *\ndeliver: announce\n---\nbody\n",
 		"compose.yml": `name: fixture-agent
 services:
   agent:
@@ -151,6 +157,185 @@ func TestDoctorFailsOnIncompleteProject(t *testing.T) {
 	}
 	if !strings.Contains(out, "FAIL") {
 		t.Errorf("output lacks FAIL lines:\n%s", out)
+	}
+}
+
+func litellmFixture(t *testing.T) string {
+	t.Helper()
+	root := fixtureProject(t)
+	if err := os.WriteFile(filepath.Join(root, "agent", "Dockerfile"),
+		[]byte("FROM ghcr.io/tankdonut/agent-base:2026.09.12\nCOPY agent/spec.json /opt/agent/spec.json\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	spec := filepath.Join(root, "agent", "spec.json")
+	body, err := os.ReadFile(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	flipped := strings.Replace(string(body), `"zai-coding-global"`, `"litellm-api-key"`, 1)
+	if err := os.WriteFile(spec, []byte(flipped), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	env := filepath.Join(root, "agent", ".env")
+	body, err = os.ReadFile(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(env, []byte(string(body)+"LITELLM_API_KEY=sk-doctor\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "litellm"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "litellm", ".env.example"), []byte("#LITELLM_MASTER_KEY=\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "litellm", ".env"), []byte("LITELLM_MASTER_KEY=sk-doctor\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
+// addLitellmSidecar rewrites the fixture compose.yml to carry the
+// litellm service and model-net — the full blessed shape.
+func addLitellmSidecar(t *testing.T, root string) {
+	t.Helper()
+	compose := filepath.Join(root, "compose.yml")
+	body, err := os.ReadFile(compose)
+	if err != nil {
+		t.Fatal(err)
+	}
+	withSidecar := strings.Replace(string(body), "volumes:\n  agent-data:",
+		`  litellm:
+    image: ghcr.io/berriai/litellm:v1.100.0
+networks:
+  model-net: {}
+volumes:
+  agent-data:`, 1)
+	if err := os.WriteFile(compose, []byte(withSidecar), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDoctorWarnsWhenSidecarNotAdopted(t *testing.T) {
+	root := fixtureProject(t)
+	stubbedRunner(t, "podman")
+	out, err := execIn(t, root, "doctor")
+	if err != nil {
+		t.Fatalf("doctor: %v\n%s", err, out)
+	}
+	for _, want := range []string{
+		`warn  provider "zai-coding-global" — litellm sidecar not adopted`,
+		"Migrating an existing agent to LiteLLM",
+		"all checks passed",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("doctor output lacks %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestDoctorLitellmShapeFailsOnMissingSidecar(t *testing.T) {
+	root := litellmFixture(t)
+	stubbedRunner(t, "podman")
+	out, err := execIn(t, root, "doctor")
+	if err == nil {
+		t.Fatal("doctor must fail when the litellm spec lacks the compose sidecar")
+	}
+	if !strings.Contains(out, "compose.yml lacks the litellm sidecar") {
+		t.Errorf("output lacks the shape FAIL line:\n%s", out)
+	}
+}
+
+func TestDoctorLitellmShapePasses(t *testing.T) {
+	root := litellmFixture(t)
+	addLitellmSidecar(t, root)
+	r := stubbedRunner(t, "podman")
+	r.runOutputOK = true
+	out, err := execIn(t, root, "doctor")
+	if err != nil {
+		t.Fatalf("doctor: %v\n%s", err, out)
+	}
+	for _, want := range []string{
+		"litellm sidecar shape present (tree, compose service, model-net)",
+		"real-image spec gate passed via podman",
+		"all checks passed",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("doctor output lacks %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "not adopted") {
+		t.Errorf("litellm project must not carry the migration warn:\n%s", out)
+	}
+}
+
+func TestDoctorFailsWhenImagePreDatesLitellmSeed(t *testing.T) {
+	root := litellmFixture(t)
+	addLitellmSidecar(t, root)
+	if err := os.WriteFile(filepath.Join(root, "agent", "Dockerfile"),
+		[]byte("FROM ghcr.io/tankdonut/agent-base:2026.08.31\nCOPY agent/spec.json /opt/agent/spec.json\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stubbedRunner(t, "podman")
+	out, err := execIn(t, root, "doctor")
+	if err == nil {
+		t.Fatal("doctor must fail when a litellm project pins a pre-litellm image")
+	}
+	for _, want := range []string{
+		"pinned base image 2026.08.31 predates the litellm seed (2026.09.12)",
+		"litellm sidecar shape present",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output lacks %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestDoctorIgnoresHarnessTagEra(t *testing.T) {
+	root := litellmFixture(t)
+	addLitellmSidecar(t, root)
+	if err := os.WriteFile(filepath.Join(root, "agent", "Dockerfile"),
+		[]byte("FROM ghcr.io/tankdonut/agent-base:2000.01.01\nCOPY agent/spec.json /opt/agent/spec.json\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := stubbedRunner(t, "podman")
+	r.runOutputOK = true
+	out, err := execIn(t, root, "doctor")
+	if err != nil {
+		t.Fatalf("harness tags are local-build overrides, not eras: %v\n%s", err, out)
+	}
+	if strings.Contains(out, "predates the litellm seed") {
+		t.Errorf("year-2000 tag must not trip the era check:\n%s", out)
+	}
+}
+
+func TestDoctorSkipsGateWithoutEngine(t *testing.T) {
+	root := fixtureProject(t)
+	stubbedRunner(t)
+	out, err := execIn(t, root, "doctor")
+	if err == nil {
+		t.Fatal("engineless host must fail on the platform check (pre-existing semantics)")
+	}
+	for _, want := range []string{
+		`FAIL  platform "compose": no container engine found`,
+		"warn  no compose engine — skipped the real-image spec gate",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output lacks %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestDoctorSkipsGateWithoutPinnedImage(t *testing.T) {
+	root := fixtureProject(t)
+	stubbedRunner(t, "podman")
+	out, err := execIn(t, root, "doctor")
+	if err != nil {
+		t.Fatalf("imageless host must warn, not fail: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "not local — skipped the real-image spec gate") {
+		t.Errorf("output lacks the image warn:\n%s", out)
 	}
 }
 
