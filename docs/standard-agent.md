@@ -144,7 +144,7 @@ pairing the two acceptable).
 - **Models are proxy aliases.** `model.fallback`, `automations.model`,
   and per-job `model:` headers reference `litellm/<model_name>` ids
   matching the proxy's `model_list` aliases. Prefer the actual model
-  name as the alias (the scaffold default is `litellm/glm-5.2`) so model
+  name as the alias (the scaffold default is `litellm/glm-5.3-flash`) so model
   identity stays legible end to end; a distinct alias is a deliberate
   indirection (load-balance pools, re-pointing a route without a spec
   edit).

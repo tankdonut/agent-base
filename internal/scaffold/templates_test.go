@@ -29,7 +29,7 @@ func sampleData(telegram bool) data {
 		ComposeProject: "my-agent",
 		AgentName:      "My Agent",
 		BaseTag:        "2026.08.28",
-		Model:          "litellm/glm-5.2",
+		Model:          "litellm/glm-5.3-flash",
 		GatewayPort:    18789,
 		Telegram:       telegram,
 	}

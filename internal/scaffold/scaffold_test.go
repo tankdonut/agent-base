@@ -31,7 +31,7 @@ func validConfig(dir string) Config {
 		ProjectName: filepath.Base(dir),
 		AgentName:   "TestBot",
 		BaseTag:     "2026.08.28",
-		Model:       "litellm/glm-5.2",
+		Model:       "litellm/glm-5.3-flash",
 		GatewayPort: 18789,
 		Telegram:    true,
 	}
@@ -240,8 +240,8 @@ func TestRunScaffoldedSpecIsLitellm(t *testing.T) {
 	}
 	for _, want := range []string{
 		`"auth_choice": "litellm-api-key"`,
-		`"fallback": "litellm/glm-5.2"`,
-		`"model": "litellm/glm-5.2"`,
+		`"fallback": "litellm/glm-5.3-flash"`,
+		`"model": "litellm/glm-5.3-flash"`,
 	} {
 		if !strings.Contains(string(spec), want) {
 			t.Errorf("spec.json lacks %q:\n%s", want, spec)

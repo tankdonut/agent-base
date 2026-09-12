@@ -17,6 +17,10 @@
 # After edits: restart the litellm service (`agentctl restart litellm` or
 # compose restart) — the proxy reads config at boot.
 model_list:
+  - model_name: glm-5.3-flash
+    litellm_params:
+      model: zai/glm-5.3-flash
+      api_key: os.environ/ZAI_API_KEY
   - model_name: glm-5.2
     litellm_params:
       model: zai/glm-5.2

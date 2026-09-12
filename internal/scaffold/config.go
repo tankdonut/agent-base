@@ -11,7 +11,7 @@ import (
 // Init flag defaults.
 const (
 	DefaultBaseTag     = "2026.09.07"
-	DefaultModel       = "litellm/glm-5.2"
+	DefaultModel       = "litellm/glm-5.3-flash"
 	DefaultGatewayPort = 18789
 )
 
