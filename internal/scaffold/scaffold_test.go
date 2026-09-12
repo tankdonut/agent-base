@@ -208,7 +208,7 @@ func TestRunComposeCarriesLitellmStack(t *testing.T) {
 	}
 	compose := string(b)
 	for _, want := range []string{
-		"image: ghcr.io/berriai/litellm:v1.100.0",
+		"image: ghcr.io/berriai/litellm:v1.100.0@sha256:c8756e7b9a61fe45df2ccb5b781d388c3b2f3a21ef9e4956630caef20f9f03aa",
 		"--config",
 		"/app/proxy_server_config.yaml",
 		"./litellm/config.yaml:/app/proxy_server_config.yaml:ro,Z",

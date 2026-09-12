@@ -66,7 +66,7 @@ GOLDEN_ENV: Mapping[str, str] = {
     "AC_INFINITY_EMAIL": "grower@example.com",
     "AC_INFINITY_PASSWORD": "s3cret",
     "SENTIMENT_API_KEY": "sk-sentiment",
-    "ZAI_API_KEY": "zai-key",
+    "LITELLM_API_KEY": "sk-golden-litellm",
 }
 
 
@@ -116,10 +116,10 @@ class GoldenExampleSpec(SpecTestCase):
         spec = load_spec(EXAMPLE_SPEC, GOLDEN_ENV)
 
         self.assertEqual("example-agent", spec.agent_name)
-        self.assertEqual("zai-coding-global", spec.auth_choice)
-        self.assertEqual("zai/glm-5.3-flash", spec.model_fallback)
+        self.assertEqual("litellm-api-key", spec.auth_choice)
+        self.assertEqual("litellm/glm-5.3-flash", spec.model_fallback)
         self.assertEqual("high", spec.model_thinking)
-        self.assertEqual("zai/glm-5.3-flash", spec.automations_model)
+        self.assertEqual("litellm/glm-5.3-flash", spec.automations_model)
         self.assertEqual(Features(gh_auth=True, gateway_auth=True), spec.features)
 
         by_path = {entry.path: entry for entry in spec.config_entries}

@@ -24,6 +24,22 @@
       "description": "Major updates require manual review.",
       "matchUpdateTypes": ["major"],
       "automerge": false
+    },
+    {
+      "description": "LiteLLM sidecar: keep the prod example digest-pinned.",
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["ghcr.io/berriai/litellm"],
+      "pinDigests": true
+    }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "LiteLLM sidecar pin inside the scaffold template (go-template syntax is invisible to the yaml managers): bump tag+digest together.",
+      "fileMatch": ["^internal/scaffold/tmpl/compose\\.yml\\.tmpl$"],
+      "matchStrings": ["image:\\s*ghcr\\.io/berriai/litellm:(?<currentValue>v\\d+\\.\\d+\\.\\d+)@(?<currentDigest>sha256:[a-f0-9]+)"],
+      "datasourceTemplate": "docker",
+      "depNameTemplate": "ghcr.io/berriai/litellm"
     }
   ]
 }

@@ -4,10 +4,10 @@
     "name": "example-agent"
   },
   "setup": {
-    "auth_choice": "zai-coding-global"
+    "auth_choice": "litellm-api-key"
   },
   "model": {
-    "fallback": "zai/glm-5.3-flash",
+    "fallback": "litellm/glm-5.3-flash",
     "thinking": "high"
   },
   "config": [
@@ -84,6 +84,6 @@
     "gateway_auth": true
   },
   "automations": {
-    "model": "zai/glm-5.3-flash"
+    "model": "litellm/glm-5.3-flash"
   }
 }

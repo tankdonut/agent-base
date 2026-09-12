@@ -103,7 +103,7 @@ services:
   # keys/budgets — those need a database). Version tag pinned; Renovate
   # bumps + digest-pins it.
   litellm:
-    image: ghcr.io/berriai/litellm:v1.100.0
+    image: ghcr.io/berriai/litellm:v1.100.0@sha256:c8756e7b9a61fe45df2ccb5b781d388c3b2f3a21ef9e4956630caef20f9f03aa
     command: ["--config", "/app/proxy_server_config.yaml", "--port", "4000"]
     restart: unless-stopped
     env_file:

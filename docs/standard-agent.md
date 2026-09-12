@@ -167,9 +167,11 @@ The proxy runs db-less in this shape (no Postgres):
 budgets, or teams, which is the right trade for a single-agent
 deployment. The compose `healthcheck` probes `/health/liveliness` (the
 image ships no curl; its python3 serves the probe), the service
-publishes no ports (agent-reachable only), and the image tag is
-version-pinned (`ghcr.io/berriai/litellm`) with Renovate managing
-bumps and digest pins.
+publishes no ports (agent-reachable only), and the image is
+digest-pinned from day one
+(`ghcr.io/berriai/litellm:v1.100.0@sha256:…`) — Renovate bumps the
+tag+digest pair together, both in this repo (prod example + scaffold
+template) and in scaffolded downstream projects.
 
 Scaffolds (`agentctl init`) default to this shape: `secrets init`
 writes both env files, `compose.yml` carries the sidecar, and the

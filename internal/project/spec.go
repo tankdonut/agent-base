@@ -89,7 +89,7 @@ func sortedNames(set map[string]bool) []string {
 // ZAI_API_KEY (zai-coding-*: the loader fails closed naming the var
 // even though it never appears as an {env:} ref).
 func (s SpecInfo) RequiresZAIKey() bool {
-	return strings.HasPrefix(s.AuthChoice, "zai-")
+	return strings.HasPrefix(s.AuthChoice, "zai-coding-")
 }
 
 // RequiresLitellmKey reports whether the spec's auth provider load-gates
