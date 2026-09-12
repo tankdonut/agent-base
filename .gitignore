@@ -13,3 +13,4 @@ logs/
 
 # local tooling
 .venv/
+.worktrees/
