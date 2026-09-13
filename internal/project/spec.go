@@ -24,13 +24,16 @@ type SpecMcpServer struct {
 // SpecInfo summarizes the parts of agent/spec.json that drive env-var
 // requirements: every {env:NAME} reference in any string value, the
 // names appearing in any if_env array (optional by contract — guarded
-// entries are skipped when the var is unset), setup.auth_choice, and
-// the mcp_servers entries in spec order.
+// entries are skipped when the var is unset), setup.auth_choice, the
+// mcp_servers entries in spec order, and the identity fields the
+// scaffold re-render recovers (agent.name, the telegram channel).
 type SpecInfo struct {
-	EnvRefs    []string // sorted, unique
-	IfEnvNames []string // sorted, unique
-	AuthChoice string
-	McpServers []SpecMcpServer
+	EnvRefs            []string // sorted, unique
+	IfEnvNames         []string // sorted, unique
+	AuthChoice         string
+	McpServers         []SpecMcpServer
+	AgentName          string // agent.name, "" when absent
+	HasTelegramChannel bool   // channels contains {type: "telegram"}
 }
 
 // ReadSpec parses the spec at path and extracts its env surface.
@@ -50,6 +53,22 @@ func ReadSpec(path string) (SpecInfo, error) {
 		IfEnvNames: sortedNames(ifEnv),
 	}
 	if m, ok := root.(map[string]any); ok {
+		if agent, ok := m["agent"].(map[string]any); ok {
+			if n, ok := agent["name"].(string); ok {
+				info.AgentName = n
+			}
+		}
+		if channels, ok := m["channels"].([]any); ok {
+			for _, raw := range channels {
+				entry, ok := raw.(map[string]any)
+				if !ok {
+					continue
+				}
+				if t, _ := entry["type"].(string); t == "telegram" {
+					info.HasTelegramChannel = true
+				}
+			}
+		}
 		if setup, ok := m["setup"].(map[string]any); ok {
 			if ac, ok := setup["auth_choice"].(string); ok {
 				info.AuthChoice = ac

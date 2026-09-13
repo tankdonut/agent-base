@@ -16,6 +16,7 @@ import (
 	"github.com/tankdonut/agent-base/internal/compose"
 	"github.com/tankdonut/agent-base/internal/platform"
 	"github.com/tankdonut/agent-base/internal/project"
+	"github.com/tankdonut/agent-base/internal/scaffold"
 )
 
 // newDoctorCmd is the one-command pre-issue report: project shape,
@@ -28,18 +29,20 @@ func newDoctorCmd() *cobra.Command {
 	var target string
 	var postUpgrade bool
 	var expectTag string
+	var reportPath string
 	cmd := &cobra.Command{
 		Use:   "doctor",
 		Short: "Check everything agentctl needs before an issue can be filed",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDoctor(cmd.OutOrStdout(), asJSON, target, postUpgrade, expectTag)
+			return runDoctor(cmd.OutOrStdout(), asJSON, target, postUpgrade, expectTag, reportPath)
 		},
 	}
 	cmd.Flags().BoolVar(&asJSON, "json", false, "emit the report as JSON (machine-readable)")
 	cmd.Flags().StringVar(&target, "target", "", "preview an upgrade to this image tag (YYYY.MM.DD[.N]): era crossings + spec gate against the target")
 	cmd.Flags().BoolVar(&postUpgrade, "post-upgrade", false, "verify a completed upgrade against the running instance: image marker, this-boot backup, MCP + cron reconciliation, boot summary")
 	cmd.Flags().StringVar(&expectTag, "expect-tag", "", "image tag the upgraded instance should report (default: the Dockerfile pin)")
+	cmd.Flags().StringVar(&reportPath, "report", "", "write the check document plus an evidence bundle to this path (atomic; env key names only, never secret values)")
 	return cmd
 }
 
@@ -119,7 +122,7 @@ type doctorReport struct {
 	Failed bool          `json:"failed"`
 }
 
-func runDoctor(out io.Writer, asJSON bool, target string, postUpgrade bool, expectTag string) error {
+func runDoctor(out io.Writer, asJSON bool, target string, postUpgrade bool, expectTag string, reportPath string) error {
 	if target != "" && tagDate(target).IsZero() {
 		return fmt.Errorf("--target %q is not a valid image tag (want YYYY.MM.DD[.N])", target)
 	}
@@ -131,6 +134,9 @@ func runDoctor(out io.Writer, asJSON bool, target string, postUpgrade bool, expe
 	}
 	if expectTag != "" && tagDate(expectTag).IsZero() {
 		return fmt.Errorf("--expect-tag %q is not a valid image tag (want YYYY.MM.DD[.N])", expectTag)
+	}
+	if reportPath != "" && (target != "" || postUpgrade) {
+		return fmt.Errorf("--report bundles a standard doctor run — pass it without --target/--post-upgrade")
 	}
 	root, err := chdirProject()
 	if err != nil {
@@ -202,9 +208,9 @@ func runDoctor(out io.Writer, asJSON bool, target string, postUpgrade bool, expe
 	// volume probes below gate on plat != nil.
 	var plat platform.Platform
 	var deploy platform.Deployment
-	cfg, err := LoadConfig()
-	if err != nil {
-		add("config", StatusFail, "config: %v", err)
+	cfg, cfgErr := LoadConfig()
+	if cfgErr != nil {
+		add("config", StatusFail, "config: %v", cfgErr)
 	} else {
 		meta.Platform = cfg.Platform
 		if d, err := platform.Derive(root); err != nil {
@@ -224,6 +230,18 @@ func runDoctor(out io.Writer, asJSON bool, target string, postUpgrade bool, expe
 				}
 			}
 		}
+	}
+
+	// Template drift: the contract-shaped files re-rendered from the
+	// embedded scaffold with recoverable project values and
+	// byte-compared. Skipped when the spec failed to parse — agent name
+	// and telegram wiring come from it.
+	if specOK {
+		port := scaffold.DefaultGatewayPort
+		if cfgErr == nil {
+			port = cfg.ComposeGatewayPort()
+		}
+		checkTemplateDrift(add, root, info, port)
 	}
 
 	// --post-upgrade verifies a completed upgrade against the running
@@ -375,6 +393,18 @@ func runDoctor(out io.Writer, asJSON bool, target string, postUpgrade bool, expe
 		}
 	}
 
+	if reportPath != "" {
+		doc := doctorBundle{
+			Meta:   meta,
+			Checks: results,
+			Failed: anyFailed(results),
+			Bundle: buildReportBundle(context.Background(), plat, &deploy, root, info),
+		}
+		if err := writeReportFile(reportPath, doc); err != nil {
+			return fmt.Errorf("--report: %w", err)
+		}
+	}
+
 	if asJSON {
 		report := doctorReport{Meta: meta, Checks: results, Failed: anyFailed(results)}
 		data, err := json.Marshal(report)
@@ -387,7 +417,13 @@ func runDoctor(out io.Writer, asJSON bool, target string, postUpgrade bool, expe
 		}
 		return nil
 	}
-	return renderDoctor(out, results)
+	if err := renderDoctor(out, results); err != nil {
+		return err
+	}
+	if reportPath != "" {
+		fmt.Fprintf(out, "report written to %s\n", reportPath)
+	}
+	return nil
 }
 
 // tagDate parses the YYYY.MM.DD prefix of a base-image tag (an optional

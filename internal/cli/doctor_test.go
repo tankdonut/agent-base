@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/tankdonut/agent-base/internal/scaffold"
 )
 
 // The golden fixtures pin `agentctl doctor`'s text output byte-exactly:
@@ -22,6 +24,10 @@ ok    base image pinned: ghcr.io/tankdonut/agent-base:2026.09.05
 ok    agent/.env sets all 2 required vars
 warn  provider "zai-coding-global" — litellm sidecar not adopted; the blessed migration is a fresh-volume path (docs/standard-agent.md "Migrating an existing agent to LiteLLM")
 ok    platform "compose" manifest lints (project fixture-agent, 2 env keys set)
+warn  differs from the scaffolded shape — keep deliberate edits, but reconcile against a fresh init tree before an upgrade; a non-default gateway port belongs in .agentctl.yaml (compose.gateway_port)
+warn  differs from the scaffolded shape — keep deliberate edits, but reconcile against a fresh init tree before an upgrade; a non-default gateway port belongs in .agentctl.yaml (compose.gateway_port)
+warn  missing — restore it from a fresh ` + "`agentctl init --force`" + ` tree
+warn  missing — restore it from a fresh ` + "`agentctl init --force`" + ` tree
 warn  pinned image ghcr.io/tankdonut/agent-base:2026.09.05 not local — skipped the real-image spec gate (run ` + "`agentctl deploy`" + ` once or pull it)
 all checks passed
 `
@@ -33,6 +39,10 @@ ok    base image pinned: ghcr.io/tankdonut/agent-base:2026.09.12
 ok    agent/.env sets all 2 required vars
 ok    litellm sidecar shape present (tree, compose service, model-net)
 ok    platform "compose" manifest lints (project fixture-agent, 3 env keys set)
+warn  differs from the scaffolded shape — keep deliberate edits, but reconcile against a fresh init tree before an upgrade; a non-default gateway port belongs in .agentctl.yaml (compose.gateway_port)
+warn  differs from the scaffolded shape — keep deliberate edits, but reconcile against a fresh init tree before an upgrade; a non-default gateway port belongs in .agentctl.yaml (compose.gateway_port)
+warn  differs from the scaffolded shape — keep deliberate edits, but reconcile against a fresh init tree before an upgrade; a non-default gateway port belongs in .agentctl.yaml (compose.gateway_port)
+warn  missing — restore it from a fresh ` + "`agentctl init --force`" + ` tree
 ok    real-image spec gate passed via podman
 all checks passed
 `
@@ -45,6 +55,10 @@ ok    base image pinned: ghcr.io/tankdonut/agent-base:2026.09.05
 ok    agent/.env sets all 2 required vars
 warn  provider "zai-coding-global" — litellm sidecar not adopted; the blessed migration is a fresh-volume path (docs/standard-agent.md "Migrating an existing agent to LiteLLM")
 FAIL  platform "compose": no container engine found — install podman or docker
+warn  differs from the scaffolded shape — keep deliberate edits, but reconcile against a fresh init tree before an upgrade; a non-default gateway port belongs in .agentctl.yaml (compose.gateway_port)
+warn  differs from the scaffolded shape — keep deliberate edits, but reconcile against a fresh init tree before an upgrade; a non-default gateway port belongs in .agentctl.yaml (compose.gateway_port)
+warn  missing — restore it from a fresh ` + "`agentctl init --force`" + ` tree
+warn  missing — restore it from a fresh ` + "`agentctl init --force`" + ` tree
 warn  no compose engine — skipped the real-image spec gate
 `
 
@@ -112,6 +126,16 @@ func TestDoctorJSONGolden(t *testing.T) {
 	tagOK := CheckResult{Name: "base-tag", Status: StatusOK, Detail: "base image pinned: ghcr.io/tankdonut/agent-base:2026.09.05"}
 	secretsOK := CheckResult{Name: "secrets", Status: StatusOK, Detail: "agent/.env sets all 2 required vars"}
 	litellmWarn := CheckResult{Name: "litellm-tree", Status: StatusWarn, Detail: `provider "zai-coding-global" — litellm sidecar not adopted; the blessed migration is a fresh-volume path (docs/standard-agent.md "Migrating an existing agent to LiteLLM")`}
+	differs := "differs from the scaffolded shape — keep deliberate edits, but reconcile against a fresh init tree before an upgrade; a non-default gateway port belongs in .agentctl.yaml (compose.gateway_port)"
+	missing := "missing — restore it from a fresh `agentctl init --force` tree"
+	// The synthetic fixture is deliberately minimal: both value-bearing
+	// contract files drift and the litellm pair is absent.
+	fixtureDrift := []CheckResult{
+		{Name: "template/agent/.env.example", Status: StatusWarn, Detail: differs},
+		{Name: "template/compose.yml", Status: StatusWarn, Detail: differs},
+		{Name: "template/litellm/.env.example", Status: StatusWarn, Detail: missing},
+		{Name: "template/litellm/config.yaml", Status: StatusWarn, Detail: missing},
+	}
 	tests := []struct {
 		name    string
 		look    []string
@@ -121,20 +145,22 @@ func TestDoctorJSONGolden(t *testing.T) {
 		{
 			name: "contract project, image not local",
 			look: []string{"podman"},
-			want: doctorReport{Meta: meta, Checks: []CheckResult{
+			want: doctorReport{Meta: meta, Checks: append([]CheckResult{
 				specOK, tagOK, secretsOK, litellmWarn,
 				{Name: "platform", Status: StatusOK, Detail: `platform "compose" manifest lints (project fixture-agent, 2 env keys set)`},
-				{Name: "spec-gate", Status: StatusWarn, Detail: "pinned image ghcr.io/tankdonut/agent-base:2026.09.05 not local — skipped the real-image spec gate (run `agentctl deploy` once or pull it)"},
-			}},
+			}, append(append([]CheckResult{}, fixtureDrift...),
+				CheckResult{Name: "spec-gate", Status: StatusWarn, Detail: "pinned image ghcr.io/tankdonut/agent-base:2026.09.05 not local — skipped the real-image spec gate (run `agentctl deploy` once or pull it)"},
+			)...)},
 		},
 		{
 			name: "engineless host fails the platform construct",
 			look: nil,
-			want: doctorReport{Meta: meta, Checks: []CheckResult{
+			want: doctorReport{Meta: meta, Checks: append([]CheckResult{
 				specOK, tagOK, secretsOK, litellmWarn,
 				{Name: "platform", Status: StatusFail, Detail: `platform "compose": no container engine found — install podman or docker`},
-				{Name: "spec-gate", Status: StatusWarn, Detail: "no compose engine — skipped the real-image spec gate"},
-			}, Failed: true},
+			}, append(append([]CheckResult{}, fixtureDrift...),
+				CheckResult{Name: "spec-gate", Status: StatusWarn, Detail: "no compose engine — skipped the real-image spec gate"},
+			)...), Failed: true},
 			wantErr: "doctor found problems — fix the FAIL lines above",
 		},
 	}
@@ -159,6 +185,138 @@ func TestDoctorJSONGolden(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestDoctorTemplateDrift pins the drift check against a real
+// scaffold.Run tree: pristine output reports zero drift for both
+// telegram shapes, a single compose.yml edit flips exactly one check,
+// and recording a non-default gateway port in .agentctl.yaml changes
+// the render (the recovery seam) instead of reading as false drift.
+func TestDoctorTemplateDrift(t *testing.T) {
+	scaffoldProject := func(t *testing.T, telegram bool) string {
+		t.Helper()
+		root := t.TempDir()
+		name := filepath.Base(root)
+		cfg := scaffold.Config{
+			ProjectName: name,
+			AgentName:   scaffold.DefaultAgentName(name),
+			BaseTag:     scaffold.DefaultBaseTag,
+			Model:       scaffold.DefaultModel,
+			GatewayPort: scaffold.DefaultGatewayPort,
+			Telegram:    telegram,
+			TargetDir:   root,
+		}
+		if _, err := scaffold.Run(cfg); err != nil {
+			t.Fatal(err)
+		}
+		// doctor's secrets check needs the env files; the scaffold
+		// ships only .env.example (a litellm spec also requires
+		// litellm/.env — SecretsCheck fails without it).
+		if err := os.WriteFile(filepath.Join(root, "agent", ".env"), []byte("LITELLM_API_KEY=mk\nTELEGRAM_ALLOWED_USERS=u\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, "litellm", ".env"), []byte("LITELLM_MASTER_KEY=mk\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return root
+	}
+	drift := func(t *testing.T, root string) map[string]string {
+		t.Helper()
+		stubbedRunner(t, "podman")
+		out, err := execIn(t, root, "doctor", "--json")
+		if err != nil {
+			t.Fatalf("doctor --json: %v\n%s", err, out)
+		}
+		var report doctorReport
+		if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &report); err != nil {
+			t.Fatalf("parsing report: %v\n%s", err, out)
+		}
+		got := map[string]string{}
+		for _, c := range report.Checks {
+			if strings.HasPrefix(c.Name, "template/") {
+				got[c.Name] = string(c.Status)
+			}
+		}
+		return got
+	}
+
+	for _, telegram := range []bool{true, false} {
+		t.Run(map[bool]string{true: "pristine telegram", false: "pristine no-telegram"}[telegram], func(t *testing.T) {
+			got := drift(t, scaffoldProject(t, telegram))
+			if len(got) != 4 {
+				t.Fatalf("want 4 template checks, got %v", got)
+			}
+			for name, status := range got {
+				if status != "ok" {
+					t.Errorf("%s = %s on a pristine scaffold, want ok", name, status)
+				}
+			}
+		})
+	}
+
+	t.Run("one compose edit flips exactly one check", func(t *testing.T) {
+		root := scaffoldProject(t, true)
+		p := filepath.Join(root, "compose.yml")
+		data, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, append(data, []byte("# deliberate drift\n")...), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		got := drift(t, root)
+		if got["template/compose.yml"] != "warn" {
+			t.Errorf("template/compose.yml = %s, want warn", got["template/compose.yml"])
+		}
+		for _, name := range []string{"template/agent/.env.example", "template/litellm/.env.example", "template/litellm/config.yaml"} {
+			if got[name] != "ok" {
+				t.Errorf("%s = %s, want ok (only compose should flip)", name, got[name])
+			}
+		}
+	})
+
+	t.Run("recorded non-default port keeps the render pristine", func(t *testing.T) {
+		root := scaffoldProject(t, true)
+		// Re-scaffold with a non-default port AND record it in
+		// .agentctl.yaml: recovery must follow the config, not the
+		// scaffold default.
+		cfg := scaffold.Config{
+			ProjectName: filepath.Base(root),
+			AgentName:   scaffold.DefaultAgentName(filepath.Base(root)),
+			BaseTag:     scaffold.DefaultBaseTag,
+			Model:       scaffold.DefaultModel,
+			GatewayPort: 19001,
+			Telegram:    true,
+			TargetDir:   root,
+			Force:       true,
+		}
+		if _, err := scaffold.Run(cfg); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, ".agentctl.yaml"), []byte("compose:\n  gateway_port: 19001\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		got := drift(t, root)
+		for name, status := range got {
+			if status != "ok" {
+				t.Errorf("%s = %s with the port recorded in config, want ok", name, status)
+			}
+		}
+	})
+
+	t.Run("missing litellm tree reports missing", func(t *testing.T) {
+		root := scaffoldProject(t, true)
+		if err := os.Remove(filepath.Join(root, "litellm", "config.yaml")); err != nil {
+			t.Fatal(err)
+		}
+		got := drift(t, root)
+		if got["template/litellm/config.yaml"] != "warn" {
+			t.Errorf("template/litellm/config.yaml = %s, want warn", got["template/litellm/config.yaml"])
+		}
+		if got["template/compose.yml"] != "ok" {
+			t.Errorf("template/compose.yml = %s, want ok (untouched)", got["template/compose.yml"])
+		}
+	})
 }
 
 // TestDoctorTarget pins the --target era-crossings preview: crossings

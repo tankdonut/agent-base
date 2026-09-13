@@ -46,7 +46,9 @@ internal/    agentctl engine, layered by import direction:
              import adapters; doctor owns the era table in eras.go —
              the release-mined image-behavior history that powers
              --target upgrade previews — plus --post-upgrade instance
-             verification and the --target migration explainers),
+             verification, the --target migration explainers, the
+             scaffold template-drift advisory, and the --report
+             evidence bundle),
              scaffold (self-contained leaf owning its embedded tmpl/
              tree)
 scripts/     check-image-refs.sh only (release-time GHCR tag gate)

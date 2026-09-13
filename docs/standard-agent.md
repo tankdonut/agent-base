@@ -207,7 +207,12 @@ pinned image are local — the report runs the real-image spec gate
 `agentctl doctor --target <tag>` expands the warn into the full
 pre-upgrade preview: era crossings, volume readiness, and — on a warm
 non-litellm volume — the migration checklist above, one line per
-precondition.
+precondition. Doctor also advises when the contract-shaped files
+(compose.yml, the `.env.example` pair, `litellm/*`) drift from the
+scaffolded shape, and `agentctl doctor --report <path>` writes the
+full check document plus evidence (file fingerprints, instance
+markers, env key names — never secret values) for attaching to an
+issue.
 
 Running the same setup command in-place inside the running container is
 the escape hatch (`openclaw setup --non-interactive --auth-choice

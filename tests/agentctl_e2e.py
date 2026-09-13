@@ -24,6 +24,7 @@ available, docker otherwise. The base image is built once as
 ghcr.io/tankdonut/agent-base:e2e and reused across runs.
 """
 
+import json
 import os
 import random
 import shutil
@@ -290,9 +291,13 @@ def main() -> int:
         # Pin the project's compose engine to the harness engine: CI
         # runners preinstall podman, and agentctl's auto-detect would
         # build the stack there while these assertions drive E2E_ENGINE
-        # — the mixed-engine split makes every state check lie.
+        # — the mixed-engine split makes every state check lie. The
+        # random gateway port is recorded here too — the home the
+        # scaffolded file itself names for it — so doctor's
+        # template-drift render recovers the real port instead of the
+        # default.
         with (project / ".agentctl.yaml").open("a", encoding="utf-8") as f:
-            f.write(f"\ncompose:\n  engine: {ENGINE}\n")
+            f.write(f"\ncompose:\n  engine: {ENGINE}\n  gateway_port: {port}\n")
 
         agentctl_cmd("secrets", "init", check=True)
         client_key = read_env_value(project, "agent/.env", "LITELLM_API_KEY")
@@ -322,6 +327,32 @@ def main() -> int:
             pass_("doctor passes on a fresh scaffold")
         else:
             fail(f"doctor failed on the scaffolded project:\n{indent(proc.stdout + proc.stderr)}")
+
+        # Template drift must be zero on the pristine scaffold, and the
+        # --report bundle must carry env KEY names but never values.
+        report_path = project / "doctor-report.json"
+        proc = agentctl_cmd("doctor", "--report", str(report_path))
+        if proc.returncode != 0 or "report written to" not in proc.stdout:
+            fail(f"doctor --report failed:\n{indent(proc.stdout + proc.stderr)}")
+        pass_("doctor --report wrote the bundle")
+        bundle = json.loads(report_path.read_text(encoding="utf-8"))
+        drift = [c for c in bundle["checks"] if c["name"].startswith("template/")]
+        if len(drift) == 4 and all(c["status"] == "ok" for c in drift):
+            pass_("zero template drift on the fresh scaffold")
+        else:
+            fail(f"expected 4 ok template checks, got: {drift}")
+        values = []
+        for env_file in ("agent/.env", "litellm/.env"):
+            for line in (project / env_file).read_text(encoding="utf-8").splitlines():
+                if "=" in line:
+                    value = line.split("=", 1)[1].strip()
+                    if value:
+                        values.append(value)
+        body = report_path.read_text(encoding="utf-8")
+        leaked = [v for v in values if v in body]
+        if leaked:
+            fail(f"doctor --report leaked {len(leaked)} env value(s)")
+        pass_("doctor --report carries keys, never values")
 
         # The base image's real spec gate — 0 on the scaffold, 1 naming
         # the offending JSON path on a broken spec.

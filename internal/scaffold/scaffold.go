@@ -87,21 +87,9 @@ func checkTarget(dir string, force bool) error {
 // mode from the templates table. Every non-empty file ends with a
 // newline, keeping output deterministic.
 func renderFile(fsys fs.FS, target, rel string, data templateData) error {
-	src, err := fs.ReadFile(fsys, "tmpl/"+rel+".tmpl")
+	out, err := renderBytes(fsys, rel, data)
 	if err != nil {
 		return err
-	}
-	tmpl, err := template.New(rel).Parse(string(src))
-	if err != nil {
-		return fmt.Errorf("parse %s: %w", rel, err)
-	}
-	var buf bytes.Buffer
-	if err := tmpl.Execute(&buf, data); err != nil {
-		return fmt.Errorf("render %s: %w", rel, err)
-	}
-	out := buf.Bytes()
-	if len(out) > 0 && out[len(out)-1] != '\n' {
-		out = append(out, '\n')
 	}
 	dest := filepath.Join(target, filepath.FromSlash(rel))
 	// --force must never write through a symlink planted at a manifest
@@ -122,6 +110,30 @@ func renderFile(fsys fs.FS, target, rel string, data templateData) error {
 		return fmt.Errorf("chmod %s: %w", dest, err)
 	}
 	return nil
+}
+
+// renderBytes parses and executes tmpl/<rel>.tmpl with data, applying
+// the deterministic trailing-newline rule. Shared by Run and
+// RenderContractFile so drift checks byte-compare against exactly what
+// init writes.
+func renderBytes(fsys fs.FS, rel string, data any) ([]byte, error) {
+	src, err := fs.ReadFile(fsys, "tmpl/"+rel+".tmpl")
+	if err != nil {
+		return nil, err
+	}
+	tmpl, err := template.New(rel).Parse(string(src))
+	if err != nil {
+		return nil, fmt.Errorf("parse %s: %w", rel, err)
+	}
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, data); err != nil {
+		return nil, fmt.Errorf("render %s: %w", rel, err)
+	}
+	out := buf.Bytes()
+	if len(out) > 0 && out[len(out)-1] != '\n' {
+		out = append(out, '\n')
+	}
+	return out, nil
 }
 
 // gitInit runs `git init` inside dir.

@@ -130,3 +130,42 @@ func TestRequiredEnvVarsLitellm(t *testing.T) {
 		t.Errorf("RequiredEnvVars = %v, want %v", got, want)
 	}
 }
+
+// TestReadSpecAgentIdentity pins the drift-recovery surface: agent.name
+// and the telegram channel flag must round-trip (they feed the scaffold
+// re-render), including their absence.
+func TestReadSpecAgentIdentity(t *testing.T) {
+	spec := `{
+  "agent": {"name": "My Agent"},
+  "channels": [{"type": "telegram"}, {"type": "discord"}]
+}`
+	path := writeProject(t, map[string]string{"agent/spec.json": spec})
+	info, err := ReadSpec(path + "/agent/spec.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.AgentName != "My Agent" {
+		t.Errorf("AgentName = %q, want %q", info.AgentName, "My Agent")
+	}
+	if !info.HasTelegramChannel {
+		t.Error("HasTelegramChannel = false, want true")
+	}
+
+	bare := writeProject(t, map[string]string{"agent/spec.json": `{}`})
+	info, err = ReadSpec(bare + "/agent/spec.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.AgentName != "" || info.HasTelegramChannel {
+		t.Errorf("absent identity should read zero-value, got %+v", info)
+	}
+
+	noTelegram := writeProject(t, map[string]string{"agent/spec.json": `{"channels": [{"type": "discord"}]}`})
+	info, err = ReadSpec(noTelegram + "/agent/spec.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.HasTelegramChannel {
+		t.Error("HasTelegramChannel = true for a discord-only channel list")
+	}
+}
