@@ -70,6 +70,14 @@ The release job cross-compiles agentctl and **fails if either constant
 ≠ tag** — a skipped bump is caught in CI, not in the wild. Fix-forward is
 the next `.N` suffix, same as any release failure.
 
+**Boot-behavior changes need an era entry.** If the release changes
+observable boot behavior (config seeds, marker files, gated features,
+loader or breaking changes, one-time migrations), the same PR must also
+append a dated era entry to `internal/cli/eras.go`, the image-era table
+behind `agentctl doctor --target` upgrade previews. A rot-guard unit
+test in `internal/cli` fails CI whenever `DefaultBaseTag` moves past
+the newest era entry, so skipping the step blocks the release.
+
 ### 3. Tag and push (this triggers the release)
 
 ```sh
