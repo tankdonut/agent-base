@@ -26,16 +26,20 @@ import (
 func newDoctorCmd() *cobra.Command {
 	var asJSON bool
 	var target string
+	var postUpgrade bool
+	var expectTag string
 	cmd := &cobra.Command{
 		Use:   "doctor",
 		Short: "Check everything agentctl needs before an issue can be filed",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDoctor(cmd.OutOrStdout(), asJSON, target)
+			return runDoctor(cmd.OutOrStdout(), asJSON, target, postUpgrade, expectTag)
 		},
 	}
 	cmd.Flags().BoolVar(&asJSON, "json", false, "emit the report as JSON (machine-readable)")
 	cmd.Flags().StringVar(&target, "target", "", "preview an upgrade to this image tag (YYYY.MM.DD[.N]): era crossings + spec gate against the target")
+	cmd.Flags().BoolVar(&postUpgrade, "post-upgrade", false, "verify a completed upgrade against the running instance: image marker, this-boot backup, MCP + cron reconciliation, boot summary")
+	cmd.Flags().StringVar(&expectTag, "expect-tag", "", "image tag the upgraded instance should report (default: the Dockerfile pin)")
 	return cmd
 }
 
@@ -115,9 +119,18 @@ type doctorReport struct {
 	Failed bool          `json:"failed"`
 }
 
-func runDoctor(out io.Writer, asJSON bool, target string) error {
+func runDoctor(out io.Writer, asJSON bool, target string, postUpgrade bool, expectTag string) error {
 	if target != "" && tagDate(target).IsZero() {
 		return fmt.Errorf("--target %q is not a valid image tag (want YYYY.MM.DD[.N])", target)
+	}
+	if target != "" && postUpgrade {
+		return fmt.Errorf("--target previews an upgrade; --post-upgrade verifies one — pass one, not both")
+	}
+	if expectTag != "" && !postUpgrade {
+		return fmt.Errorf("--expect-tag applies only with --post-upgrade")
+	}
+	if expectTag != "" && tagDate(expectTag).IsZero() {
+		return fmt.Errorf("--expect-tag %q is not a valid image tag (want YYYY.MM.DD[.N])", expectTag)
 	}
 	root, err := chdirProject()
 	if err != nil {
@@ -213,6 +226,48 @@ func runDoctor(out io.Writer, asJSON bool, target string) error {
 		}
 	}
 
+	// --post-upgrade verifies a completed upgrade against the running
+	// instance (the runbook's step 5). It replaces the standard check
+	// set: a focused verdict, non-zero on any FAIL, with the rollback
+	// runbook named when it fails. An unreachable instance skips the
+	// verdict entirely — "could not verify" must never read as passed.
+	if postUpgrade {
+		expect := expectTag
+		if expect == "" {
+			if !tagOK {
+				return fmt.Errorf("--expect-tag required: the Dockerfile pin is unreadable, so there is no default expectation")
+			}
+			expect = tag
+		}
+		if plat == nil {
+			fmt.Fprintln(out, "warn  platform unresolved — fix the project/platform FAIL lines from a plain `agentctl doctor` run, then re-run")
+			return fmt.Errorf("post-upgrade verification skipped — platform unresolved")
+		}
+		if !plat.Capabilities().Exec {
+			fmt.Fprintf(out, "warn  platform %q has no exec capability — post-upgrade verification needs instance probes\n", cfg.Platform)
+			return fmt.Errorf("post-upgrade verification skipped — platform cannot probe the instance")
+		}
+		pu := runPostUpgradeChecks(context.Background(), plat, newRunner(), root, &deploy, expect, info)
+		if asJSON {
+			report := doctorReport{Meta: meta, Checks: pu.results, Failed: anyFailed(pu.results)}
+			data, err := json.Marshal(report)
+			if err != nil {
+				return fmt.Errorf("marshal doctor report: %w", err)
+			}
+			fmt.Fprintln(out, string(data))
+			return postUpgradeExit(pu)
+		}
+		if !pu.reached {
+			fmt.Fprintf(out, "warn  %s\n", pu.results[0].Detail)
+			return fmt.Errorf("post-upgrade verification skipped — instance not reachable")
+		}
+		if err := renderDoctor(out, pu.results); err != nil {
+			fmt.Fprintln(out, postUpgradeRollback)
+			return fmt.Errorf("post-upgrade verification failed — run the rollback runbook above if the agent is misbehaving")
+		}
+		return nil
+	}
+
 	// --target previews an upgrade: which era boundaries a boot on the
 	// target tag crosses, each with its remedy. Downgrades are named as
 	// such — their crossings are not modeled; rollback is restore-from-
@@ -258,6 +313,7 @@ func runDoctor(out io.Writer, asJSON bool, target string) error {
 						add("backups-space", StatusOK, "/backups: %s", line)
 					}
 				}
+				addTargetInstanceExplainers(add, plat, newRunner(), root, &deploy, info, specOK, strings.TrimSpace(marker) != "")
 			}
 		}
 	}

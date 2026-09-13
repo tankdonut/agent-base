@@ -7,9 +7,10 @@ Builds the agentctl binary and a local agent-base:e2e image, scaffolds a
 throwaway project (implausible base tag 2000.01.01, telegram off, random
 gateway port),
 then walks the front door: doctor → validate (real-image spec gate,
-positive + fail-closed halves) → deploy → health → status/logs →
-idempotent redeploy → stop/start → destroy (volume kept, then gone) →
-dev overlay. Any failure keeps the full command log under logs/.
+positive + fail-closed halves) → deploy → health → post-upgrade verify →
+status/logs → idempotent redeploy → stop/start → destroy (volume kept,
+then gone) → dev overlay. Any failure keeps the full command log under
+logs/.
 
 The scaffolded stack includes the LiteLLM sidecar (the scaffold default):
 the litellm assertions cover the real proxy container — healthcheck
@@ -255,7 +256,7 @@ def main() -> int:
                     "build",
                     *fmt,
                     "--build-arg",
-                    "AGENT_BASE_VERSION=e2e",
+                    "AGENT_BASE_VERSION=2000.01.01",
                     "-f",
                     "container/Dockerfile",
                     "-t",
@@ -385,6 +386,31 @@ def main() -> int:
                 pass_("proxy /v1/models reachable from the agent and 401s without auth")
             else:
                 fail("proxy probe failed (reachability or the 401 contract)")
+
+        # The upgrade runbook's verify step, commanded. post-startup
+        # writes status.json at the end of its child (cron seeding
+        # happens before that write in the same child), so polling for
+        # the file also gates the cron assertions. The image bakes
+        # AGENT_BASE_VERSION=2000.01.01 — equal to the project's pin —
+        # so the default expectation (the Dockerfile pin) applies.
+        print("[e2e] doctor --post-upgrade")
+        deadline = time.monotonic() + 300
+        while time.monotonic() < deadline:
+            name = agent_container_name()
+            if (
+                name
+                and engine(["exec", name, "cat", "/home/node/.openclaw/status.json"]).returncode
+                == 0
+            ):
+                break
+            time.sleep(3)
+        else:
+            fail("status.json never appeared — post-startup did not complete")
+        proc = agentctl_cmd("doctor", "--post-upgrade")
+        if proc.returncode == 0 and "all checks passed" in proc.stdout:
+            pass_("doctor --post-upgrade green (marker, backup, mcp, cron, status, heal)")
+        else:
+            fail(f"doctor --post-upgrade failed:\n{indent(proc.stdout + proc.stderr)}")
 
         proc = agentctl_cmd("deploy")
         if proc.returncode == 0:

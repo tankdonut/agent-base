@@ -12,14 +12,25 @@ import (
 // envRefRe matches {env:NAME} tokens inside spec string values.
 var envRefRe = regexp.MustCompile(`\{env:([A-Za-z_][A-Za-z0-9_]*)\}`)
 
+// SpecMcpServer is one mcp_servers entry's host-side surface: the
+// server name and its if_env guards. Guards that are unset at boot
+// skip registration (the image's reconciliation contract), so
+// registration checks must expect exactly the env-active servers.
+type SpecMcpServer struct {
+	Name  string
+	IfEnv []string
+}
+
 // SpecInfo summarizes the parts of agent/spec.json that drive env-var
 // requirements: every {env:NAME} reference in any string value, the
 // names appearing in any if_env array (optional by contract — guarded
-// entries are skipped when the var is unset), and setup.auth_choice.
+// entries are skipped when the var is unset), setup.auth_choice, and
+// the mcp_servers entries in spec order.
 type SpecInfo struct {
 	EnvRefs    []string // sorted, unique
 	IfEnvNames []string // sorted, unique
 	AuthChoice string
+	McpServers []SpecMcpServer
 }
 
 // ReadSpec parses the spec at path and extracts its env surface.
@@ -42,6 +53,27 @@ func ReadSpec(path string) (SpecInfo, error) {
 		if setup, ok := m["setup"].(map[string]any); ok {
 			if ac, ok := setup["auth_choice"].(string); ok {
 				info.AuthChoice = ac
+			}
+		}
+		if servers, ok := m["mcp_servers"].([]any); ok {
+			for _, raw := range servers {
+				entry, ok := raw.(map[string]any)
+				if !ok {
+					continue
+				}
+				name, ok := entry["name"].(string)
+				if !ok || name == "" {
+					continue
+				}
+				server := SpecMcpServer{Name: name}
+				if guards, ok := entry["if_env"].([]any); ok {
+					for _, g := range guards {
+						if gs, ok := g.(string); ok && gs != "" {
+							server.IfEnv = append(server.IfEnv, gs)
+						}
+					}
+				}
+				info.McpServers = append(info.McpServers, server)
 			}
 		}
 	}

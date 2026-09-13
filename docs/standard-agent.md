@@ -204,6 +204,10 @@ pointer), litellm specs fail closed on a missing tree or a compose file
 without the sidecar + `model-net`, and — when a compose engine and the
 pinned image are local — the report runs the real-image spec gate
 (the same `--validate-spec` pass `agentctl validate` performs).
+`agentctl doctor --target <tag>` expands the warn into the full
+pre-upgrade preview: era crossings, volume readiness, and — on a warm
+non-litellm volume — the migration checklist above, one line per
+precondition.
 
 Running the same setup command in-place inside the running container is
 the escape hatch (`openclaw setup --non-interactive --auth-choice
@@ -254,8 +258,11 @@ it safe in two ways:
 4. Expect one log line: `Image changed (<old> → <new>) — creating
    verified backup`, then the normal boot sequence. A de-specified MCP
    server logs `Removed MCP server '<name>' (no longer in spec)`.
-5. Verify: gateway healthy, `openclaw mcp list --json` shows exactly the
-   spec'd servers, `openclaw cron list --json` shows the seeded jobs.
+5. Verify: `agentctl doctor --post-upgrade` (image marker, this-boot
+   backup, MCP + cron reconciliation, boot summary — exits non-zero on
+   any FAIL and prints the rollback runbook), or by hand: gateway
+   healthy, `openclaw mcp list --json` shows exactly the spec'd
+   servers, `openclaw cron list --json` shows the seeded jobs.
 6. Rollback if anything is wrong: `down`, restore the backup archive per
    `openclaw backup` docs, revert the tag, `up`. The version marker
    rides the volume, so a rollback re-runs its own backup first.

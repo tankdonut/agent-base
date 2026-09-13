@@ -26,6 +26,30 @@ func TestReadSpec(t *testing.T) {
 	}
 }
 
+func TestReadSpecMcpServers(t *testing.T) {
+	spec := `{
+  "mcp_servers": [
+    {"name": "filesystem", "command": "fs-mcp"},
+    {"name": "sentiment", "url": "https://mcp.example.com", "if_env": ["SENTIMENT_API_KEY"]},
+    {"command": "nameless"},
+    {"name": ""},
+    "not-an-object"
+  ]
+}`
+	path := writeProject(t, map[string]string{"agent/spec.json": spec})
+	info, err := ReadSpec(path + "/agent/spec.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []SpecMcpServer{
+		{Name: "filesystem"},
+		{Name: "sentiment", IfEnv: []string{"SENTIMENT_API_KEY"}},
+	}
+	if !reflect.DeepEqual(info.McpServers, want) {
+		t.Errorf("McpServers = %+v, want %+v", info.McpServers, want)
+	}
+}
+
 func TestReadSpecNoZAIAuth(t *testing.T) {
 	spec := `{"setup": {"auth_choice": "anthropic"}, "config": []}`
 	path := writeProject(t, map[string]string{"agent/spec.json": spec})

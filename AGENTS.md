@@ -43,8 +43,12 @@ internal/    agentctl engine, layered by import direction:
              platform/fly — fly ships its own embedded fly.toml.tmpl and
              scaffolds deploy/fly.toml), cli (cobra composition root
              incl. the platform registry — the only package allowed to
-             import adapters), scaffold (self-contained leaf owning its
-             embedded tmpl/ tree)
+             import adapters; doctor owns the era table in eras.go —
+             the release-mined image-behavior history that powers
+             --target upgrade previews — plus --post-upgrade instance
+             verification and the --target migration explainers),
+             scaffold (self-contained leaf owning its embedded tmpl/
+             tree)
 scripts/     check-image-refs.sh only (release-time GHCR tag gate)
 examples/    Image-contract examples: spec.example.json (golden), env.example,
              compose snippets (prod template incl. the LiteLLM sidecar),
