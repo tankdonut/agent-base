@@ -128,6 +128,17 @@ func Mcp(r process.Runner, engine string, args []string) error {
 	return process.RunArgv(r, nil, composeArgv(engine, false, verb...)...)
 }
 
+// Backup drives the image's verified backup primitive inside the
+// running agent container; the archive lands in the agent-backups
+// volume (the /backups mount).
+func Backup(r process.Runner, engine string) error {
+	if r == nil {
+		return process.ErrNilRunner
+	}
+	return process.RunArgv(r, nil, composeArgv(engine, false,
+		"exec", "agent", "openclaw", "backup", "create", "--verify", "--output", "/backups")...)
+}
+
 // BuildImages builds the project image(s).
 func BuildImages(r process.Runner, engine string) error {
 	if r == nil {

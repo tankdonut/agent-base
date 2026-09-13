@@ -96,4 +96,12 @@ type Platform interface {
 	// persistent volumes — data safety beats availability; nuking the
 	// warm volume is the caller's explicit choice.
 	Destroy(ctx context.Context, r process.Runner, root string, d *Deployment, destroyData bool, out Output) error
+
+	// Backup drives the image's verified backup primitive
+	// (`openclaw backup create --verify --output /backups`) inside the
+	// running instance — the same command the entrypoint runs before an
+	// image-version migration. The archive lands on the platform's
+	// /backups mount (the agent-backups named volume on compose).
+	// Gated by Capabilities.Exec: no exec, no backup.
+	Backup(ctx context.Context, r process.Runner, root string, d *Deployment, out Output) error
 }

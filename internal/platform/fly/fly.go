@@ -230,6 +230,22 @@ func (a *Adapter) Mcp(ctx context.Context, r process.Runner, root string, d *pla
 	return process.RunArgv(r, nil, "fly", "ssh", "console", "-a", app, "-C", command)
 }
 
+// Backup runs the image's verified backup primitive in the running
+// machine via fly ssh console; the archive lands on the /backups
+// mount.
+func (a *Adapter) Backup(ctx context.Context, r process.Runner, root string, d *platform.Deployment, out platform.Output) error {
+	app, err := a.app(root)
+	if err != nil {
+		return err
+	}
+	if err := process.RunArgv(r, nil, "fly", "ssh", "console", "-a", app,
+		"-C", "openclaw backup create --verify --output /backups"); err != nil {
+		return err
+	}
+	out.Printf("backup of %s verified (fly app: %s) — archive in the /backups volume; `fly apps destroy` deletes it\n", d.Project, app)
+	return nil
+}
+
 // machineID resolves the app's single machine via fly machine list.
 func (a *Adapter) machineID(r process.Runner, app string) (string, error) {
 	if r == nil {

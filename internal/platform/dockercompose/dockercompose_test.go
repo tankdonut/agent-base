@@ -268,6 +268,18 @@ func TestVerbArgv(t *testing.T) {
 		t.Errorf("mcp argv = %v", last)
 	}
 
+	out := &recorder{}
+	if err := p.Backup(ctx, r, root, &d, out); err != nil {
+		t.Fatal(err)
+	}
+	last = r.calls[len(r.calls)-1]
+	if strings.Join(last, " ") != "podman compose -f compose.yml exec agent openclaw backup create --verify --output /backups" {
+		t.Errorf("backup argv = %v", last)
+	}
+	if !strings.Contains(out.String(), "agent-backups") {
+		t.Errorf("backup output lacks the archive location: %q", out.String())
+	}
+
 	if err := p.Stop(ctx, r, root, &d, &recorder{}); err != nil {
 		t.Fatal(err)
 	}

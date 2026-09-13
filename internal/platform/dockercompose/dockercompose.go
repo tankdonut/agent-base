@@ -157,6 +157,16 @@ func (a *Adapter) Mcp(ctx context.Context, r process.Runner, root string, d *pla
 	return compose.Mcp(r, a.engine, args)
 }
 
+// Backup runs the image's verified backup primitive in the running
+// agent container; the archive lands in the agent-backups volume.
+func (a *Adapter) Backup(ctx context.Context, r process.Runner, root string, d *platform.Deployment, out platform.Output) error {
+	if err := compose.Backup(r, a.engine); err != nil {
+		return err
+	}
+	out.Printf("backup of %s verified — archive in the agent-backups volume (/backups); `agentctl destroy --volumes` would delete it\n", d.Project)
+	return nil
+}
+
 // Stop pauses the stack in place.
 func (a *Adapter) Stop(ctx context.Context, r process.Runner, root string, d *platform.Deployment, out platform.Output) error {
 	if err := compose.Stop(r, a.engine); err != nil {

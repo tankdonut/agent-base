@@ -262,6 +262,17 @@ func TestVerbs(t *testing.T) {
 	assertCalls(t, r.calls[len(r.calls)-1:], [][]string{
 		{"fly", "ssh", "console", "-a", "my-agent", "-C", "openclaw mcp login docs --code abc"},
 	})
+
+	out := &recorder{}
+	if err := p.Backup(ctx, r, root, &d, out); err != nil {
+		t.Fatal(err)
+	}
+	assertCalls(t, r.calls[len(r.calls)-1:], [][]string{
+		{"fly", "ssh", "console", "-a", "my-agent", "-C", "openclaw backup create --verify --output /backups"},
+	})
+	if !strings.Contains(out.String(), "/backups") {
+		t.Errorf("backup output lacks the archive location: %q", out.String())
+	}
 }
 
 func TestStopStartDestroyViaMachineList(t *testing.T) {
