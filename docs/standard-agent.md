@@ -254,6 +254,15 @@ it safe in two ways:
 
 ### Upgrade runbook
 
+`agentctl upgrade <tag>` runs the whole sequence below as one verb —
+the `doctor --target` gate (fail-closed: era crossings, backup
+readiness, the target-image spec gate), a verified backup inside the
+running instance, the Dockerfile FROM rewrite, a forced deploy onto the
+new image, and the `doctor --post-upgrade` verify set (step 5). It
+asks for confirmation on interactive runs (`--yes` skips; `--dry-run`
+prints the plan), prints the rollback runbook (step 6) on any failure
+exit, and never auto-rolls-back. By hand:
+
 1. `docker/podman compose down` (stop the agent; a live SQLite volume
    must not be raw-copied).
 2. Optional but recommended: copy the newest `/backups/` archive to host

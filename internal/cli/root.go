@@ -45,6 +45,7 @@ Exit codes: 0 success, 1 any error — usage and flag errors included.`,
 		newDevCmd(),
 	)
 	root.AddCommand(newReleaseCmds()...)
+	root.AddCommand(newUpgradeCmd())
 	root.AddCommand(newMiscCmds()...)
 	return root
 }

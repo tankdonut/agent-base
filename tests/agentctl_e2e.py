@@ -4,11 +4,12 @@ scaffolded artifacts + deploy argv + a real engine + the real image,
 together.
 
 Builds the agentctl binary and a local agent-base:e2e image, scaffolds a
-throwaway project (implausible base tag 2000.01.01, telegram off, random
+throwaway project (implausible base tag 2099.12.31, telegram off, random
 gateway port),
-then walks the front door: doctor → validate (real-image spec gate,
+then walks the front door: doctor (drift + report) → validate (real-image spec gate,
 positive + fail-closed halves) → deploy → health → post-upgrade verify →
-status/logs → idempotent redeploy → stop/start → destroy (volume kept,
+the upgrade cycle (gate → backup → rewrite → deploy → verify against a
+second bake) → status/logs → idempotent redeploy → stop/start → destroy (volume kept,
 then gone) → dev overlay. Any failure keeps the full command log under
 logs/.
 
@@ -38,7 +39,12 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 LOGDIR = REPO_ROOT / "logs"
-BASE_IMAGE = "ghcr.io/tankdonut/agent-base:2000.01.01"
+BASE_IMAGE = "ghcr.io/tankdonut/agent-base:2099.12.31"
+# The upgrade target: a second bake of the same context. The running
+# image reports its BAKED AGENT_BASE_VERSION, not the registry tag, so
+# the dual-tag cycle needs two bakes (cached layers make the second
+# cheap) rather than two tags of one image.
+UPGRADE_IMAGE = "ghcr.io/tankdonut/agent-base:2099.12.31.1"
 ENGINE = os.environ.get("E2E_ENGINE") or (shutil.which("podman") and "podman") or "docker"
 HEALTH_TIMEOUT = int(os.environ.get("E2E_HEALTH_TIMEOUT", "360"))
 # The scaffold's pinned proxy image; pre-pulled so deploy-time network
@@ -257,7 +263,7 @@ def main() -> int:
                     "build",
                     *fmt,
                     "--build-arg",
-                    "AGENT_BASE_VERSION=2000.01.01",
+                    "AGENT_BASE_VERSION=2099.12.31",
                     "-f",
                     "container/Dockerfile",
                     "-t",
@@ -279,7 +285,7 @@ def main() -> int:
                 "init",
                 str(project),
                 "--base-tag",
-                "2000.01.01",
+                "2099.12.31",
                 "--gateway-port",
                 str(port),
                 "--telegram=false",
@@ -422,7 +428,7 @@ def main() -> int:
         # writes status.json at the end of its child (cron seeding
         # happens before that write in the same child), so polling for
         # the file also gates the cron assertions. The image bakes
-        # AGENT_BASE_VERSION=2000.01.01 — equal to the project's pin —
+        # AGENT_BASE_VERSION=2099.12.31 — equal to the project's pin —
         # so the default expectation (the Dockerfile pin) applies.
         print("[e2e] doctor --post-upgrade")
         deadline = time.monotonic() + 300
@@ -442,6 +448,49 @@ def main() -> int:
             pass_("doctor --post-upgrade green (marker, backup, mcp, cron, status, heal)")
         else:
             fail(f"doctor --post-upgrade failed:\n{indent(proc.stdout + proc.stderr)}")
+
+        # The upgrade runbook as a verb, against a real warm volume:
+        # the doctor --target gate passes (future-dated tags cross zero
+        # eras), the image-side backup-before-mutation fires on the
+        # version delta, and the pin ends up on the new bake.
+        print("[e2e] upgrade")
+        if engine(["image", "inspect", UPGRADE_IMAGE]).returncode != 0:
+            fmt = ["--format", "docker"] if ENGINE == "podman" else []
+            engine(
+                [
+                    "build",
+                    *fmt,
+                    "--build-arg",
+                    "AGENT_BASE_VERSION=2099.12.31.1",
+                    "-f",
+                    "container/Dockerfile",
+                    "-t",
+                    UPGRADE_IMAGE,
+                    REPO_ROOT,
+                ],
+                check=True,
+            )
+        proc = agentctl_cmd("upgrade", "2099.12.31.1", "--yes")
+        if proc.returncode == 0 and "post-upgrade verification green" in proc.stdout:
+            pass_("upgrade 2099.12.31 → 2099.12.31.1 (gate, backup, rewrite, deploy, verify)")
+        else:
+            fail(f"upgrade failed:\n{indent(proc.stdout + proc.stderr)}")
+        from_lines = [
+            line
+            for line in (project / "agent" / "Dockerfile").read_text(encoding="utf-8").splitlines()
+            if line.startswith("FROM ")
+        ]
+        if from_lines and from_lines[0].endswith(":2099.12.31.1"):
+            pass_("Dockerfile FROM rewritten to the upgrade target")
+        else:
+            fail(f"FROM line not rewritten: {from_lines}")
+        marker = engine(
+            ["exec", agent_container_name(), "cat", "/home/node/.openclaw/last-image-version"]
+        )
+        if marker.stdout.strip() == "2099.12.31.1":
+            pass_("running instance marker reports the new image")
+        else:
+            fail(f"last-image-version = {marker.stdout.strip()!r}, want 2099.12.31.1")
 
         proc = agentctl_cmd("deploy")
         if proc.returncode == 0:

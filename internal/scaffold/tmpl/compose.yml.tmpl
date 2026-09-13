@@ -28,9 +28,15 @@ services:
     stop_grace_period: 11m
     # Hardening baseline: no privilege escalation, no Linux
     # capabilities, and a read-only root filesystem (writable paths are
-    # the named volumes plus tmpfs /tmp).
+    # the named volumes plus tmpfs /tmp). Label confinement is disabled
+    # deliberately: rootless podman assigns each `up` a fresh MCS
+    # category pair, so files written by a previous container
+    # generation (a warm volume across an upgrade) hit PermissionError
+    # under label enforcement — same rationale as
+    # agent-base examples/compose.agent.yml.
     security_opt:
       - no-new-privileges:true
+      - label=disable
     cap_drop: [ALL]
     read_only: true
     tmpfs:
@@ -87,9 +93,6 @@ services:
       options:
         max-size: "10m"
         max-file: "5"
-    # Rootless podman: if SELinux MCS denials hit the named volumes, add
-    # `label=disable` under security_opt (rationale in agent-base
-    # templates/compose.agent.yml).
 
   # Model/provider home: EVERY provider API key lives only in
   # litellm/.env (env_file below) — the agent container never sees them
@@ -121,8 +124,12 @@ services:
       timeout: 10s
       retries: 3
       start_period: 60s
+    # Label confinement disabled for the same reason as the agent
+    # service: this bind mount must stay readable across container
+    # generations (fresh MCS category per up).
     security_opt:
       - no-new-privileges:true
+      - label=disable
     cap_drop: [ALL]
     deploy:
       resources:

@@ -128,9 +128,16 @@ func stubbedRunner(t *testing.T, look ...string) *stubRunner {
 
 func execIn(t *testing.T, dir string, args ...string) (string, error) {
 	t.Helper()
+	return execInStdin(t, dir, "", args...)
+}
+
+// execInStdin is execIn with scripted stdin (interactive prompts).
+func execInStdin(t *testing.T, dir, stdin string, args ...string) (string, error) {
+	t.Helper()
 	restore := chdir(t, dir)
 	defer restore()
 	root := NewRootCommand()
+	root.SetIn(strings.NewReader(stdin))
 	var out, errOut bytes.Buffer
 	root.SetOut(&out)
 	root.SetErr(&errOut)

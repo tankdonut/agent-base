@@ -21,13 +21,14 @@ func postProbeKey(command string) string {
 // post-upgrade instance running the fixture's pinned 2026.09.05: fresh
 // this-boot backup, empty MCP surface, seeded cron job, clean status
 // summary, no pending heal retries.
-func greenPostUpgradeOutputs() map[string]string {
+func greenPostUpgradeOutputs(marker string) map[string]string {
 	return map[string]string{
-		postProbeKey(probeMarker):   "2026.09.05\n",
+		postProbeKey(probeMarker):   marker + "\n",
 		postProbeKey(probeBackups):  "now=1757700000 uptime=3600\n-rw-r--r-- 1 node node 1024 1757699000 openclaw-backup-x.tar.gz\n",
 		postProbeKey(probeMcpList):  `{"servers":[]}`,
 		postProbeKey(probeCronList): `{"jobs":[{"name":"jobs"}]}`,
-		postProbeKey(probeStatus):   `{"imageVersion":"2026.09.05","warnings":0,"bootCompletedAt":"2026-09-13T10:00:00+00:00"}`,
+		postProbeKey(probeStatus):   `{"imageVersion":"` + marker + `","warnings":0,"bootCompletedAt":"2026-09-13T10:00:00+00:00"}`,
+		postProbeKey(probeHealthz):  "",
 	}
 }
 
@@ -180,7 +181,7 @@ func TestDoctorPostUpgrade(t *testing.T) {
 	t.Run("green verify names every check", func(t *testing.T) {
 		root := fixtureProject(t)
 		r := stubbedRunner(t, "podman")
-		r.runOutputs = greenPostUpgradeOutputs()
+		r.runOutputs = greenPostUpgradeOutputs("2026.09.05")
 		out, err := execIn(t, root, "doctor", "--post-upgrade")
 		if err != nil {
 			t.Fatalf("doctor --post-upgrade errored: %v\n%s", err, out)
@@ -206,7 +207,7 @@ func TestDoctorPostUpgrade(t *testing.T) {
 	t.Run("marker mismatch fails and names the runbook", func(t *testing.T) {
 		root := fixtureProject(t)
 		r := stubbedRunner(t, "podman")
-		r.runOutputs = greenPostUpgradeOutputs()
+		r.runOutputs = greenPostUpgradeOutputs("2026.09.05")
 		r.runOutputs[postProbeKey(probeMarker)] = "2026.09.01\n"
 		out, err := execIn(t, root, "doctor", "--post-upgrade")
 		if err == nil {
@@ -226,7 +227,7 @@ func TestDoctorPostUpgrade(t *testing.T) {
 	t.Run("expect-tag overrides the default expectation", func(t *testing.T) {
 		root := fixtureProject(t)
 		r := stubbedRunner(t, "podman")
-		r.runOutputs = greenPostUpgradeOutputs()
+		r.runOutputs = greenPostUpgradeOutputs("2026.09.05")
 		r.runOutputs[postProbeKey(probeMarker)] = "2026.09.12\n"
 		out, err := execIn(t, root, "doctor", "--post-upgrade", "--expect-tag", "2026.09.12")
 		if err != nil {
@@ -241,7 +242,7 @@ func TestDoctorPostUpgrade(t *testing.T) {
 		root := fixtureProject(t)
 		writeSpecWithMcp(t, root)
 		r := stubbedRunner(t, "podman")
-		r.runOutputs = greenPostUpgradeOutputs()
+		r.runOutputs = greenPostUpgradeOutputs("2026.09.05")
 		r.runOutputs[postProbeKey(probeMcpList)] = `{"servers":[]}`
 		out, err := execIn(t, root, "doctor", "--post-upgrade")
 		if err == nil {
@@ -260,7 +261,7 @@ func TestDoctorPostUpgrade(t *testing.T) {
 	t.Run("unseeded cron job fails naming the fix", func(t *testing.T) {
 		root := fixtureProject(t)
 		r := stubbedRunner(t, "podman")
-		r.runOutputs = greenPostUpgradeOutputs()
+		r.runOutputs = greenPostUpgradeOutputs("2026.09.05")
 		r.runOutputs[postProbeKey(probeCronList)] = `{"jobs":[]}`
 		out, err := execIn(t, root, "doctor", "--post-upgrade")
 		if err == nil {
@@ -274,7 +275,7 @@ func TestDoctorPostUpgrade(t *testing.T) {
 	t.Run("pending heal retries warn", func(t *testing.T) {
 		root := fixtureProject(t)
 		r := stubbedRunner(t, "podman")
-		r.runOutputs = greenPostUpgradeOutputs()
+		r.runOutputs = greenPostUpgradeOutputs("2026.09.05")
 		r.runOutputs[postProbeKey(probeHealMarker)] = ""
 		out, err := execIn(t, root, "doctor", "--post-upgrade")
 		if err != nil {
@@ -303,7 +304,7 @@ func TestDoctorPostUpgrade(t *testing.T) {
 	t.Run("json renders the same checks", func(t *testing.T) {
 		root := fixtureProject(t)
 		r := stubbedRunner(t, "podman")
-		r.runOutputs = greenPostUpgradeOutputs()
+		r.runOutputs = greenPostUpgradeOutputs("2026.09.05")
 		out, err := execIn(t, root, "doctor", "--post-upgrade", "--json")
 		if err != nil {
 			t.Fatalf("json post-upgrade errored: %v\n%s", err, out)

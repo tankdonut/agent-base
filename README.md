@@ -39,6 +39,8 @@ Operator CLI for downstream agent projects (`go run ./cmd/agentctl`):
 - `deploy · status · logs · backup · stop · start · destroy` — release
   verbs over the platform port (compose is the reference; fly adapter
   ships too)
+- `upgrade <tag>` — the upgrade runbook as one verb: gate, backup,
+  retag, deploy, verify
 - `platform ls · set · check` — deployment platform management
 - `doctor` — pre-flight report (litellm shape + real-image spec gate)
 - `secrets init · check · edit` — secrets management
