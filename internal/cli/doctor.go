@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -21,53 +22,133 @@ import (
 // providers), and the real-image spec gate — every check fail-closed
 // with the fix named. Host-side twin of the image's doctor skills.
 func newDoctorCmd() *cobra.Command {
-	return &cobra.Command{
+	var asJSON bool
+	cmd := &cobra.Command{
 		Use:   "doctor",
 		Short: "Check everything agentctl needs before an issue can be filed",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDoctor(cmd.OutOrStdout())
+			return runDoctor(cmd.OutOrStdout(), asJSON)
 		},
 	}
+	cmd.Flags().BoolVar(&asJSON, "json", false, "emit the report as JSON (machine-readable)")
+	return cmd
 }
 
-func runDoctor(out io.Writer) error {
+// CheckStatus is a doctor check verdict. Text doctor prints ok, FAIL,
+// and warn lines; skip is reserved for checks that could not run at
+// all and renders nothing today.
+type CheckStatus string
+
+const (
+	StatusOK   CheckStatus = "ok"
+	StatusWarn CheckStatus = "warn"
+	StatusFail CheckStatus = "fail"
+	StatusSkip CheckStatus = "skip"
+)
+
+// CheckResult is one doctor check. Detail is the exact report line —
+// remedy included, em-dash separated, as doctor has always printed it.
+// Fix is a separate remediation field for machine consumers, populated
+// when checks grow structured fixes (--target crossings onward); the
+// text renderer never reads it.
+type CheckResult struct {
+	Name   string      `json:"name"`
+	Status CheckStatus `json:"status"`
+	Detail string      `json:"detail"`
+	Fix    string      `json:"fix"`
+}
+
+// anyFailed reports whether any result is a FAIL.
+func anyFailed(results []CheckResult) bool {
+	for _, r := range results {
+		if r.Status == StatusFail {
+			return true
+		}
+	}
+	return false
+}
+
+// renderDoctor prints the check lines in collected order and the
+// verdict — byte-identical to doctor's pre-model output. Skip results
+// render nothing.
+func renderDoctor(out io.Writer, results []CheckResult) error {
+	for _, r := range results {
+		switch r.Status {
+		case StatusFail:
+			fmt.Fprintf(out, "FAIL  %s\n", r.Detail)
+		case StatusWarn:
+			fmt.Fprintf(out, "warn  %s\n", r.Detail)
+		case StatusSkip:
+			// reserved: no skip line renders today
+		default:
+			fmt.Fprintf(out, "ok    %s\n", r.Detail)
+		}
+	}
+	if anyFailed(results) {
+		return fmt.Errorf("doctor found problems — fix the FAIL lines above")
+	}
+	fmt.Fprintln(out, "all checks passed")
+	return nil
+}
+
+// doctorMeta carries the project identity the report ran against —
+// present only for what resolved before the checks ran.
+type doctorMeta struct {
+	Tag      string `json:"tag,omitempty"`
+	Platform string `json:"platform,omitempty"`
+	Project  string `json:"project,omitempty"`
+}
+
+// doctorReport is the --json rendering of a doctor run: identity,
+// every check, and the verdict. Exit semantics match text doctor — a
+// FAIL verdict still exits non-zero with the same error.
+type doctorReport struct {
+	Meta   doctorMeta    `json:"meta"`
+	Checks []CheckResult `json:"checks"`
+	Failed bool          `json:"failed"`
+}
+
+func runDoctor(out io.Writer, asJSON bool) error {
 	root, err := chdirProject()
 	if err != nil {
 		return err
 	}
-	ok := func(format string, a ...any) { fmt.Fprintf(out, "ok    "+format+"\n", a...) }
-	fail := func(format string, a ...any) { fmt.Fprintf(out, "FAIL  "+format+"\n", a...) }
-	warn := func(format string, a ...any) { fmt.Fprintf(out, "warn  "+format+"\n", a...) }
-	failed := false
+	var results []CheckResult
+	add := func(name string, status CheckStatus, format string, a ...any) {
+		results = append(results, CheckResult{
+			Name:   name,
+			Status: status,
+			Detail: fmt.Sprintf(format, a...),
+		})
+	}
+	meta := doctorMeta{}
 
 	specOK := true
 	info, err := project.ReadSpec(filepath.Join(root, "agent", "spec.json"))
 	switch {
 	case err != nil:
-		fail("spec.json: %v", err)
-		failed = true
+		add("spec", StatusFail, "spec.json: %v", err)
 		specOK = false
 	default:
-		ok("spec.json parses (%d env refs, %d if_env guards)", len(info.EnvRefs), len(info.IfEnvNames))
+		add("spec", StatusOK, "spec.json parses (%d env refs, %d if_env guards)", len(info.EnvRefs), len(info.IfEnvNames))
 	}
 
 	tagOK := true
 	tag, err := project.BaseTagFromDockerfile(filepath.Join(root, "agent", "Dockerfile"))
 	switch {
 	case err != nil:
-		fail("Dockerfile base tag: %v", err)
-		failed = true
+		add("base-tag", StatusFail, "Dockerfile base tag: %v", err)
 		tagOK = false
 	default:
-		ok("base image pinned: ghcr.io/tankdonut/agent-base:%s", tag)
+		meta.Tag = tag
+		add("base-tag", StatusOK, "base image pinned: ghcr.io/tankdonut/agent-base:%s", tag)
 	}
 
 	if n, err := project.SecretsCheck(root); err != nil {
-		fail("secrets: %v", err)
-		failed = true
+		add("secrets", StatusFail, "secrets: %v", err)
 	} else {
-		ok("agent/.env sets all %d required vars", n)
+		add("secrets", StatusOK, "agent/.env sets all %d required vars", n)
 	}
 
 	// The litellm provider shape is load-bearing for litellm specs: the
@@ -76,42 +157,39 @@ func runDoctor(out io.Writer) error {
 	// providers the report is advisory only — direct-provider
 	// deployments remain supported.
 	if specOK && info.AuthChoice == "litellm-api-key" {
-		if day := tagDate(tag); tagOK && !day.IsZero() && day.Year() >= 2026 && day.Before(litellmSeedDay) {
-			fail("pinned base image %s predates the litellm seed (2026.09.12) — bump agent/Dockerfile; the old image never seeds baseUrl and its loader does not gate the key", tag)
-			failed = true
+		if seed, ok := eraByID("litellm-baseurl-seed"); ok {
+			if day := tagDate(tag); tagOK && !day.IsZero() && day.Year() >= 2026 && day.Before(seed.Day) {
+				add("litellm-era", StatusFail, "pinned base image %s predates the litellm seed (%s) — bump agent/Dockerfile; the old image never seeds baseUrl and its loader does not gate the key", tag, seed.Day.Format("2006.01.02"))
+			}
 		}
 		if _, err := os.Stat(filepath.Join(root, "litellm", ".env.example")); err != nil {
-			fail("litellm/.env.example not found — adopt the litellm tree (docs/standard-agent.md \"Model providers via LiteLLM\")")
-			failed = true
+			add("litellm-tree", StatusFail, "litellm/.env.example not found — adopt the litellm tree (docs/standard-agent.md \"Model providers via LiteLLM\")")
 		} else if !composeCarriesLitellm(filepath.Join(root, "compose.yml")) {
-			fail("compose.yml lacks the litellm sidecar or model-net — re-emit it from the current scaffold template or add the service block")
-			failed = true
+			add("litellm-tree", StatusFail, "compose.yml lacks the litellm sidecar or model-net — re-emit it from the current scaffold template or add the service block")
 		} else {
-			ok("litellm sidecar shape present (tree, compose service, model-net)")
+			add("litellm-tree", StatusOK, "litellm sidecar shape present (tree, compose service, model-net)")
 		}
 	} else if specOK {
-		warn("provider %q — litellm sidecar not adopted; the blessed migration is a fresh-volume path (docs/standard-agent.md \"Migrating an existing agent to LiteLLM\")", info.AuthChoice)
+		add("litellm-tree", StatusWarn, "provider %q — litellm sidecar not adopted; the blessed migration is a fresh-volume path (docs/standard-agent.md \"Migrating an existing agent to LiteLLM\")", info.AuthChoice)
 	}
 
 	cfg, err := LoadConfig()
 	if err != nil {
-		fail("config: %v", err)
-		failed = true
+		add("config", StatusFail, "config: %v", err)
 	} else {
+		meta.Platform = cfg.Platform
 		d, err := platform.Derive(root)
 		if err != nil {
-			fail("project derivation: %v", err)
-			failed = true
+			add("project", StatusFail, "project derivation: %v", err)
 		} else {
+			meta.Project = d.Project
 			p, err := forPlatform(cfg.Platform, newRunner(), cfg.Namespaces)
 			if err != nil {
-				fail("platform %q: %v", cfg.Platform, err)
-				failed = true
+				add("platform", StatusFail, "platform %q: %v", cfg.Platform, err)
 			} else if err := p.Check(root, &d); err != nil {
-				fail("platform %q manifest: %v", cfg.Platform, err)
-				failed = true
+				add("platform", StatusFail, "platform %q manifest: %v", cfg.Platform, err)
 			} else {
-				ok("platform %q manifest lints (project %s, %d env keys set)", cfg.Platform, d.Project, len(d.EnvKeys))
+				add("platform", StatusOK, "platform %q manifest lints (project %s, %d env keys set)", cfg.Platform, d.Project, len(d.EnvKeys))
 			}
 		}
 	}
@@ -123,33 +201,34 @@ func runDoctor(out io.Writer) error {
 	engine, err := resolveComposeEngine()
 	switch {
 	case err != nil:
-		warn("no compose engine — skipped the real-image spec gate")
+		add("spec-gate", StatusWarn, "no compose engine — skipped the real-image spec gate")
 	case !tagOK:
-		warn("base tag unreadable — skipped the real-image spec gate")
+		add("spec-gate", StatusWarn, "base tag unreadable — skipped the real-image spec gate")
 	default:
 		ref := "ghcr.io/tankdonut/agent-base:" + tag
 		if _, err := newRunner().RunOutput(nil, engine, "image", "inspect", ref); err != nil {
-			warn("pinned image %s not local — skipped the real-image spec gate (run `agentctl deploy` once or pull it)", ref)
+			add("spec-gate", StatusWarn, "pinned image %s not local — skipped the real-image spec gate (run `agentctl deploy` once or pull it)", ref)
 		} else if err := compose.Validate(newRunner(), engine, root); err != nil {
-			fail("real-image spec gate: %v", err)
-			failed = true
+			add("spec-gate", StatusFail, "real-image spec gate: %v", err)
 		} else {
-			ok("real-image spec gate passed via %s", engine)
+			add("spec-gate", StatusOK, "real-image spec gate passed via %s", engine)
 		}
 	}
 
-	if failed {
-		return fmt.Errorf("doctor found problems — fix the FAIL lines above")
+	if asJSON {
+		report := doctorReport{Meta: meta, Checks: results, Failed: anyFailed(results)}
+		data, err := json.Marshal(report)
+		if err != nil {
+			return fmt.Errorf("marshal doctor report: %w", err)
+		}
+		fmt.Fprintln(out, string(data))
+		if report.Failed {
+			return fmt.Errorf("doctor found problems — fix the FAIL lines above")
+		}
+		return nil
 	}
-	fmt.Fprintln(out, "all checks passed")
-	return nil
+	return renderDoctor(out, results)
 }
-
-// litellmSeedDay is the first release carrying the litellm loader gate
-// and the baseUrl seed (2026.09.12). Litellm-shaped projects pinned to
-// older images boot with openclaw's loopback provider default — an era
-// mismatch doctor must name, not a shape problem.
-var litellmSeedDay = time.Date(2026, 9, 12, 0, 0, 0, 0, time.UTC)
 
 // tagDate parses the YYYY.MM.DD prefix of a base-image tag (an optional
 // .N run suffix is ignored for ordering). Zero time on a malformed tag —
