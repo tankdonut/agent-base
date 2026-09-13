@@ -14,3 +14,7 @@ logs/
 # local tooling
 .venv/
 .worktrees/
+
+# skills CLI install target (restored from skills-lock.json via
+# `npx skills experimental_install`)
+.agents/
