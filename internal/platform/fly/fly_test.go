@@ -327,3 +327,22 @@ func TestAppConfigOverrideBeatsManifest(t *testing.T) {
 	}
 	assertCalls(t, r.calls[len(r.calls)-1:], [][]string{{"fly", "status", "-a", "renamed-agent"}})
 }
+
+func TestProbeArgv(t *testing.T) {
+	root := fixtureProject(t)
+	d := deployment(t, root)
+	r := newFakeRunner("fly")
+	r.outputs["fly ssh console -a my-agent -C cat /home/node/.openclaw/last-image-version"] = "2026.09.12\n"
+	p := newAdapter(t, r, nil)
+
+	got, err := p.Probe(context.Background(), r, root, &d, "cat /home/node/.openclaw/last-image-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "2026.09.12\n" {
+		t.Fatalf("probe output = %q", got)
+	}
+	assertCalls(t, r.calls, [][]string{
+		{"fly", "ssh", "console", "-a", "my-agent", "-C", "cat /home/node/.openclaw/last-image-version"},
+	})
+}

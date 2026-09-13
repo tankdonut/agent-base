@@ -1,7 +1,11 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -155,4 +159,266 @@ func TestDoctorJSONGolden(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestDoctorTarget pins the --target era-crossings preview: crossings
+// from the era table render as era/<id> lines carrying their own
+// severity (a fail entry on an applicable spec FAILs the report),
+// zero-crossing and downgrade targets get their own lines, malformed
+// targets fail closed before any check runs, and --json carries
+// meta.target.
+func TestDoctorTarget(t *testing.T) {
+	retag := func(t *testing.T, root, newTag string) {
+		t.Helper()
+		path := filepath.Join(root, "agent", "Dockerfile")
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rewritten := bytes.ReplaceAll(data, []byte(":2026.09.12"), []byte(":"+newTag))
+		if err := os.WriteFile(path, rewritten, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	t.Run("litellm spec crossing the seed boundary fails naming the era", func(t *testing.T) {
+		root := litellmFixture(t)
+		addLitellmSidecar(t, root)
+		retag(t, root, "2026.09.05")
+		r := stubbedRunner(t, "podman")
+		r.runOutputOK = true
+		out, err := execIn(t, root, "doctor", "--target", "2026.09.12")
+		if err == nil {
+			t.Fatalf("expected the era FAIL to error the report:\n%s", out)
+		}
+		for _, want := range []string{
+			"FAIL  era/litellm-auth-gate: 2026.09.12: the loader gates on LITELLM_API_KEY",
+			"warn  era/litellm-baseurl-seed: 2026.09.12:",
+		} {
+			if !strings.Contains(out, want) {
+				t.Errorf("output lacks %q:\n%s", want, out)
+			}
+		}
+	})
+
+	t.Run("target on the pinned tag reports no crossings", func(t *testing.T) {
+		root := fixtureProject(t)
+		stubbedRunner(t, "podman")
+		out, err := execIn(t, root, "doctor", "--target", "2026.09.05")
+		if err != nil {
+			t.Fatalf("doctor --target errored: %v\n%s", err, out)
+		}
+		if !strings.Contains(out, "ok    no era crossings 2026.09.05 → 2026.09.05") {
+			t.Errorf("output lacks the no-crossings line:\n%s", out)
+		}
+	})
+
+	t.Run("downgrade target warns", func(t *testing.T) {
+		root := fixtureProject(t)
+		stubbedRunner(t, "podman")
+		out, err := execIn(t, root, "doctor", "--target", "2026.08.23")
+		if err != nil {
+			t.Fatalf("downgrade preview must not error: %v\n%s", err, out)
+		}
+		if !strings.Contains(out, "downgrade crossings are not modeled") {
+			t.Errorf("output lacks the downgrade warn:\n%s", out)
+		}
+	})
+
+	t.Run("malformed target fails closed", func(t *testing.T) {
+		root := fixtureProject(t)
+		stubbedRunner(t, "podman")
+		_, err := execIn(t, root, "doctor", "--target", "latest")
+		if err == nil || !strings.Contains(err.Error(), "not a valid image tag") {
+			t.Fatalf("err = %v, want invalid-tag error", err)
+		}
+	})
+
+	t.Run("json carries meta.target", func(t *testing.T) {
+		root := fixtureProject(t)
+		stubbedRunner(t, "podman")
+		out, err := execIn(t, root, "doctor", "--json", "--target", "2026.09.05")
+		if err != nil {
+			t.Fatalf("doctor --json --target errored: %v\n%s", err, out)
+		}
+		if !strings.Contains(out, `"target":"2026.09.05"`) {
+			t.Errorf("json lacks meta.target:\n%s", out)
+		}
+	})
+}
+
+// pinFixture rewrites the fixture Dockerfile's FROM tag.
+func pinFixture(t *testing.T, root, tag string) {
+	t.Helper()
+	path := filepath.Join(root, "agent", "Dockerfile")
+	content := "FROM ghcr.io/tankdonut/agent-base:" + tag + "\nCOPY agent/spec.json /opt/agent/spec.json\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestDoctorTargetSpecGate pins the --target spec gate: it validates
+// against the target ref (never the pinned one), a missing target
+// image is pulled rather than skipped, and engineless hosts keep the
+// warn-skip idiom without attempting anything. The fixture pins to the
+// target's parent day so the crossings carry no FAIL entry.
+func TestDoctorTargetSpecGate(t *testing.T) {
+	sawCall := func(r *stubRunner, substrings ...string) bool {
+		for _, c := range r.calls {
+			joined := strings.Join(c, " ")
+			found := true
+			for _, s := range substrings {
+				found = found && strings.Contains(joined, s)
+			}
+			if found {
+				return true
+			}
+		}
+		return false
+	}
+
+	t.Run("gate validates against the target ref when local", func(t *testing.T) {
+		root := fixtureProject(t)
+		pinFixture(t, root, "2026.09.12")
+		r := stubbedRunner(t, "podman")
+		r.runOutputOK = true
+		out, err := execIn(t, root, "doctor", "--target", "2026.09.12.1")
+		if err != nil {
+			t.Fatalf("doctor --target errored: %v\n%s", err, out)
+		}
+		if !strings.Contains(out, "target spec gate passed via podman against ghcr.io/tankdonut/agent-base:2026.09.12.1") {
+			t.Errorf("output lacks the target gate line:\n%s", out)
+		}
+		if !sawCall(r, "--validate-spec", "ghcr.io/tankdonut/agent-base:2026.09.12.1") {
+			t.Errorf("validate never ran against the target ref: %v", r.calls)
+		}
+	})
+
+	t.Run("missing target image is pulled then gated", func(t *testing.T) {
+		root := fixtureProject(t)
+		pinFixture(t, root, "2026.09.12")
+		r := stubbedRunner(t, "podman")
+		r.runOutputOK = false
+		out, err := execIn(t, root, "doctor", "--target", "2026.09.12.1")
+		if err != nil {
+			t.Fatalf("doctor --target errored: %v\n%s", err, out)
+		}
+		if !strings.Contains(out, "target spec gate passed via podman (pulled ghcr.io/tankdonut/agent-base:2026.09.12.1)") {
+			t.Errorf("output lacks the pulled-gate line:\n%s", out)
+		}
+		if !sawCall(r, "image pull ghcr.io/tankdonut/agent-base:2026.09.12.1") {
+			t.Errorf("image pull never ran: %v", r.calls)
+		}
+	})
+
+	t.Run("engineless host warns and never pulls", func(t *testing.T) {
+		root := fixtureProject(t)
+		r := stubbedRunner(t)
+		out, _ := execIn(t, root, "doctor", "--target", "2026.09.12")
+		if !strings.Contains(out, "warn  no compose engine — skipped the real-image spec gate") {
+			t.Errorf("output lacks the engineless warn:\n%s", out)
+		}
+		if len(r.calls) != 0 {
+			t.Errorf("engineless run must not exec anything: %v", r.calls)
+		}
+	})
+}
+
+// TestDoctorBackupReadiness pins the --target backup-readiness checks:
+// the static compose /backups mount line, and the volume probes over
+// the Platform port (warm marker, migration-boot shape, fresh volume,
+// unreachable instance).
+func TestDoctorBackupReadiness(t *testing.T) {
+	backupsCompose := `name: fixture-agent
+services:
+  agent:
+    build: {context: ., dockerfile: agent/Dockerfile}
+    volumes:
+      - agent-data:/home/node/.openclaw
+      - agent-backups:/backups
+volumes:
+  agent-data:
+  agent-backups:
+`
+	probeKey := func(command string) string {
+		return "podman compose -f compose.yml exec -T agent sh -c " + command
+	}
+	withBackups := func(t *testing.T) string {
+		t.Helper()
+		root := fixtureProject(t)
+		pinFixture(t, root, "2026.09.12")
+		if err := os.WriteFile(filepath.Join(root, "compose.yml"), []byte(backupsCompose), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return root
+	}
+
+	t.Run("static mount present", func(t *testing.T) {
+		root := withBackups(t)
+		stubbedRunner(t, "podman")
+		out, _ := execIn(t, root, "doctor", "--target", "2026.09.12.1")
+		if !strings.Contains(out, "ok    named volume mounted at /backups — migration archives survive container replacement") {
+			t.Errorf("output lacks the mount ok line:\n%s", out)
+		}
+	})
+
+	t.Run("static mount absent warns", func(t *testing.T) {
+		root := fixtureProject(t)
+		pinFixture(t, root, "2026.09.12")
+		stubbedRunner(t, "podman")
+		out, _ := execIn(t, root, "doctor", "--target", "2026.09.12.1")
+		if !strings.Contains(out, "warn  no volume mounted at /backups") {
+			t.Errorf("output lacks the mount warn:\n%s", out)
+		}
+	})
+
+	t.Run("warm volume via marker", func(t *testing.T) {
+		root := withBackups(t)
+		r := stubbedRunner(t, "podman")
+		r.runOutputs = map[string]string{
+			probeKey("cat /home/node/.openclaw/last-image-version"): "2026.09.05\n",
+			probeKey("df -h /backups"):                              "Filesystem  Size  Used Avail Use% Mounted on\noverlay  100G  20G  80G  20% /backups\n",
+		}
+		out, _ := execIn(t, root, "doctor", "--target", "2026.09.12.1")
+		if !strings.Contains(out, "ok    warm volume — last migration marker 2026.09.05") {
+			t.Errorf("output lacks the warm-volume line:\n%s", out)
+		}
+		if !strings.Contains(out, "ok    /backups: overlay  100G  20G  80G  20% /backups") {
+			t.Errorf("output lacks the df line:\n%s", out)
+		}
+	})
+
+	t.Run("migration boot next when openclaw.json present without marker", func(t *testing.T) {
+		root := withBackups(t)
+		r := stubbedRunner(t, "podman")
+		r.runOutputs = map[string]string{
+			probeKey("cat /home/node/.openclaw/last-image-version"): "\n",
+			probeKey("test -f /home/node/.openclaw/openclaw.json"):  "",
+		}
+		out, _ := execIn(t, root, "doctor", "--target", "2026.09.12.1")
+		if !strings.Contains(out, "warn  next boot is a migration boot") {
+			t.Errorf("output lacks the migration-boot warn:\n%s", out)
+		}
+	})
+
+	t.Run("fresh volume when both markers absent", func(t *testing.T) {
+		root := withBackups(t)
+		r := stubbedRunner(t, "podman")
+		r.runOutputs = map[string]string{
+			probeKey("cat /home/node/.openclaw/last-image-version"): "\n",
+		}
+		out, _ := execIn(t, root, "doctor", "--target", "2026.09.12.1")
+		if !strings.Contains(out, "ok    fresh volume — first boot runs setup; no migration involved") {
+			t.Errorf("output lacks the fresh-volume line:\n%s", out)
+		}
+	})
+
+	t.Run("unreachable instance warns and skips", func(t *testing.T) {
+		root := withBackups(t)
+		stubbedRunner(t, "podman")
+		out, _ := execIn(t, root, "doctor", "--target", "2026.09.12.1")
+		if !strings.Contains(out, "warn  instance not reachable — skipped the volume probes") {
+			t.Errorf("output lacks the unreachable warn:\n%s", out)
+		}
+	})
 }

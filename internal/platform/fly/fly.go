@@ -246,6 +246,21 @@ func (a *Adapter) Backup(ctx context.Context, r process.Runner, root string, d *
 	return nil
 }
 
+// Probe runs one read-only shell command in the running machine via
+// fly ssh console and returns its stdout (port contract:
+// agentctl-authored commands only).
+func (a *Adapter) Probe(ctx context.Context, r process.Runner, root string, d *platform.Deployment, command string) (string, error) {
+	app, err := a.app(root)
+	if err != nil {
+		return "", err
+	}
+	out, err := r.RunOutput(nil, "fly", "ssh", "console", "-a", app, "-C", command)
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
+}
+
 // machineID resolves the app's single machine via fly machine list.
 func (a *Adapter) machineID(r process.Runner, app string) (string, error) {
 	if r == nil {

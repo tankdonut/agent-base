@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"go.yaml.in/yaml/v3"
 
 	"github.com/tankdonut/agent-base/internal/compose"
 	"github.com/tankdonut/agent-base/internal/platform"
@@ -23,15 +25,17 @@ import (
 // with the fix named. Host-side twin of the image's doctor skills.
 func newDoctorCmd() *cobra.Command {
 	var asJSON bool
+	var target string
 	cmd := &cobra.Command{
 		Use:   "doctor",
 		Short: "Check everything agentctl needs before an issue can be filed",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDoctor(cmd.OutOrStdout(), asJSON)
+			return runDoctor(cmd.OutOrStdout(), asJSON, target)
 		},
 	}
 	cmd.Flags().BoolVar(&asJSON, "json", false, "emit the report as JSON (machine-readable)")
+	cmd.Flags().StringVar(&target, "target", "", "preview an upgrade to this image tag (YYYY.MM.DD[.N]): era crossings + spec gate against the target")
 	return cmd
 }
 
@@ -93,9 +97,11 @@ func renderDoctor(out io.Writer, results []CheckResult) error {
 }
 
 // doctorMeta carries the project identity the report ran against —
-// present only for what resolved before the checks ran.
+// present only for what resolved before the checks ran; target is set
+// only in --target previews.
 type doctorMeta struct {
 	Tag      string `json:"tag,omitempty"`
+	Target   string `json:"target,omitempty"`
 	Platform string `json:"platform,omitempty"`
 	Project  string `json:"project,omitempty"`
 }
@@ -109,7 +115,10 @@ type doctorReport struct {
 	Failed bool          `json:"failed"`
 }
 
-func runDoctor(out io.Writer, asJSON bool) error {
+func runDoctor(out io.Writer, asJSON bool, target string) error {
+	if target != "" && tagDate(target).IsZero() {
+		return fmt.Errorf("--target %q is not a valid image tag (want YYYY.MM.DD[.N])", target)
+	}
 	root, err := chdirProject()
 	if err != nil {
 		return err
@@ -123,6 +132,9 @@ func runDoctor(out io.Writer, asJSON bool) error {
 		})
 	}
 	meta := doctorMeta{}
+	if target != "" {
+		meta.Target = target
+	}
 
 	specOK := true
 	info, err := project.ReadSpec(filepath.Join(root, "agent", "spec.json"))
@@ -173,23 +185,79 @@ func runDoctor(out io.Writer, asJSON bool) error {
 		add("litellm-tree", StatusWarn, "provider %q — litellm sidecar not adopted; the blessed migration is a fresh-volume path (docs/standard-agent.md \"Migrating an existing agent to LiteLLM\")", info.AuthChoice)
 	}
 
+	// plat/deploy stay nil until the platform construct succeeds — the
+	// volume probes below gate on plat != nil.
+	var plat platform.Platform
+	var deploy platform.Deployment
 	cfg, err := LoadConfig()
 	if err != nil {
 		add("config", StatusFail, "config: %v", err)
 	} else {
 		meta.Platform = cfg.Platform
-		d, err := platform.Derive(root)
-		if err != nil {
+		if d, err := platform.Derive(root); err != nil {
 			add("project", StatusFail, "project derivation: %v", err)
 		} else {
+			deploy = d
 			meta.Project = d.Project
 			p, err := forPlatform(cfg.Platform, newRunner(), cfg.Namespaces)
 			if err != nil {
 				add("platform", StatusFail, "platform %q: %v", cfg.Platform, err)
-			} else if err := p.Check(root, &d); err != nil {
-				add("platform", StatusFail, "platform %q manifest: %v", cfg.Platform, err)
 			} else {
-				add("platform", StatusOK, "platform %q manifest lints (project %s, %d env keys set)", cfg.Platform, d.Project, len(d.EnvKeys))
+				plat = p
+				if err := p.Check(root, &deploy); err != nil {
+					add("platform", StatusFail, "platform %q manifest: %v", cfg.Platform, err)
+				} else {
+					add("platform", StatusOK, "platform %q manifest lints (project %s, %d env keys set)", cfg.Platform, deploy.Project, len(deploy.EnvKeys))
+				}
+			}
+		}
+	}
+
+	// --target previews an upgrade: which era boundaries a boot on the
+	// target tag crosses, each with its remedy. Downgrades are named as
+	// such — their crossings are not modeled; rollback is restore-from-
+	// backup, not tag-walking.
+	if target != "" {
+		if tagOK && target != tag && !tagAfter(target, tag) {
+			add("target-era", StatusWarn, "target %s is older than the pinned %s — downgrade crossings are not modeled; rollback means restoring the latest verified backup", target, tag)
+		}
+		if crossed := eraCrossings(tag, target, &info); len(crossed) == 0 {
+			add("target-era", StatusOK, "no era crossings %s → %s", tag, target)
+		} else {
+			for _, e := range crossed {
+				name := "era/" + e.ID
+				add(name, e.Severity, "%s: %s: %s — %s", name, e.Release, e.Summary, e.Action)
+			}
+		}
+
+		// Backup readiness: the migration boot writes its verified
+		// archive into /backups before any mutating phase — a compose
+		// without a volume there loses the archive with the container.
+		if carries, cerr := backupsMountDeclared(filepath.Join(root, "compose.yml")); cerr != nil {
+			add("backups-mount", StatusWarn, "compose.yml unreadable — skipped the /backups mount check (%v)", cerr)
+		} else if !carries {
+			add("backups-mount", StatusWarn, "no volume mounted at /backups — a migration boot's verified archive would die with the container; re-emit compose.yml from the current scaffold template")
+		} else {
+			add("backups-mount", StatusOK, "named volume mounted at /backups — migration archives survive container replacement")
+		}
+		if plat != nil && plat.Capabilities().Exec {
+			marker, merr := plat.Probe(context.Background(), newRunner(), root, &deploy, "cat /home/node/.openclaw/last-image-version")
+			switch {
+			case merr != nil:
+				add("volume-state", StatusWarn, "instance not reachable — skipped the volume probes (start it and re-run for warmth detection)")
+			default:
+				if trimmed := strings.TrimSpace(marker); trimmed != "" {
+					add("volume-state", StatusOK, "warm volume — last migration marker %s; the upgrade boot takes a verified backup before mutating", trimmed)
+				} else if _, oerr := plat.Probe(context.Background(), newRunner(), root, &deploy, "test -f /home/node/.openclaw/openclaw.json"); oerr != nil {
+					add("volume-state", StatusOK, "fresh volume — first boot runs setup; no migration involved")
+				} else {
+					add("volume-state", StatusWarn, "next boot is a migration boot — expect the verified-backup line before reconcile (docs/standard-agent.md \"Upgrades\")")
+				}
+				if df, derr := plat.Probe(context.Background(), newRunner(), root, &deploy, "df -h /backups"); derr == nil {
+					if line := lastLine(df); line != "" {
+						add("backups-space", StatusOK, "/backups: %s", line)
+					}
+				}
 			}
 		}
 	}
@@ -197,11 +265,30 @@ func runDoctor(out io.Writer, asJSON bool) error {
 	// The real-image spec gate: the same --validate-spec run `agentctl
 	// validate` performs. Engine and pinned image are prerequisites, not
 	// verdicts — their absence warns instead of failing, so doctor still
-	// reports everything else on an engineless host.
+	// reports everything else on an engineless host. --target is the
+	// exception: an explicit preview pulls the target image instead of
+	// skipping, because gating the target is the whole point.
 	engine, err := resolveComposeEngine()
 	switch {
 	case err != nil:
 		add("spec-gate", StatusWarn, "no compose engine — skipped the real-image spec gate")
+	case target != "":
+		ref := "ghcr.io/tankdonut/agent-base:" + target
+		pulled := false
+		if _, ierr := newRunner().RunOutput(nil, engine, "image", "inspect", ref); ierr != nil {
+			if perr := newRunner().Run(nil, engine, "image", "pull", ref); perr != nil {
+				add("spec-gate", StatusFail, "target image %s not local and the pull failed: %v — pull it manually and re-run", ref, perr)
+				break
+			}
+			pulled = true
+		}
+		if err := compose.ValidateRef(newRunner(), engine, root, ref); err != nil {
+			add("spec-gate", StatusFail, "target spec gate: %v", err)
+		} else if pulled {
+			add("spec-gate", StatusOK, "target spec gate passed via %s (pulled %s)", engine, ref)
+		} else {
+			add("spec-gate", StatusOK, "target spec gate passed via %s against %s", engine, ref)
+		}
 	case !tagOK:
 		add("spec-gate", StatusWarn, "base tag unreadable — skipped the real-image spec gate")
 	default:
@@ -212,6 +299,23 @@ func runDoctor(out io.Writer, asJSON bool) error {
 			add("spec-gate", StatusFail, "real-image spec gate: %v", err)
 		} else {
 			add("spec-gate", StatusOK, "real-image spec gate passed via %s", engine)
+		}
+	}
+
+	// Tag freshness is advisory: the registry is the only source for
+	// "is a newer release out" — an offline host keeps a full report;
+	// the check degrades to a warn and never fails.
+	if target != "" && tagOK {
+		newest, nerr := newestPublishedTag(context.Background())
+		switch {
+		case nerr != nil:
+			add("tag-freshness", StatusWarn, "registry unreachable — skipped the freshness check (%v)", nerr)
+		case newest == target:
+			add("tag-freshness", StatusOK, "target %s is the newest published tag", target)
+		case tagAfter(newest, target):
+			add("tag-freshness", StatusWarn, "newer image %s is published (target %s) — check the release notes before pinning older", newest, target)
+		default:
+			add("tag-freshness", StatusWarn, "target %s is not published (newest is %s) — date tags only; there is no latest", target, newest)
 		}
 	}
 
@@ -255,4 +359,44 @@ func composeCarriesLitellm(path string) bool {
 	}
 	content := string(data)
 	return strings.Contains(content, "litellm:") && strings.Contains(content, "model-net")
+}
+
+// backupsMountDeclared reports whether compose.yml mounts any volume
+// at /backups on the agent service — where a migration boot writes its
+// verified archive before mutating {data}.
+func backupsMountDeclared(path string) (bool, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false, err
+	}
+	var manifest struct {
+		Services map[string]struct {
+			Volumes []string `yaml:"volumes"`
+		} `yaml:"services"`
+	}
+	if err := yaml.Unmarshal(data, &manifest); err != nil {
+		return false, err
+	}
+	svc, ok := manifest.Services["agent"]
+	if !ok {
+		return false, nil
+	}
+	for _, v := range svc.Volumes {
+		if strings.HasSuffix(v, ":/backups") {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// lastLine returns the last non-empty line of command output — df -h
+// /backups's mount row under its header.
+func lastLine(out string) string {
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if l := strings.TrimSpace(lines[i]); l != "" {
+			return l
+		}
+	}
+	return ""
 }

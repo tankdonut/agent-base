@@ -139,6 +139,22 @@ func Backup(r process.Runner, engine string) error {
 		"exec", "agent", "openclaw", "backup", "create", "--verify", "--output", "/backups")...)
 }
 
+// Probe runs one read-only shell command inside the running agent
+// container and returns its stdout. Agentctl-authored commands only —
+// the platform port contract; -T because this is capture, not
+// interaction.
+func Probe(r process.Runner, engine, command string) (string, error) {
+	if r == nil {
+		return "", process.ErrNilRunner
+	}
+	argv := composeArgv(engine, false, "exec", "-T", "agent", "sh", "-c", command)
+	out, err := r.RunOutput(nil, argv[0], argv[1:]...)
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
+}
+
 // BuildImages builds the project image(s).
 func BuildImages(r process.Runner, engine string) error {
 	if r == nil {

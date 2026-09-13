@@ -10,22 +10,9 @@ import (
 )
 
 // Validate runs the base image's --validate-spec mode against the
-// project's spec and automations — a read-only gate that mounts the
-// inputs the image-side parse needs:
-//
-//	<engine> run --rm --security-opt label=disable \
-//	  -v <root>/agent/spec.json:/opt/agent/spec.json:ro \
-//	  -v <root>/agent/automations:/opt/agent/automations:ro \
-//	  [-v <root>/agent/scripts:/opt/agent/scripts:ro — when shipped] \
-//	  --env-file agent/.env.example \
-//	  [-e NAME=dummy ...] ghcr.io/tankdonut/agent-base:<tag> --validate-spec
-//
-// Every {env:NAME} ref gets a dummy -e value so resolution never fails
-// on the example file's commented-out entries; the auth-gated key is
-// added when the auth choice load-gates on it. Mount sources are
-// absolute (a bare relative source is a named volume to the engine);
-// label=disable instead of :ro,Z so the gate never relabels repo files.
-// Callers must run with the project root as cwd.
+// project's spec and automations using the Dockerfile's pinned tag.
+// See ValidateRef for the invocation shape; callers must run with the
+// project root as cwd.
 func Validate(r process.Runner, engine, root string) error {
 	if r == nil {
 		return process.ErrNilRunner
@@ -33,6 +20,31 @@ func Validate(r process.Runner, engine, root string) error {
 	tag, err := project.BaseTagFromDockerfile(filepath.Join(root, "agent", "Dockerfile"))
 	if err != nil {
 		return err
+	}
+	return ValidateRef(r, engine, root, "ghcr.io/tankdonut/agent-base:"+tag)
+}
+
+// ValidateRef gates the project's spec and automations against an
+// explicit base-image ref — the pinned tag (Validate) or a --target
+// tag (doctor). It is a read-only run that mounts the inputs the
+// image-side parse needs:
+//
+//	<engine> run --rm --security-opt label=disable \
+//	  -v <root>/agent/spec.json:/opt/agent/spec.json:ro \
+//	  -v <root>/agent/automations:/opt/agent/automations:ro \
+//	  [-v <root>/agent/scripts:/opt/agent/scripts:ro — when shipped] \
+//	  --env-file agent/.env.example \
+//	  [-e NAME=dummy ...] <ref> --validate-spec
+//
+// Every {env:NAME} ref gets a dummy -e value so resolution never fails
+// on the example file's commented-out entries; the auth-gated key is
+// added when the auth choice load-gates on it. Mount sources are
+// absolute (a bare relative source is a named volume to the engine);
+// label=disable instead of :ro,Z so the gate never relabels repo files.
+// Callers must run with the project root as cwd.
+func ValidateRef(r process.Runner, engine, root, ref string) error {
+	if r == nil {
+		return process.ErrNilRunner
 	}
 	info, err := project.ReadSpec(filepath.Join(root, "agent", "spec.json"))
 	if err != nil {
@@ -67,7 +79,7 @@ func Validate(r process.Runner, engine, root string) error {
 	for _, name := range dummies {
 		argv = append(argv, "-e", name+"=dummy")
 	}
-	argv = append(argv, "ghcr.io/tankdonut/agent-base:"+tag, "--validate-spec")
+	argv = append(argv, ref, "--validate-spec")
 	return process.RunArgv(r, nil, append([]string{engine}, argv...)...)
 }
 

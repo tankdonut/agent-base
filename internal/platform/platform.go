@@ -104,4 +104,12 @@ type Platform interface {
 	// /backups mount (the agent-backups named volume on compose).
 	// Gated by Capabilities.Exec: no exec, no backup.
 	Backup(ctx context.Context, r process.Runner, root string, d *Deployment, out Output) error
+
+	// Probe runs one read-only shell command inside the running
+	// instance and returns its stdout — the narrow, non-interactive
+	// surface readiness and post-upgrade checks need (marker reads,
+	// df, openclaw --json queries). The command is agentctl-authored
+	// constant prose, never user-controlled input. Gated by
+	// Capabilities.Exec.
+	Probe(ctx context.Context, r process.Runner, root string, d *Deployment, command string) (string, error)
 }

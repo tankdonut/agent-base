@@ -20,6 +20,9 @@ type stubRunner struct {
 	look        map[string]bool
 	failArgv    [][]string
 	runOutputOK bool
+	// runOutputs scripts per-argv RunOutput results (joined by spaces);
+	// entries here win over runOutputOK.
+	runOutputs map[string]string
 }
 
 func newStubRunner(look ...string) *stubRunner {
@@ -42,6 +45,11 @@ func (s *stubRunner) Run(env []string, name string, args ...string) error {
 }
 
 func (s *stubRunner) RunOutput(env []string, name string, args ...string) ([]byte, error) {
+	call := append([]string{name}, args...)
+	s.calls = append(s.calls, call)
+	if out, ok := s.runOutputs[strings.Join(call, " ")]; ok {
+		return []byte(out), nil
+	}
 	if s.runOutputOK {
 		return nil, nil
 	}

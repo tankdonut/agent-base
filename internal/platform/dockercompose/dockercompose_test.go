@@ -3,6 +3,7 @@ package dockercompose
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 type fakeRunner struct {
 	calls [][]string
 	look  map[string]bool
+	out   []byte // RunOutput result when configured
 }
 
 func newFakeRunner(look ...string) *fakeRunner {
@@ -32,7 +34,11 @@ func (f *fakeRunner) Run(env []string, name string, args ...string) error {
 }
 
 func (f *fakeRunner) RunOutput(env []string, name string, args ...string) ([]byte, error) {
-	return nil, fmt.Errorf("fake: output capture not configured")
+	f.calls = append(f.calls, append([]string{name}, args...))
+	if f.out == nil {
+		return nil, fmt.Errorf("fake: output capture not configured")
+	}
+	return f.out, nil
 }
 
 func (f *fakeRunner) LookPath(name string) (string, error) {
@@ -294,4 +300,31 @@ func TestVerbArgv(t *testing.T) {
 		{"podman", "compose", "-f", "compose.yml", "start"},
 		{"podman", "compose", "-f", "compose.yml", "down", "-v"},
 	})
+}
+
+func TestProbeArgv(t *testing.T) {
+	root := fixtureProject(t)
+	d := deployment(t, root)
+	r := newFakeRunner("podman")
+	r.out = []byte("2026.09.12\n")
+	p := newAdapter(t, r, nil)
+
+	got, err := p.Probe(context.Background(), r, root, &d, "cat /home/node/.openclaw/last-image-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "2026.09.12\n" {
+		t.Fatalf("probe output = %q", got)
+	}
+	assertCalls(t, r.calls, [][]string{
+		{"podman", "compose", "-f", "compose.yml", "exec", "-T", "agent", "sh", "-c", "cat /home/node/.openclaw/last-image-version"},
+	})
+}
+
+func TestProbeNilRunner(t *testing.T) {
+	p := newAdapter(t, newFakeRunner("podman"), nil)
+	_, err := p.Probe(context.Background(), nil, fixtureProject(t), &platform.Deployment{}, "true")
+	if !errors.Is(err, process.ErrNilRunner) {
+		t.Fatalf("err = %v, want ErrNilRunner", err)
+	}
 }

@@ -167,6 +167,13 @@ func (a *Adapter) Backup(ctx context.Context, r process.Runner, root string, d *
 	return nil
 }
 
+// Probe runs one read-only shell command in the running agent
+// container and returns its stdout (port contract: agentctl-authored
+// commands only).
+func (a *Adapter) Probe(ctx context.Context, r process.Runner, root string, d *platform.Deployment, command string) (string, error) {
+	return compose.Probe(r, a.engine, command)
+}
+
 // Stop pauses the stack in place.
 func (a *Adapter) Stop(ctx context.Context, r process.Runner, root string, d *platform.Deployment, out platform.Output) error {
 	if err := compose.Stop(r, a.engine); err != nil {
