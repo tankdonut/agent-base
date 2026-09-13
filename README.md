@@ -41,7 +41,7 @@ go run ./cmd/agentctl init ../my-agent   # scaffold a new agent repo
 go install ./cmd/agentctl                # then, in any project:
 agentctl deploy                          # ship the checked-out tree (check → build → up)
 agentctl dev up                          # local loop: hot-reload overlay
-agentctl status · logs · stop · start · destroy
+agentctl status · logs · backup · stop · start · destroy
 agentctl platform ls · set · check       # deployment platform management
 agentctl doctor                          # pre-flight report (incl. litellm shape + real-image spec gate)
 agentctl secrets init                    # secrets: init/check/edit

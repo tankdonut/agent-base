@@ -227,6 +227,11 @@ it safe in two ways:
    migration), and the un-updated marker makes the next boot retry.
    Backups are only as durable as their destination — mount a named
    volume at `/backups` so archives survive container replacement.
+   Outside migrations, the same primitive is available on demand:
+   `agentctl backup` runs `openclaw backup create --verify` inside the
+   running instance through the platform's exec mechanism (compose exec
+   / fly ssh console) — copy the archive to host storage for
+   safekeeping.
 2. **Opt-in MCP removal + orphan report.** Servers the base registered
    are tracked in `{data}/agent-managed-mcp`. With
    `features.mcp_prune: true`, a server that leaves the spec is unset
