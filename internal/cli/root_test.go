@@ -18,7 +18,7 @@ func TestCommandTree(t *testing.T) {
 		"check": false, "hooks": false, "doctor": false,
 		"platform": false, "dev": false,
 		"deploy": false, "status": false, "logs": false, "mcp": false,
-		"stop": false, "start": false, "destroy": false,
+		"backup": false, "stop": false, "start": false, "destroy": false,
 	}
 	for _, cmd := range root.Commands() {
 		delete(want, cmd.Name())

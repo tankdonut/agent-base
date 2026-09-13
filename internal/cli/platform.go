@@ -17,7 +17,7 @@ func newPlatformCmd() *cobra.Command {
 		Use:   "platform",
 		Short: "Manage the deployment platform",
 		Long: `The platform is a project-level choice: it names where the release
-verbs (deploy, status, logs, mcp, stop, start, destroy) operate.
+verbs (deploy, status, logs, mcp, backup, stop, start, destroy) operate.
 compose is the default; pin another with ` + "`agentctl platform set`" + `.`,
 	}
 

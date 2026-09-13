@@ -411,6 +411,54 @@ func TestDestroyVolumeConfirmations(t *testing.T) {
 	}
 }
 
+func TestBackupDrivesInInstancePrimitive(t *testing.T) {
+	root := fixtureProject(t)
+	r := stubbedRunner(t, "podman")
+	out, err := execIn(t, root, "backup")
+	if err != nil {
+		t.Fatalf("backup: %v\n%s", err, out)
+	}
+	want := []string{"podman", "compose", "-f", "compose.yml", "exec", "agent",
+		"openclaw", "backup", "create", "--verify", "--output", "/backups"}
+	if len(r.calls) != 1 {
+		t.Fatalf("calls = %v, want %v", r.calls, want)
+	}
+	for i, arg := range want {
+		if r.calls[0][i] != arg {
+			t.Fatalf("call = %v, want %v", r.calls[0], want)
+		}
+	}
+	if !strings.Contains(out, "agent-backups") {
+		t.Errorf("output lacks the archive location: %q", out)
+	}
+}
+
+func TestBackupFlyUsesSSHConsole(t *testing.T) {
+	root := fixtureProject(t)
+	if err := os.WriteFile(filepath.Join(root, ConfigName), []byte("platform: fly\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := fly.ScaffoldConfig(root, "my-agent", "sjc"); err != nil {
+		t.Fatal(err)
+	}
+	r := stubbedRunner(t, "podman", "fly")
+	out, err := execIn(t, root, "backup")
+	if err != nil {
+		t.Fatalf("backup (fly): %v\n%s", err, out)
+	}
+	want := [][]string{
+		{"fly", "ssh", "console", "-a", "my-agent", "-C", "openclaw backup create --verify --output /backups"},
+	}
+	if len(r.calls) != len(want) {
+		t.Fatalf("calls = %v, want %v", r.calls, want)
+	}
+	for i := range want {
+		if strings.Join(r.calls[i], " ") != strings.Join(want[i], " ") {
+			t.Errorf("call %d = %v, want %v", i, r.calls[i], want[i])
+		}
+	}
+}
+
 func TestConfirmDestroyRequiresProjectName(t *testing.T) {
 	ok := strings.NewReader("fixture-agent\n")
 	if err := confirmDestroy(ok, &bytes.Buffer{}, "fixture-agent"); err != nil {

@@ -81,6 +81,27 @@ deliberately (git pull --ff-only && agentctl deploy).`,
 		},
 	}
 
+	var backup = &cobra.Command{
+		Use:   "backup",
+		Short: "Create a verified backup of the instance's warm state",
+		Long: `Run the image's backup primitive (openclaw backup create --verify)
+inside the running instance — the same command the entrypoint runs
+before an image-version migration. The archive lands on the platform's
+/backups mount (the agent-backups named volume on compose); copy it to
+host storage for safekeeping.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			root, p, d, err := loadProjectPlatform()
+			if err != nil {
+				return err
+			}
+			if !p.Capabilities().Exec {
+				return fmt.Errorf("platform %q cannot exec into a running instance — run `openclaw backup create --verify --output /backups` inside it manually", p.Name())
+			}
+			return p.Backup(cmd.Context(), newRunner(), root, &d, cmdOut{cmd.OutOrStdout()})
+		},
+	}
+
 	var stop = &cobra.Command{
 		Use:   "stop",
 		Short: "Pause the instance without destroying it",
@@ -140,7 +161,7 @@ and agent-backups too and asks for the project name as confirmation
 	destroy.Flags().BoolVar(&destroyVolumes, "volumes", false, "also delete the persistent volumes (agent-data, agent-backups)")
 	destroy.Flags().BoolVar(&destroyYes, "yes", false, "skip the --volumes confirmation prompt")
 
-	return []*cobra.Command{deploy, status, logs, mcp, stop, start, destroy}
+	return []*cobra.Command{deploy, status, logs, mcp, backup, stop, start, destroy}
 }
 
 // cmdOut adapts cobra's stdout to the platform Output port.

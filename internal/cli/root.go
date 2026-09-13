@@ -23,10 +23,10 @@ agent-base image: scaffolding, the local dev loop, deployment
 platforms, secrets, worktrees, and validation.
 
 Platforms select where the release verbs (deploy, status, logs, mcp,
-stop, start, destroy) operate; compose is the default and the reference
-adapter. Configure via .agentctl.yaml (platform, compose.engine,
-compose.gateway_port) or AGENTCTL_PLATFORM / AGENTCTL_COMPOSE_ENGINE /
-AGENTCTL_COMPOSE_GATEWAY_PORT.
+backup, stop, start, destroy) operate; compose is the default and the
+reference adapter. Configure via .agentctl.yaml (platform,
+compose.engine, compose.gateway_port) or AGENTCTL_PLATFORM /
+AGENTCTL_COMPOSE_ENGINE / AGENTCTL_COMPOSE_GATEWAY_PORT.
 
 Exit codes: 0 success, 1 any error — usage and flag errors included.`,
 		Version:      Version,
