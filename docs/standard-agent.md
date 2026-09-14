@@ -1045,6 +1045,12 @@ keys set there serve the whole fleet).
 - Resilience contract: the plane is a shared dependency, not a
   lifecycle owner — with the plane down, agents' gateways stay up and
   answer /healthz; only model traffic degrades until `fleet plane up`.
+- Gateway operator surface: `agentctl fleet status --live` probes each
+  agent's gateway over WS (version, sessions, pending approvals) and
+  `agentctl approvals [--agent X] [--id ID --approve|--deny]` lists and
+  resolves pending exec/plugin approvals. Both authenticate with the
+  agent's gateway token on the loopback publish and never print token
+  material.
 
 Each guide below is the exact cutover for that project onto
 `ghcr.io/tankdonut/agent-base:2026.08.24.1`. Both keep their existing named

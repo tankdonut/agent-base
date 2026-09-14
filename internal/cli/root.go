@@ -48,6 +48,7 @@ Exit codes: 0 success, 1 any error — usage and flag errors included.`,
 	)
 	root.AddCommand(newReleaseCmds()...)
 	root.AddCommand(newUpgradeCmd())
+	root.AddCommand(newApprovalsCmd())
 	root.AddCommand(newMiscCmds()...)
 	return root
 }

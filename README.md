@@ -42,6 +42,8 @@ Operator CLI for downstream agent projects (`go run ./cmd/agentctl`):
 - `upgrade <tag>` — the upgrade runbook as one verb: gate, backup,
   retag, deploy, verify
 - `platform ls · set · check` — deployment platform management
+- `fleet` — fleet verbs + plane lifecycle + `fleet add` + `fleet key`
+- `fleet status --live` / `approvals` — gateway WS surface: live per-agent status, pending approval list + resolve
 - `doctor` — pre-flight report (litellm shape + real-image spec gate)
 - `secrets init · check · edit` — secrets management
 - `validate` — spec gate via the base image

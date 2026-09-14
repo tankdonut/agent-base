@@ -79,7 +79,7 @@ func runFleetVerb(cmd *cobra.Command, agentFlag string, all bool, verb func(root
 func newFleetVerbCmds() []*cobra.Command {
 	var agentFlag string
 	var all bool
-	var dryRun, force, follow bool
+	var dryRun, force, follow, live bool
 	withScope := func(cmd *cobra.Command) *cobra.Command {
 		cmd.Flags().StringVar(&agentFlag, "agent", "", "operate one named agent")
 		cmd.Flags().BoolVar(&all, "all", false, "operate every registered agent")
@@ -104,11 +104,15 @@ func newFleetVerbCmds() []*cobra.Command {
 		Short: "Where the scoped agent(s) stand",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if live {
+				return runFleetLiveStatus(cmd, agentFlag, all)
+			}
 			return runFleetVerb(cmd, agentFlag, all, func(root string, p platform.Platform, d *platform.Deployment) error {
 				return p.Status(cmd.Context(), newRunner(), root, d, cmdOut{cmd.OutOrStdout()})
 			})
 		},
 	}
+	status.Flags().BoolVar(&live, "live", false, "probe each agent's gateway over WS (version, sessions, pending approvals)")
 
 	var logs = &cobra.Command{
 		Use:   "logs",
