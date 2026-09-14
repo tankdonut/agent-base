@@ -59,7 +59,8 @@ internal/    agentctl engine, layered by import direction:
              single-agent layout → fleet.yaml carry-over),
              api (loopback fleet API: bearer auth, 202 deploy jobs +
              jobs table, SSE events, approvals proxy — deps injected
-             from cli, dir-scoped Runner execution, never chdirs),
+             from cli, dir-scoped Runner execution, never chdirs;
+             web/ hosts the embedded vanilla-JS console served at /),
              scaffold (self-contained leaf owning its embedded tmpl/
              tree — init emits the fleet-of-one shape: fleet.yaml +
              agents/<key>/)

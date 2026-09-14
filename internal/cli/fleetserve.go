@@ -19,6 +19,7 @@ import (
 	"github.com/tankdonut/agent-base/internal/api"
 	"github.com/tankdonut/agent-base/internal/fleet"
 	"github.com/tankdonut/agent-base/internal/platform"
+	"github.com/tankdonut/agent-base/internal/project"
 )
 
 // platformForAgent resolves the constructed platform + deployment for
@@ -119,8 +120,9 @@ wider bind.`,
 				PlatformFor: func(agent string) (string, platform.Platform, platform.Deployment, error) {
 					return platformForAgent(m, agent)
 				},
-				Version: Version,
-				Token:   token,
+				Version:         Version,
+				Token:           token,
+				UpgradesPreview: func(agent, target string) (any, error) { return upgradesPreview(m, agent, target) },
 			}
 			srv := api.New(deps)
 			fmt.Fprintf(out, "serving fleet %s on http://127.0.0.1:%d\n", m.Root, port)
@@ -187,4 +189,54 @@ func mustServeTokenPath(fleetRoot string) string {
 		return "<token path unavailable>"
 	}
 	return path
+}
+
+// upgradesPreview is the dir-scoped per-agent upgrade preview the API
+// serves: the current Dockerfile pin, the target, downgrade detection,
+// and the era crossings a boot on the target would cross (the same
+// era table doctor --target walks).
+func upgradesPreview(m *fleet.Manifest, agent, target string) (any, error) {
+	entry, ok := m.Agents[agent]
+	if !ok {
+		return nil, fmt.Errorf("agent %q is not registered in %s", agent, fleet.ManifestName)
+	}
+	d, err := platform.Derive(entry.Dir)
+	if err != nil {
+		return nil, err
+	}
+	info, err := project.ReadSpec(filepath.Join(entry.Dir, "spec.json"))
+	if err != nil {
+		return nil, fmt.Errorf("reading spec: %w", err)
+	}
+	preview := struct {
+		Agent      string   `json:"agent"`
+		CurrentTag string   `json:"current_tag"`
+		Target     string   `json:"target"`
+		Downgrade  bool     `json:"downgrade"`
+		Crossings  []eraRow `json:"crossings"`
+	}{
+		Agent:      agent,
+		CurrentTag: d.BaseTag,
+		Target:     target,
+		Crossings:  []eraRow{},
+	}
+	if !tagAfter(target, d.BaseTag) && target != d.BaseTag {
+		preview.Downgrade = true
+		return preview, nil
+	}
+	for _, e := range eraCrossings(d.BaseTag, target, &info) {
+		preview.Crossings = append(preview.Crossings, eraRow{
+			ID: e.ID, Release: e.Release, Severity: string(e.Severity), Summary: e.Summary, Action: e.Action,
+		})
+	}
+	return preview, nil
+}
+
+// eraRow is the JSON projection of one Era.
+type eraRow struct {
+	ID       string `json:"id"`
+	Release  string `json:"release"`
+	Severity string `json:"severity"`
+	Summary  string `json:"summary"`
+	Action   string `json:"action"`
 }

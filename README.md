@@ -43,8 +43,8 @@ Operator CLI for downstream agent projects (`go run ./cmd/agentctl`):
   retag, deploy, verify
 - `platform ls · set · check` — deployment platform management
 - `fleet` — fleet verbs + plane lifecycle + `fleet add` + `fleet key`
+- `fleet serve` / `serve-init` — loopback fleet API: bearer auth, async deploy jobs, SSE events, approvals proxy — with an embedded operator console (overview, deploy, jobs, approvals, upgrades)
 - `fleet status --live` / `approvals` — gateway WS surface: live per-agent status, pending approval list + resolve
-- `fleet serve` / `serve-init` — loopback fleet API: bearer auth, async deploy jobs, SSE events, approvals proxy
 - `doctor` — pre-flight report (litellm shape + real-image spec gate)
 - `secrets init · check · edit` — secrets management
 - `validate` — spec gate via the base image

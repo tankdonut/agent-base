@@ -1059,6 +1059,11 @@ keys set there serve the whole fleet).
   dir-scoped runner — the server never chdirs. `agentctl fleet
   serve-init` writes a systemd user unit; remote access goes through
   a local TLS-terminating reverse proxy, never a wider bind.
+  The server also hosts an embedded operator console at `/` (vanilla
+  JS, no build step): overview, deploy with live job output, jobs,
+  approvals, and upgrades — the upgrades page previews each agent's
+  era crossings for a target tag and applies the retag + converge
+  through the same job machinery, per-agent confirm.
 
 Each guide below is the exact cutover for that project onto
 `ghcr.io/tankdonut/agent-base:2026.08.24.1`. Both keep their existing named

@@ -11,8 +11,10 @@ package api
 import (
 	"context"
 	"crypto/subtle"
+	"embed"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"net"
 	"net/http"
 	"os"
@@ -26,6 +28,11 @@ import (
 	"github.com/tankdonut/agent-base/internal/platform"
 	"github.com/tankdonut/agent-base/internal/process"
 )
+
+// webFS is the embedded console (no build step — vanilla JS).
+//
+//go:embed web/index.html web/app.js web/style.css
+var webFS embed.FS
 
 // Deps are the injected capabilities: everything the handlers need
 // that lives outside this package.
@@ -42,6 +49,10 @@ type Deps struct {
 	Version string
 	// Token is the required bearer value.
 	Token string
+	// UpgradesPreview renders the per-agent upgrade preview (era
+	// crossings + downgrade warning) for a target tag. Injected from
+	// the composition root — the era table lives with doctor.
+	UpgradesPreview func(agent, target string) (any, error)
 }
 
 // Server is the serve instance.
@@ -60,11 +71,17 @@ func New(deps Deps) *Server {
 	mux.HandleFunc("GET /api/v1/roster", s.auth(s.roster))
 	mux.HandleFunc("GET /api/v1/status", s.auth(s.status))
 	mux.HandleFunc("POST /api/v1/deploy", s.auth(s.deploy))
+	mux.HandleFunc("GET /api/v1/upgrades", s.auth(s.upgrades))
+	mux.HandleFunc("POST /api/v1/upgrades/apply", s.auth(s.applyUpgrade))
 	mux.HandleFunc("GET /api/v1/jobs", s.auth(s.listJobs))
 	mux.HandleFunc("GET /api/v1/jobs/{id}", s.auth(s.getJob))
 	mux.HandleFunc("GET /api/v1/approvals", s.auth(s.listApprovals))
 	mux.HandleFunc("POST /api/v1/approvals/resolve", s.auth(s.resolveApproval))
 	mux.HandleFunc("GET /api/v1/events", s.auth(s.events))
+	// The console ships embedded and unauthenticated (static shell);
+	// its API calls carry the bearer from the operator's localStorage.
+	webRoot, _ := fs.Sub(webFS, "web")
+	mux.Handle("GET /", http.FileServerFS(webRoot))
 	s.mux = mux
 	return s
 }
@@ -181,6 +198,7 @@ type jobSpec struct {
 	agents []string
 	force  bool
 	dryRun bool
+	tag    string // upgrade jobs: the retag applied before converge
 }
 
 func (s *Server) deploy(w http.ResponseWriter, r *http.Request) {

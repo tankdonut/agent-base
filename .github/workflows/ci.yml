@@ -52,6 +52,9 @@ jobs:
       - name: Check formatting (gofmt)
         run: test -z "$(gofmt -l cmd internal)"
 
+      - name: License allowlist (no GPL into the binary)
+        run: scripts/check-deps.sh
+
       - name: Vet
         run: go vet ./...
 

@@ -1,0 +1,30 @@
+:root {
+  --bg: #0e1116; --panel: #161b23; --line: #232b36; --fg: #d7dee8;
+  --dim: #8b98a8; --ok: #4cc38a; --warn: #e5c07b; --err: #e06c75; --accent: #61afef;
+}
+* { box-sizing: border-box; }
+body { margin: 0; font: 14px/1.5 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+       background: var(--bg); color: var(--fg); }
+header { display: flex; align-items: center; gap: 24px; padding: 12px 20px;
+         border-bottom: 1px solid var(--line); background: var(--panel); }
+header h1 { font-size: 16px; margin: 0; color: var(--accent); }
+nav a { color: var(--dim); text-decoration: none; margin-right: 16px; }
+nav a.active, nav a:hover { color: var(--fg); }
+.badge { margin-left: auto; color: var(--dim); font-size: 12px; }
+main { padding: 20px; max-width: 1100px; margin: 0 auto; }
+footer { color: var(--dim); padding: 12px 20px; border-top: 1px solid var(--line); font-size: 12px; }
+table { width: 100%; border-collapse: collapse; margin: 12px 0; }
+th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+th { color: var(--dim); font-weight: normal; text-transform: uppercase; font-size: 11px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
+        padding: 16px; margin: 12px 0; }
+.ok { color: var(--ok); } .warn { color: var(--warn); } .err { color: var(--err); }
+button { background: var(--accent); color: #0b0e12; border: 0; border-radius: 4px;
+         padding: 6px 14px; font: inherit; cursor: pointer; }
+button.danger { background: var(--err); color: #fff; }
+button.ghost { background: transparent; color: var(--dim); border: 1px solid var(--line); }
+input, select { background: var(--bg); color: var(--fg); border: 1px solid var(--line);
+                border-radius: 4px; padding: 6px 10px; font: inherit; }
+pre { background: var(--bg); border: 1px solid var(--line); border-radius: 4px;
+      padding: 10px; max-height: 320px; overflow: auto; white-space: pre-wrap; }
+.log { font-size: 12px; color: var(--dim); }
