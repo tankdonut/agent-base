@@ -18,14 +18,15 @@ func runFleet(t *testing.T, args ...string) (int, string) {
 	t.Helper()
 	root := NewRootCommand()
 	out := &bytes.Buffer{}
+	errOut := &bytes.Buffer{}
 	root.SetOut(out)
-	root.SetErr(&bytes.Buffer{})
+	root.SetErr(errOut)
 	root.SilenceErrors = true
 	root.SetArgs(args)
 	if err := root.Execute(); err != nil {
-		return 1, collapse(out.String()) + err.Error() + "\n"
+		return 1, collapse(out.String()+" "+errOut.String()) + " " + err.Error() + "\n"
 	}
-	return 0, collapse(out.String())
+	return 0, collapse(out.String() + " " + errOut.String())
 }
 
 func collapse(s string) string {
@@ -45,8 +46,16 @@ func makeFleetRepo(t *testing.T, manifest string, agents []string, extra func(ro
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(dir, "spec.json"), []byte(`{"agent":{"name":"`+name+`"}}`), 0o644); err != nil {
-			t.Fatal(err)
+		files := map[string]string{
+			"spec.json":    `{"agent":{"name":"` + name + `"}}`,
+			"Dockerfile":   "FROM ghcr.io/tankdonut/agent-base:2026.09.05\n",
+			".env.example": "#ZAI_API_KEY=\n",
+			".env":         "ZAI_API_KEY=k\n",
+		}
+		for rel, content := range files {
+			if err := os.WriteFile(filepath.Join(dir, rel), []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
 		}
 	}
 	if extra != nil {
@@ -233,6 +242,23 @@ func TestFleetCheckFindings(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestPublishedHostPorts(t *testing.T) {
+	docker := `[{"Name":"grow-agent-1","Publishers":[{"PublishedPort":18789},{"PublishedPort":0}]}]`
+	podman := `[{"Names":"grow_agent_1","Ports":[{"host_port":18789,"container_port":18789}]}]`
+	for name, body := range map[string]string{"docker shape": docker, "podman shape": podman} {
+		got := publishedHostPorts([]byte(body))
+		if !got[18789] || len(got) != 1 {
+			t.Errorf("%s: parsed %v, want [18789] only", name, got)
+		}
+	}
+	if got := publishedHostPorts([]byte("not json")); len(got) != 0 {
+		t.Errorf("garbage input must yield an empty set, got %v", got)
+	}
+	if got := publishedHostPorts([]byte(`[{"Name":"x"}]`)); len(got) != 0 {
+		t.Errorf("no publishers must yield an empty set, got %v", got)
 	}
 }
 

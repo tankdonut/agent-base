@@ -51,8 +51,10 @@ internal/    agentctl engine, layered by import direction:
              previews — plus --post-upgrade instance verification, the
              --target migration explainers, the scaffold
              template-drift advisory, and the --report evidence
-             bundle; fleet.go hosts `fleet ls`/`fleet check`;
-             migrateverb.go hosts `agentctl migrate` — the legacy
+             bundle; fleet.go hosts `fleet ls`/`fleet
+             check`, fleetverbs.go the batch verbs (deploy/status/logs/
+             backup/stop/start with --agent|--all — batches are never
+             implicit), fleetadd.go `fleet add`; migrateverb.go hosts `agentctl migrate` — the legacy
              single-agent layout → fleet.yaml carry-over),
              scaffold (self-contained leaf owning its embedded tmpl/
              tree — init emits the fleet-of-one shape: fleet.yaml +
@@ -77,7 +79,7 @@ examples/    Image-contract examples: spec.example.json (golden), env.example,
 | Smoke failure | `logs/smoke-*.log` (kept on failure, deleted on success) + `tests/smoke_test.py` |
 | Migration guides | `docs/standard-agent.md#migrations` |
 | Scaffold a new downstream agent repo | `cmd/agentctl` — `go run ./cmd/agentctl init <dir>` (emits the fleet-of-one shape: fleet.yaml + `agents/<key>/`) |
-| Fleet manifest + renderer | `internal/fleet/` — manifest.go (loader), render.go (envelope renderer; goldens in testdata/), cli/fleet.go (ls/check verbs) |
+| Fleet manifest + renderer | `internal/fleet/` — manifest.go (loader), render.go (envelope renderer; goldens in testdata/), cli/fleet.go (ls/check verbs incl. running-port drift), cli/fleetverbs.go (batch verbs), cli/fleetadd.go (`fleet add`) |
 | Migrate a legacy single-agent repo | `internal/cli/migrateverb.go` — `agentctl migrate` |
 
 ## Code Map

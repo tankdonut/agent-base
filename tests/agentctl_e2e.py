@@ -561,9 +561,84 @@ def main() -> int:
             pass_("dev down removed the stack")
         else:
             fail("containers survive dev down")
+
+        print("[e2e] fleet: two agents")
+        second_port = random.randint(22000, 22999)
+        run(
+            [
+                agentctl,
+                "fleet",
+                "add",
+                "helper",
+                "--port",
+                str(second_port),
+                "--base-tag",
+                "2099.12.31",
+                "--telegram=false",
+            ],
+            cwd=project,
+            check=True,
+        )
+        # fleet add scaffolds the example envs only; the deploy
+        # contract needs the per-agent secrets (mirrored sk- key pair).
+        helper_dir = project / "agents" / "helper"
+        run([agentctl, "secrets", "init"], cwd=helper_dir, check=True)
+        proc = run([agentctl, "fleet", "deploy", "--all"], cwd=project)
+        first_url = f"http://127.0.0.1:{port}/healthz"
+        second_url = f"http://127.0.0.1:{second_port}/healthz"
+        if proc.returncode == 0 and (host_probe(second_url, "") and host_probe(first_url, "")):
+            pass_("fleet deploy --all brought both agents healthy on distinct ports")
+        else:
+            fail(f"fleet deploy --all failed:\n{indent(proc.stdout + proc.stderr)}")
+
+        # Batching is never implicit: an unscoped fleet verb must refuse.
+        proc = run([agentctl, "fleet", "status"], cwd=project)
+        if proc.returncode != 0 and "never implicit" in proc.stdout + proc.stderr:
+            pass_("unscoped fleet verb on a 2-agent roster refuses")
+        else:
+            fail("unscoped fleet verb did not demand --agent/--all")
+
+        # Running-config drift: move the manifest port out from under
+        # the live stack, expect the check to flag it, then converge
+        # back with a scoped deploy.
+        manifest = project / "fleet.yaml"
+        before = manifest.read_text(encoding="utf-8")
+        manifest.write_text(
+            before.replace(f"gateway_port: {second_port}", f"gateway_port: {second_port + 1}"),
+            encoding="utf-8",
+        )
+        proc = run([agentctl, "fleet", "check"], cwd=project)
+        body = proc.stdout + proc.stderr
+        if "running stack publishes" in body and f"allocates {second_port + 1}" in body:
+            pass_("fleet check flags running-port drift after a manifest port edit")
+        else:
+            fail(f"running-port drift not flagged:\n{indent(body)}")
+        manifest.write_text(before, encoding="utf-8")
+        run([agentctl, "fleet", "deploy", "--agent", "helper"], cwd=project, check=True)
+
+        run([agentctl, "fleet", "stop", "--all"], cwd=project, check=True)
+        run([agentctl, "fleet", "start", "--all"], cwd=project, check=True)
+        if host_probe(second_url, ""):
+            pass_("fleet stop/start --all round-trips both agents")
+        else:
+            fail("fleet start --all left an agent unhealthy")
+
+        run([agentctl, "destroy", "--volumes", "--yes"], cwd=helper_dir, check=True)
+        if container_state("helper") is None:
+            pass_("destroy from the agent dir removes the helper stack")
+        else:
+            fail("helper container survives destroy")
     finally:
         if project.exists() and agentctl.exists():
-            run([agentctl, "destroy", "--volumes", "--yes"], cwd=project)
+            # Two agents on the roster: the single-agent destroy verb
+            # scopes by cwd, so clean each agent from its own directory.
+            first_dir = project / "agents" / project_name
+            for agent_dir in (first_dir, project / "agents" / "helper"):
+                if agent_dir.exists():
+                    run(
+                        [agentctl, "destroy", "--volumes", "--yes"],
+                        cwd=agent_dir,
+                    )
         dump_transcript()
 
     if FAILURES == 0:

@@ -24,13 +24,9 @@ type resolvedProject struct {
 	Agent    string // registry key; "" never happens in fleet repos
 }
 
-// resolveProject locates the enclosing agent project. In a fleet repo
-// (fleet.yaml) the root is the resolved AGENT directory: cwd inside
-// agents/<name> scopes to that agent, a fleet of one defaults to its
-// only agent, and the deployment envelope is (re)materialized from the
-// manifest before anything consumes it. Legacy single-agent layouts
-// (root-level agent/spec.json, no fleet.yaml) fail closed pointing at
-// `agentctl migrate`.
+// resolveProject locates the enclosing agent project: fleet root →
+// agent selection (cwd scope, fleet-of-one default, legacy hard-error)
+// → resolveAgentIn.
 func resolveProject() (*resolvedProject, error) {
 	fleetRoot, err := fleet.FindRoot(".")
 	if err != nil {
@@ -50,11 +46,22 @@ func resolveProject() (*resolvedProject, error) {
 	if err != nil {
 		return nil, err
 	}
-	entry := m.Agents[agent]
-	if entry.ComposeFile != "" {
-		return nil, fmt.Errorf("agents.%s uses an authored compose_file (%s) — single-agent verbs drive the rendered envelope; fleet verbs gain authored support with P1", agent, entry.ComposeFile)
+	return resolveAgentIn(m, agent)
+}
+
+// resolveAgentIn resolves one registered agent against its manifest
+// entry: guards the authored-compose opt-out, (re)materializes the
+// rendered envelope, and chdirs to the agent directory so every
+// downstream consumer sees agent-dir-relative paths.
+func resolveAgentIn(m *fleet.Manifest, name string) (*resolvedProject, error) {
+	entry, ok := m.Agents[name]
+	if !ok {
+		return nil, fmt.Errorf("agent %q is not registered in %s", name, fleet.ManifestName)
 	}
-	if _, err := fleet.MaterializeAgentCompose(m, agent); err != nil {
+	if entry.ComposeFile != "" {
+		return nil, fmt.Errorf("agents.%s uses an authored compose_file (%s) — fleet verbs drive the rendered envelope; authored support is tracked for a later phase", name, entry.ComposeFile)
+	}
+	if _, err := fleet.MaterializeAgentCompose(m, name); err != nil {
 		return nil, err
 	}
 	abs, err := filepath.Abs(entry.Dir)
@@ -64,7 +71,7 @@ func resolveProject() (*resolvedProject, error) {
 	if err := os.Chdir(abs); err != nil {
 		return nil, err
 	}
-	return &resolvedProject{Root: abs, Manifest: m, Agent: agent}, nil
+	return &resolvedProject{Root: abs, Manifest: m, Agent: name}, nil
 }
 
 // targetAgent picks the roster entry: cwd under agents/<name> scopes to
@@ -125,12 +132,12 @@ func fleetConfig(rp *resolvedProject) (Config, error) {
 	return cfg, nil
 }
 
-// loadProjectPlatform resolves everything the release verbs need: the
-// resolved agent root (chdir into it), the effective config, the
-// derived Deployment, and the constructed pinned platform. Failing
-// early here means every verb fails the same way with the same hints.
-func loadProjectPlatform() (string, platform.Platform, platform.Deployment, error) {
-	rp, err := resolveProject()
+// loadProjectPlatformFor resolves everything a release verb needs for
+// one registered agent of an already-loaded manifest: the agent root
+// (chdir into it), the effective config, the derived Deployment, and
+// the constructed platform.
+func loadProjectPlatformFor(m *fleet.Manifest, name string) (string, platform.Platform, platform.Deployment, error) {
+	rp, err := resolveAgentIn(m, name)
 	if err != nil {
 		return "", nil, platform.Deployment{}, err
 	}
@@ -147,6 +154,17 @@ func loadProjectPlatform() (string, platform.Platform, platform.Deployment, erro
 		return "", nil, platform.Deployment{}, err
 	}
 	return rp.Root, p, d, nil
+}
+
+// loadProjectPlatform is the cwd-resolved variant for the single-agent
+// verbs. Failing early here means every verb fails the same way with
+// the same hints.
+func loadProjectPlatform() (string, platform.Platform, platform.Deployment, error) {
+	rp, err := resolveProject()
+	if err != nil {
+		return "", nil, platform.Deployment{}, err
+	}
+	return loadProjectPlatformFor(rp.Manifest, rp.Agent)
 }
 
 // newValidateCmd runs the base image's --validate-spec gate.

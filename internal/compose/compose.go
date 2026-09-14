@@ -98,6 +98,17 @@ func Ps(r process.Runner, engine string) error {
 	return process.RunArgv(r, nil, composeArgv(engine, false, "ps")...)
 }
 
+// PsJSON captures `compose ps --format json` — the running-config
+// surface the drift check reads (published ports vs the manifest
+// allocation). Relative argv: call with the agent directory as cwd.
+func PsJSON(r process.Runner, engine string) ([]byte, error) {
+	if r == nil {
+		return nil, process.ErrNilRunner
+	}
+	argv := composeArgv(engine, false, "ps", "--format", "json")
+	return r.RunOutput(nil, argv[0], argv[1:]...)
+}
+
 // Destroy removes the stack. volumes=false keeps the named volumes
 // (warm {data} survives); volumes=true also deletes them — the
 // explicit data-loss path.

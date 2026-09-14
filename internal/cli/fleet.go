@@ -8,6 +8,7 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -16,7 +17,9 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/tankdonut/agent-base/internal/compose"
 	"github.com/tankdonut/agent-base/internal/fleet"
+	"github.com/tankdonut/agent-base/internal/process"
 	"github.com/tankdonut/agent-base/internal/project"
 )
 
@@ -51,7 +54,10 @@ func newFleetCmd() *cobra.Command {
 carry authored image content; deployment envelopes are rendered from
 fleet.yaml — never authored.`,
 	}
-	fleetCmd.AddCommand(newFleetLsCmd(), newFleetCheckCmd())
+	fleetCmd.AddCommand(newFleetLsCmd())
+	fleetCmd.AddCommand(newFleetCheckCmd())
+	fleetCmd.AddCommand(newFleetAddCmd())
+	fleetCmd.AddCommand(newFleetVerbCmds()...)
 	return fleetCmd
 }
 
@@ -118,6 +124,7 @@ func newFleetCheckCmd() *cobra.Command {
 			findings = append(findings, checkRetiredAgentctlConfig(m)...)
 			findings = append(findings, checkPlaneAdvisory(m)...)
 			findings = append(findings, checkRenderedArtifactDrift(m)...)
+			findings = append(findings, checkRunningPortDrift(m)...)
 
 			errors := 0
 			warnings := 0
@@ -241,6 +248,85 @@ func checkPlaneAdvisory(m *fleet.Manifest) []fleetFinding {
 		return []fleetFinding{{"WARN", fmt.Sprintf("%d agents with plane disabled — enable the plane (shared LiteLLM + observability) or accept per-agent sidecars", len(m.Agents))}}
 	}
 	return nil
+}
+
+// checkRunningPortDrift compares each agent's manifest gateway port
+// against what a RUNNING stack actually publishes (compose ps). The
+// running config is the one thing verbs cannot regenerate: a manifest
+// port edit after a deploy leaves the container on the old port until
+// the next deploy — surface that as a warning. Engine-optional: no
+// engine or no running stack means nothing to compare, silently.
+func checkRunningPortDrift(m *fleet.Manifest) []fleetFinding {
+	engine, err := process.ResolveEngine(m.Defaults.ComposeEngine, newRunner())
+	if err != nil {
+		return nil
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = os.Chdir(cwd) }()
+	var out []fleetFinding
+	for _, name := range m.AgentNames() {
+		entry := m.Agents[name]
+		if err := os.Chdir(entry.Dir); err != nil {
+			continue
+		}
+		data, err := compose.PsJSON(newRunner(), engine)
+		if err != nil {
+			continue
+		}
+		published := publishedHostPorts(data)
+		if len(published) == 0 {
+			continue
+		}
+		if !published[entry.GatewayPort] {
+			out = append(out, fleetFinding{"WARN", fmt.Sprintf("agents.%s: the running stack publishes %v but the manifest allocates %d — re-run a fleet verb (or deploy) to converge, or fix the manifest", name, sortedKeys(published), entry.GatewayPort)})
+		}
+	}
+	return out
+}
+
+// publishedHostPorts normalizes `compose ps --format json` across
+// engines: docker compose reports Publishers[].PublishedPort; podman
+// reports Ports[].host_port. Both shapes are accepted; anything
+// unparsable yields an empty set (the caller skips).
+func publishedHostPorts(data []byte) map[int]bool {
+	ports := map[int]bool{}
+	var rows []map[string]any
+	if err := json.Unmarshal(data, &rows); err != nil {
+		return ports
+	}
+	for _, row := range rows {
+		if pubs, ok := row["Publishers"].([]any); ok {
+			for _, p := range pubs {
+				if m, ok := p.(map[string]any); ok {
+					if n, ok := m["PublishedPort"].(float64); ok && n > 0 {
+						ports[int(n)] = true
+					}
+				}
+			}
+		}
+		if tis, ok := row["Ports"].([]any); ok {
+			for _, p := range tis {
+				if m, ok := p.(map[string]any); ok {
+					if n, ok := m["host_port"].(float64); ok && n > 0 {
+						ports[int(n)] = true
+					}
+				}
+			}
+		}
+	}
+	return ports
+}
+
+func sortedKeys(m map[int]bool) []int {
+	keys := make([]int, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Ints(keys)
+	return keys
 }
 
 // checkRenderedArtifactDrift compares the on-disk rendered envelope
