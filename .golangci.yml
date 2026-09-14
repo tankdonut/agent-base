@@ -39,6 +39,17 @@ linters:
             - pkg: "github.com/tankdonut/agent-base/internal"
               desc: "foundations import nothing internal"
 
+        api-imports-port-and-foundations:
+          files:
+            - "**/internal/api/**.go"
+          deny:
+            - pkg: "github.com/tankdonut/agent-base/internal/cli"
+              desc: "the API server receives injected deps — it never imports the composition root"
+            - pkg: "github.com/tankdonut/agent-base/internal/platform/dockercompose"
+              desc: "api never imports adapters — the registry is injected from cli"
+            - pkg: "github.com/tankdonut/agent-base/internal/platform/fly"
+              desc: "api never imports adapters — the registry is injected from cli"
+
         fleet-foundations-and-port-only:
           files:
             - "**/internal/fleet/**.go"

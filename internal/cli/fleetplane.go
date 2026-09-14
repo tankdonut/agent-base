@@ -110,7 +110,7 @@ func newFleetPlaneStatusCmd() *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runPlane(cmd, false, func(engine string) error {
-				return compose.Ps(newRunner(), engine)
+				return compose.Ps(newRunner(), engine, ".")
 			})
 		},
 	}
@@ -128,7 +128,7 @@ func newFleetPlaneLogsCmd() *cobra.Command {
 				if follow {
 					logArgs = append(logArgs, "-f")
 				}
-				return compose.Logs(newRunner(), engine, logArgs)
+				return compose.Logs(newRunner(), engine, ".", logArgs)
 			})
 		},
 	}

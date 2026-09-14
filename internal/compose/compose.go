@@ -49,7 +49,7 @@ func Up(r process.Runner, engine, root string) error {
 	if err := RequireEnvFile(root); err != nil {
 		return err
 	}
-	return process.RunArgv(r, nil, composeArgv(engine, false, "up", "-d")...)
+	return process.RunArgvIn(r, root, nil, composeArgv(engine, false, "up", "-d")...)
 }
 
 // Dev gates on agent/.env, then starts the stack with the hot-reload
@@ -61,58 +61,58 @@ func Dev(r process.Runner, engine, root string) error {
 	if err := RequireEnvFile(root); err != nil {
 		return err
 	}
-	return process.RunArgv(r, nil, composeArgv(engine, true, "up", "-d")...)
+	return process.RunArgvIn(r, root, nil, composeArgv(engine, true, "up", "-d")...)
 }
 
 // Down removes the stack's containers and networks; named volumes
 // (agent-data, agent-backups) survive.
-func Down(r process.Runner, engine string) error {
+func Down(r process.Runner, engine, root string) error {
 	if r == nil {
 		return process.ErrNilRunner
 	}
-	return process.RunArgv(r, nil, composeArgv(engine, false, "down")...)
+	return process.RunArgvIn(r, root, nil, composeArgv(engine, false, "down")...)
 }
 
 // Stop pauses the running containers in place (no removal); Start
 // resumes them. The pair exists for capability-gated platform verbs.
-func Stop(r process.Runner, engine string) error {
+func Stop(r process.Runner, engine, root string) error {
 	if r == nil {
 		return process.ErrNilRunner
 	}
-	return process.RunArgv(r, nil, composeArgv(engine, false, "stop")...)
+	return process.RunArgvIn(r, root, nil, composeArgv(engine, false, "stop")...)
 }
 
 // Start resumes containers stopped with Stop.
-func Start(r process.Runner, engine string) error {
+func Start(r process.Runner, engine, root string) error {
 	if r == nil {
 		return process.ErrNilRunner
 	}
-	return process.RunArgv(r, nil, composeArgv(engine, false, "start")...)
+	return process.RunArgvIn(r, root, nil, composeArgv(engine, false, "start")...)
 }
 
 // Ps lists the stack's containers and their state.
-func Ps(r process.Runner, engine string) error {
+func Ps(r process.Runner, engine, root string) error {
 	if r == nil {
 		return process.ErrNilRunner
 	}
-	return process.RunArgv(r, nil, composeArgv(engine, false, "ps")...)
+	return process.RunArgvIn(r, root, nil, composeArgv(engine, false, "ps")...)
 }
 
 // PsJSON captures `compose ps --format json` — the running-config
 // surface the drift check reads (published ports vs the manifest
 // allocation). Relative argv: call with the agent directory as cwd.
-func PsJSON(r process.Runner, engine string) ([]byte, error) {
+func PsJSON(r process.Runner, engine, root string) ([]byte, error) {
 	if r == nil {
 		return nil, process.ErrNilRunner
 	}
 	argv := composeArgv(engine, false, "ps", "--format", "json")
-	return r.RunOutput(nil, argv[0], argv[1:]...)
+	return r.RunOutputIn(root, nil, argv[0], argv[1:]...)
 }
 
 // Destroy removes the stack. volumes=false keeps the named volumes
 // (warm {data} survives); volumes=true also deletes them — the
 // explicit data-loss path.
-func Destroy(r process.Runner, engine string, volumes bool) error {
+func Destroy(r process.Runner, engine, root string, volumes bool) error {
 	if r == nil {
 		return process.ErrNilRunner
 	}
@@ -120,38 +120,38 @@ func Destroy(r process.Runner, engine string, volumes bool) error {
 	if volumes {
 		verb = append(verb, "-v")
 	}
-	return process.RunArgv(r, nil, composeArgv(engine, false, verb...)...)
+	return process.RunArgvIn(r, root, nil, composeArgv(engine, false, verb...)...)
 }
 
 // Logs shows compose logs; args pass through untouched (e.g. -f agent).
-func Logs(r process.Runner, engine string, args []string) error {
+func Logs(r process.Runner, engine, root string, args []string) error {
 	if r == nil {
 		return process.ErrNilRunner
 	}
 	verb := append([]string{"logs"}, args...)
-	return process.RunArgv(r, nil, composeArgv(engine, false, verb...)...)
+	return process.RunArgvIn(r, root, nil, composeArgv(engine, false, verb...)...)
 }
 
 // Mcp passes args to `openclaw mcp` inside the running agent container
 // (login/logout/status/doctor/…). Stdio is inherited, so interactive
 // flows — the OAuth login URL print and the --code paste-back — work
 // verbatim against the pinned CLI.
-func Mcp(r process.Runner, engine string, args []string) error {
+func Mcp(r process.Runner, engine, root string, args []string) error {
 	if r == nil {
 		return process.ErrNilRunner
 	}
 	verb := append([]string{"exec", "agent", "openclaw", "mcp"}, args...)
-	return process.RunArgv(r, nil, composeArgv(engine, false, verb...)...)
+	return process.RunArgvIn(r, root, nil, composeArgv(engine, false, verb...)...)
 }
 
 // Backup drives the image's verified backup primitive inside the
 // running agent container; the archive lands in the agent-backups
 // volume (the /backups mount).
-func Backup(r process.Runner, engine string) error {
+func Backup(r process.Runner, engine, root string) error {
 	if r == nil {
 		return process.ErrNilRunner
 	}
-	return process.RunArgv(r, nil, composeArgv(engine, false,
+	return process.RunArgvIn(r, root, nil, composeArgv(engine, false,
 		"exec", "agent", "openclaw", "backup", "create", "--verify", "--output", "/backups")...)
 }
 
@@ -159,12 +159,12 @@ func Backup(r process.Runner, engine string) error {
 // container and returns its stdout. Agentctl-authored commands only —
 // the platform port contract; -T because this is capture, not
 // interaction.
-func Probe(r process.Runner, engine, command string) (string, error) {
+func Probe(r process.Runner, engine, root, command string) (string, error) {
 	if r == nil {
 		return "", process.ErrNilRunner
 	}
 	argv := composeArgv(engine, false, "exec", "-T", "agent", "sh", "-c", command)
-	out, err := r.RunOutput(nil, argv[0], argv[1:]...)
+	out, err := r.RunOutputIn(root, nil, argv[0], argv[1:]...)
 	if err != nil {
 		return "", err
 	}
@@ -172,32 +172,32 @@ func Probe(r process.Runner, engine, command string) (string, error) {
 }
 
 // BuildImages builds the project image(s).
-func BuildImages(r process.Runner, engine string) error {
+func BuildImages(r process.Runner, engine, root string) error {
 	if r == nil {
 		return process.ErrNilRunner
 	}
-	return process.RunArgv(r, nil, composeArgv(engine, false, "build")...)
+	return process.RunArgvIn(r, root, nil, composeArgv(engine, false, "build")...)
 }
 
 // Restart restarts the named services (all when none given).
-func Restart(r process.Runner, engine string, services []string) error {
+func Restart(r process.Runner, engine, root string, services []string) error {
 	if r == nil {
 		return process.ErrNilRunner
 	}
 	verb := append([]string{"restart"}, services...)
-	return process.RunArgv(r, nil, composeArgv(engine, false, verb...)...)
+	return process.RunArgvIn(r, root, nil, composeArgv(engine, false, verb...)...)
 }
 
 // Rebuild rebuilds the named services' images and force-recreates them
 // (all services when none given).
-func Rebuild(r process.Runner, engine string, services []string) error {
+func Rebuild(r process.Runner, engine, root string, services []string) error {
 	if r == nil {
 		return process.ErrNilRunner
 	}
 	build := append([]string{"build"}, services...)
-	if err := process.RunArgv(r, nil, composeArgv(engine, false, build...)...); err != nil {
+	if err := process.RunArgvIn(r, root, nil, composeArgv(engine, false, build...)...); err != nil {
 		return err
 	}
 	recreate := append([]string{"up", "-d", "--force-recreate"}, services...)
-	return process.RunArgv(r, nil, composeArgv(engine, false, recreate...)...)
+	return process.RunArgvIn(r, root, nil, composeArgv(engine, false, recreate...)...)
 }

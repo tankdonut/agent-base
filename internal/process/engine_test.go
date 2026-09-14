@@ -24,6 +24,14 @@ func (f *fakeRunner) RunOutput(env []string, name string, args ...string) ([]byt
 	return nil, fmt.Errorf("fake: output capture not configured")
 }
 
+func (f *fakeRunner) RunIn(dir string, env []string, name string, args ...string) error {
+	return f.Run(env, name, args...)
+}
+
+func (f *fakeRunner) RunOutputIn(dir string, env []string, name string, args ...string) ([]byte, error) {
+	return f.RunOutput(env, name, args...)
+}
+
 func (f *fakeRunner) LookPath(name string) (string, error) {
 	if f.look[name] {
 		return "/usr/bin/" + name, nil

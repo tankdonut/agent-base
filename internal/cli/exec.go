@@ -8,7 +8,9 @@ import (
 )
 
 // execRunner is the real Runner: exec with inherited stdio. A nil env
-// inherits the parent environment (exec semantics).
+// inherits the parent environment (exec semantics). The In-variants
+// set cmd.Dir — process-global cwd stays untouched (the serve path
+// runs concurrent jobs).
 type execRunner struct{}
 
 func (execRunner) Run(env []string, name string, args ...string) error {
@@ -22,6 +24,24 @@ func (execRunner) Run(env []string, name string, args ...string) error {
 
 func (execRunner) RunOutput(env []string, name string, args ...string) ([]byte, error) {
 	cmd := exec.Command(name, args...)
+	cmd.Env = env
+	cmd.Stderr = os.Stderr
+	return cmd.Output()
+}
+
+func (execRunner) RunIn(dir string, env []string, name string, args ...string) error {
+	cmd := exec.Command(name, args...)
+	cmd.Dir = dir
+	cmd.Env = env
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+func (execRunner) RunOutputIn(dir string, env []string, name string, args ...string) ([]byte, error) {
+	cmd := exec.Command(name, args...)
+	cmd.Dir = dir
 	cmd.Env = env
 	cmd.Stderr = os.Stderr
 	return cmd.Output()

@@ -60,6 +60,8 @@ fleet.yaml — never authored.`,
 	fleetCmd.AddCommand(newFleetPlaneCmd())
 	fleetCmd.AddCommand(newFleetRenderCmd())
 	fleetCmd.AddCommand(newFleetKeyCmd())
+	fleetCmd.AddCommand(newFleetServeCmd())
+	fleetCmd.AddCommand(newFleetServeInitCmd())
 	fleetCmd.AddCommand(newFleetVerbCmds()...)
 	return fleetCmd
 }
@@ -264,18 +266,10 @@ func checkRunningPortDrift(m *fleet.Manifest) []fleetFinding {
 	if err != nil {
 		return nil
 	}
-	cwd, err := os.Getwd()
-	if err != nil {
-		return nil
-	}
-	defer func() { _ = os.Chdir(cwd) }()
 	var out []fleetFinding
 	for _, name := range m.AgentNames() {
 		entry := m.Agents[name]
-		if err := os.Chdir(entry.Dir); err != nil {
-			continue
-		}
-		data, err := compose.PsJSON(newRunner(), engine)
+		data, err := compose.PsJSON(newRunner(), engine, entry.Dir)
 		if err != nil {
 			continue
 		}

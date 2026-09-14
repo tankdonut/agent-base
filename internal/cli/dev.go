@@ -43,7 +43,7 @@ Subcommands: up, down, logs, restart, mcp, open.`,
 			if err != nil {
 				return err
 			}
-			return compose.Down(newRunner(), engine)
+			return compose.Down(newRunner(), engine, ".")
 		},
 	}
 	var logs = &cobra.Command{
@@ -55,7 +55,7 @@ Subcommands: up, down, logs, restart, mcp, open.`,
 			if err != nil {
 				return err
 			}
-			return compose.Logs(newRunner(), engine, args)
+			return compose.Logs(newRunner(), engine, ".", args)
 		},
 	}
 	var restart = &cobra.Command{
@@ -66,7 +66,7 @@ Subcommands: up, down, logs, restart, mcp, open.`,
 			if err != nil {
 				return err
 			}
-			return compose.Restart(newRunner(), engine, args)
+			return compose.Restart(newRunner(), engine, ".", args)
 		},
 	}
 	var mcp = &cobra.Command{
@@ -78,7 +78,7 @@ Subcommands: up, down, logs, restart, mcp, open.`,
 			if err != nil {
 				return err
 			}
-			return compose.Mcp(newRunner(), engine, args)
+			return compose.Mcp(newRunner(), engine, ".", args)
 		},
 	}
 	var open = &cobra.Command{

@@ -80,7 +80,7 @@ func ValidateRef(r process.Runner, engine, root, ref string) error {
 		argv = append(argv, "-e", name+"=dummy")
 	}
 	argv = append(argv, ref, "--validate-spec")
-	return process.RunArgv(r, nil, append([]string{engine}, argv...)...)
+	return process.RunArgvIn(r, root, nil, append([]string{engine}, argv...)...)
 }
 
 func dirExists(path string) bool {

@@ -121,11 +121,11 @@ func (a *Adapter) Deploy(ctx context.Context, r process.Runner, root string, d *
 	}
 	project.WarnGatewayPortBusy(warnWriter{out}, root, a.gatewayPort)
 	if opts.Force {
-		if err := compose.Rebuild(r, a.engine, nil); err != nil {
+		if err := compose.Rebuild(r, a.engine, root, nil); err != nil {
 			return err
 		}
 	} else {
-		if err := compose.BuildImages(r, a.engine); err != nil {
+		if err := compose.BuildImages(r, a.engine, root); err != nil {
 			return err
 		}
 		if err := compose.Up(r, a.engine, root); err != nil {
@@ -140,7 +140,7 @@ func (a *Adapter) Deploy(ctx context.Context, r process.Runner, root string, d *
 func (a *Adapter) Status(ctx context.Context, r process.Runner, root string, d *platform.Deployment, out platform.Output) error {
 	out.Printf("platform: compose (engine: %s)\nproject: %s\nbase image: ghcr.io/tankdonut/agent-base:%s\nenv vars set: %d\n",
 		a.engine, d.Project, d.BaseTag, len(d.EnvKeys))
-	return compose.Ps(r, a.engine)
+	return compose.Ps(r, a.engine, root)
 }
 
 // Logs streams the agent service logs.
@@ -149,18 +149,18 @@ func (a *Adapter) Logs(ctx context.Context, r process.Runner, root string, d *pl
 	if follow {
 		args = append(args, "-f")
 	}
-	return compose.Logs(r, a.engine, append(args, "agent"))
+	return compose.Logs(r, a.engine, root, append(args, "agent"))
 }
 
 // Mcp execs `openclaw mcp <args>` in the running agent container.
 func (a *Adapter) Mcp(ctx context.Context, r process.Runner, root string, d *platform.Deployment, args []string, out platform.Output) error {
-	return compose.Mcp(r, a.engine, args)
+	return compose.Mcp(r, a.engine, root, args)
 }
 
 // Backup runs the image's verified backup primitive in the running
 // agent container; the archive lands in the agent-backups volume.
 func (a *Adapter) Backup(ctx context.Context, r process.Runner, root string, d *platform.Deployment, out platform.Output) error {
-	if err := compose.Backup(r, a.engine); err != nil {
+	if err := compose.Backup(r, a.engine, root); err != nil {
 		return err
 	}
 	out.Printf("backup of %s verified — archive in the agent-backups volume (/backups); `agentctl destroy --volumes` would delete it\n", d.Project)
@@ -171,12 +171,12 @@ func (a *Adapter) Backup(ctx context.Context, r process.Runner, root string, d *
 // container and returns its stdout (port contract: agentctl-authored
 // commands only).
 func (a *Adapter) Probe(ctx context.Context, r process.Runner, root string, d *platform.Deployment, command string) (string, error) {
-	return compose.Probe(r, a.engine, command)
+	return compose.Probe(r, a.engine, root, command)
 }
 
 // Stop pauses the stack in place.
 func (a *Adapter) Stop(ctx context.Context, r process.Runner, root string, d *platform.Deployment, out platform.Output) error {
-	if err := compose.Stop(r, a.engine); err != nil {
+	if err := compose.Stop(r, a.engine, root); err != nil {
 		return err
 	}
 	out.Printf("stopped %s (volumes kept; `agentctl start` resumes)\n", d.Project)
@@ -185,7 +185,7 @@ func (a *Adapter) Stop(ctx context.Context, r process.Runner, root string, d *pl
 
 // Start resumes a stopped stack.
 func (a *Adapter) Start(ctx context.Context, r process.Runner, root string, d *platform.Deployment, out platform.Output) error {
-	if err := compose.Start(r, a.engine); err != nil {
+	if err := compose.Start(r, a.engine, root); err != nil {
 		return err
 	}
 	out.Printf("started %s\n", d.Project)
@@ -195,7 +195,7 @@ func (a *Adapter) Start(ctx context.Context, r process.Runner, root string, d *p
 // Destroy tears the stack down; destroyData=false keeps the named
 // volumes (the default — data safety beats availability).
 func (a *Adapter) Destroy(ctx context.Context, r process.Runner, root string, d *platform.Deployment, destroyData bool, out platform.Output) error {
-	if err := compose.Destroy(r, a.engine, destroyData); err != nil {
+	if err := compose.Destroy(r, a.engine, root, destroyData); err != nil {
 		return err
 	}
 	if destroyData {

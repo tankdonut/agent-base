@@ -55,8 +55,11 @@ internal/    agentctl engine, layered by import direction:
              check`, fleetverbs.go the batch verbs (deploy/status/logs/
              backup/stop/start with --agent|--all — batches are never
              implicit), fleetadd.go `fleet add`, fleetplane.go the plane
-             lifecycle + `fleet render` + `fleet key`, gatewaystatus.go the WS operator surface (`fleet status --live`, `approvals`); migrateverb.go hosts `agentctl migrate` — the legacy
+             lifecycle + `fleet render` + `fleet key`, gatewaystatus.go the WS operator surface (`fleet status --live`, `approvals`), fleetserve.go `fleet serve`/`fleet serve-init`; migrateverb.go hosts `agentctl migrate` — the legacy
              single-agent layout → fleet.yaml carry-over),
+             api (loopback fleet API: bearer auth, 202 deploy jobs +
+             jobs table, SSE events, approvals proxy — deps injected
+             from cli, dir-scoped Runner execution, never chdirs),
              scaffold (self-contained leaf owning its embedded tmpl/
              tree — init emits the fleet-of-one shape: fleet.yaml +
              agents/<key>/)
@@ -80,7 +83,7 @@ examples/    Image-contract examples: spec.example.json (golden), env.example,
 | Smoke failure | `logs/smoke-*.log` (kept on failure, deleted on success) + `tests/smoke_test.py` |
 | Migration guides | `docs/standard-agent.md#migrations` |
 | Scaffold a new downstream agent repo | `cmd/agentctl` — `go run ./cmd/agentctl init <dir>` (emits the fleet-of-one shape: fleet.yaml + `agents/<key>/`) |
-| Fleet manifest + renderer + plane | `internal/fleet/` — manifest.go (loader), render.go (envelope renderer), plane.go (plane stack renderer; goldens in testdata/), cli/fleet.go (ls/check incl. running-port drift), cli/fleetverbs.go (batch verbs), cli/fleetadd.go (`fleet add`), cli/fleetplane.go (plane lifecycle, `fleet render`, `fleet key`), cli/gatewaystatus.go (`fleet status --live`, `approvals`), gatewayclient/ (WS client) |
+| Fleet manifest + renderer + plane | `internal/fleet/` — manifest.go (loader), render.go (envelope renderer), plane.go (plane stack renderer; goldens in testdata/), cli/fleet.go (ls/check incl. running-port drift), cli/fleetverbs.go (batch verbs), cli/fleetadd.go (`fleet add`), cli/fleetplane.go (plane lifecycle, `fleet render`, `fleet key`), cli/gatewaystatus.go (`fleet status --live`, `approvals`), cli/fleetserve.go (`fleet serve`, `serve-init`), gatewayclient/ (WS client), api/ (loopback fleet API) |
 | Migrate a legacy single-agent repo | `internal/cli/migrateverb.go` — `agentctl migrate` |
 
 ## Code Map

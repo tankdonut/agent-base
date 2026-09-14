@@ -60,6 +60,14 @@ func (s *stubRunner) RunOutput(env []string, name string, args ...string) ([]byt
 	return nil, fmt.Errorf("fake: output capture not configured")
 }
 
+func (s *stubRunner) RunIn(dir string, env []string, name string, args ...string) error {
+	return s.Run(env, name, args...)
+}
+
+func (s *stubRunner) RunOutputIn(dir string, env []string, name string, args ...string) ([]byte, error) {
+	return s.RunOutput(env, name, args...)
+}
+
 func (s *stubRunner) LookPath(name string) (string, error) {
 	if s.look[name] {
 		return "/usr/bin/" + name, nil

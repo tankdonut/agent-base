@@ -1051,6 +1051,14 @@ keys set there serve the whole fleet).
   resolves pending exec/plugin approvals. Both authenticate with the
   agent's gateway token on the loopback publish and never print token
   material.
+- Control-plane API: `agentctl fleet serve` runs a loopback-only
+  HTTP API (bearer token under `~/.local/state/agentctl/`, minted on
+  first run) with the roster, live status, approvals list/resolve,
+  async deploy jobs (202 + `/api/v1/jobs/{id}`), and an SSE event
+  stream (`/api/v1/events`). Jobs run concurrently through the
+  dir-scoped runner — the server never chdirs. `agentctl fleet
+  serve-init` writes a systemd user unit; remote access goes through
+  a local TLS-terminating reverse proxy, never a wider bind.
 
 Each guide below is the exact cutover for that project onto
 `ghcr.io/tankdonut/agent-base:2026.08.24.1`. Both keep their existing named
