@@ -35,6 +35,7 @@ linters:
             - "**/internal/project/**.go"
             - "**/internal/process/**.go"
             - "**/internal/gatewayclient/**.go"
+            - "**/internal/e2e/**.go"
           deny:
             - pkg: "github.com/tankdonut/agent-base/internal"
               desc: "foundations import nothing internal"
