@@ -243,10 +243,11 @@ func recoverPortFromCompose(path string) int {
 	return 0
 }
 
-// ensureRenderIgnore appends the agentctl-namespace ignore pattern,
-// creating .gitignore when the repo has none.
+// ensureRenderIgnore appends the agentctl-namespace ignore patterns,
+// creating .gitignore when the repo has none. plane/ covers both the
+// rendered plane stack and its authored secrets (plane/.env).
 func ensureRenderIgnore(root string) error {
-	for _, pattern := range []string{"agents/*/compose.yml", "agents/*/.agentctl/"} {
+	for _, pattern := range []string{"agents/*/compose.yml", "agents/*/.agentctl/", "plane/"} {
 		if err := appendIgnorePattern(root, pattern); err != nil {
 			return err
 		}

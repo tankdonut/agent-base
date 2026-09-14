@@ -267,6 +267,11 @@ func sharedLiteLLMFixture(t *testing.T) string {
 	if err := os.WriteFile(filepath.Join(root, fleet.ManifestName), []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// Shared placement retires the agent-local litellm/ tree: the
+	// plane owns the proxy, the agent keeps only its virtual key.
+	if err := os.RemoveAll(filepath.Join(root, "agents", "grow", "litellm")); err != nil {
+		t.Fatal(err)
+	}
 	return root
 }
 
@@ -293,10 +298,48 @@ func TestDoctorLitellmShapeFailsOnSharedPlane(t *testing.T) {
 	stubbedRunner(t, "podman")
 	out, err := execIn(t, root, "doctor")
 	if err == nil {
-		t.Fatal("doctor must fail when a litellm spec rides the not-yet-rendered shared plane")
+		t.Fatal("doctor must fail while the plane's secrets are unfilled")
 	}
-	if !strings.Contains(out, "agents.grow.litellm: shared but the plane compose render ships with P2") {
-		t.Errorf("output lacks the shape FAIL line:\n%s", out)
+	if !strings.Contains(out, "plane/.env missing") {
+		t.Errorf("output lacks the plane env FAIL line:\n%s", out)
+	}
+}
+
+func TestDoctorSharedPlaneGreenWhenFilled(t *testing.T) {
+	root := sharedLiteLLMFixture(t)
+	stubbedRunner(t, "podman")
+	// A filled plane/.env + a minted virtual key in the agent .env is
+	// the green shared-mode shape.
+	planeDir := filepath.Join(root, "plane")
+	if err := os.MkdirAll(planeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(planeDir, ".env"),
+		[]byte("LITELLM_MASTER_KEY=sk-master-x\nPOSTGRES_PASSWORD=p\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	agentEnv := filepath.Join(root, "agents", "grow", ".env")
+	data, err := os.ReadFile(agentEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(agentEnv, append(data, []byte("LITELLM_API_KEY=sk-agent-vk\n")...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, err := execIn(t, root, "doctor")
+	if err != nil {
+		t.Fatalf("doctor on a filled shared plane: %v\n%s", err, out)
+	}
+	for _, want := range []string{
+		"plane/.env carries the shared-proxy secrets",
+		"agent .env carries a virtual key",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output lacks %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "GENERATE_ME") {
+		t.Errorf("placeholder leak into the report:\n%s", out)
 	}
 }
 

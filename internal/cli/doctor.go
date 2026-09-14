@@ -183,16 +183,16 @@ func runDoctor(out io.Writer, asJSON bool, target string, postUpgrade bool, expe
 		add("secrets", StatusOK, ".env sets all %d required vars", n)
 	}
 
-	// The litellm provider shape is load-bearing for litellm specs: the
-	// tree, the compose sidecar, and model-net must all be present — and
-	// the pinned image must actually ship the litellm seed. For other
-	// providers the report is advisory only — direct-provider
+	// The litellm provider shape is load-bearing for litellm specs. For
+	// other providers the report is advisory only — direct-provider
 	// deployments remain supported. Placement comes from the manifest:
-	// sidecar renders carry the proxy by construction; shared placement
-	// needs the plane compose render, which lands with P2.
-	if specOK && info.AuthChoice == "litellm-api-key" && rp.Manifest.Agents[rp.Agent].LiteLLMUsed == fleet.LiteLLMShared {
-		add("litellm-tree", StatusFail, "agents.%s.litellm: shared but the plane compose render ships with P2 — set litellm: sidecar (or remove the override) until the plane lands", rp.Agent)
-	} else if specOK && info.AuthChoice == "litellm-api-key" {
+	// shared agents hang off the plane (plane/.env secrets + a minted
+	// virtual key in the agent .env); sidecar agents carry their own
+	// tree, compose service, and model-net.
+	switch {
+	case specOK && info.AuthChoice == "litellm-api-key" && rp.Manifest.Agents[rp.Agent].LiteLLMUsed == fleet.LiteLLMShared:
+		sharedSharedDoctorCheck(add, rp, root)
+	case specOK && info.AuthChoice == "litellm-api-key":
 		if seed, ok := eraByID("litellm-baseurl-seed"); ok {
 			if day := tagDate(tag); tagOK && !day.IsZero() && day.Year() >= 2026 && day.Before(seed.Day) {
 				add("litellm-era", StatusFail, "pinned base image %s predates the litellm seed (%s) — bump agent/Dockerfile; the old image never seeds baseUrl and its loader does not gate the key", tag, seed.Day.Format("2006.01.02"))
@@ -205,9 +205,11 @@ func runDoctor(out io.Writer, asJSON bool, target string, postUpgrade bool, expe
 		} else {
 			add("litellm-tree", StatusOK, "litellm sidecar shape present (tree, compose service, model-net)")
 		}
-	} else if specOK {
+	case specOK:
 		add("litellm-tree", StatusWarn, "provider %q — litellm sidecar not adopted; the blessed migration is a fresh-volume path (docs/standard-agent.md \"Migrating an existing agent to LiteLLM\")", info.AuthChoice)
 	}
+
+	// plat/deploy stay nil until the platform construct succeeds — the
 
 	// plat/deploy stay nil until the platform construct succeeds — the
 	// volume probes below gate on plat != nil.
@@ -446,6 +448,56 @@ func tagDate(tag string) time.Time {
 // composeCarriesLitellm reports whether the compose file names the
 // litellm service and the model-net network — the blessed shape the
 // base seeds baseUrl against.
+// sharedSharedDoctorCheck is the shared-plane litellm pre-flight:
+// plane/.env must carry real secrets (master key + DB password, no
+// GENERATE_ME placeholders) and the agent's .env must already hold a
+// minted virtual key ('fleet key <agent>' writes it). Static files
+// only — whether the plane is RUNNING is `fleet plane status`.
+func sharedSharedDoctorCheck(add func(key string, status CheckStatus, format string, args ...any), rp *resolvedProject, root string) {
+	planeEnvPath := filepath.Join(rp.Manifest.Root, fleet.PlaneDir, ".env")
+	data, err := os.ReadFile(planeEnvPath)
+	switch {
+	case err != nil:
+		add("litellm-plane", StatusFail, "plane/.env missing — copy %s to .env and fill every GENERATE_ME (fleet plane up needs it)", filepath.Join(fleet.PlaneDir, ".env.example"))
+		return
+	case strings.Contains(string(data), "GENERATE_ME"):
+		add("litellm-plane", StatusFail, "plane/.env still carries GENERATE_ME placeholders — fill LITELLM_MASTER_KEY and POSTGRES_PASSWORD")
+		return
+	}
+	env := envLinesToMap(string(data))
+	if env["LITELLM_MASTER_KEY"] == "" || env["POSTGRES_PASSWORD"] == "" {
+		add("litellm-plane", StatusFail, "plane/.env must set LITELLM_MASTER_KEY and POSTGRES_PASSWORD (names checked, never values)")
+		return
+	}
+	add("litellm-plane", StatusOK, "plane/.env carries the shared-proxy secrets")
+
+	if _, err := os.Stat(filepath.Join(root, "litellm")); err == nil {
+		add("litellm-tree", StatusWarn, "agent-local litellm/ tree present under shared placement — the plane owns the proxy; remove the tree (the sidecar mirror check would otherwise fail on the virtual key)")
+		return
+	}
+	agentEnv, _ := os.ReadFile(filepath.Join(root, ".env"))
+	if strings.Contains(string(agentEnv), "LITELLM_API_KEY=sk-") {
+		add("litellm-tree", StatusOK, "agent .env carries a virtual key (minted via fleet key; value checked by shape only)")
+	} else {
+		add("litellm-tree", StatusFail, "agent .env carries no LITELLM_API_KEY virtual key — run `fleet key %s` with the plane up", rp.Agent)
+	}
+}
+
+// envLinesToMap parses KEY=VALUE lines (comments/blank skipped).
+func envLinesToMap(body string) map[string]string {
+	env := map[string]string{}
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if key, value, ok := strings.Cut(line, "="); ok {
+			env[strings.TrimSpace(key)] = strings.TrimSpace(value)
+		}
+	}
+	return env
+}
+
 func composeCarriesLitellm(path string) bool {
 	data, err := os.ReadFile(path)
 	if err != nil {

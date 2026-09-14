@@ -1,0 +1,80 @@
+# RENDERED by agentctl from fleet.yaml — DO NOT EDIT.
+# The plane (shared services) is derived state, regenerated on every
+# fleet plane verb. Secrets live only in plane/.env (interpolation
+# source AND litellm env_file); nothing rendered carries a value.
+
+# Pinned project name: containers/volumes/network carry it as a prefix,
+# and the network's explicit name is what agents join as external.
+name: e2e-plane
+
+services:
+  # Budgets/virtual keys REQUIRE the database (db-less LiteLLM fails
+  # budgets open) — the DB is not optional for the shared plane.
+  litellm-db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: litellm
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: litellm
+    volumes:
+      - plane-litellm-db:/var/lib/postgresql/data
+    networks:
+      - e2e-plane-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U litellm -d litellm"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    security_opt:
+      - no-new-privileges:true
+      - label=disable
+    cap_drop: [ALL]
+
+  # The fleet's one model/provider home: every provider API key lives
+  # in plane/.env, agents hold per-agent virtual keys minted by
+  # 'fleet key <agent>' (budgets/teams in the litellm-db).
+  litellm:
+    image: ghcr.io/berriai/litellm:v1.100.0@sha256:c8756e7b9a61fe45df2ccb5b781d388c3b2f3a21ef9e4956630caef20f9f03aa
+    command: ["--config", "/app/proxy_server_config.yaml", "--port", "4000"]
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://litellm:${POSTGRES_PASSWORD}@litellm-db:5432/litellm
+      STORE_MODEL_IN_DB: "True"
+    volumes:
+      - ./litellm/config.yaml:/app/proxy_server_config.yaml:ro,Z
+    # Loopback-only: agents reach the proxy over e2e-plane-net as
+    # http://litellm:4000; this publish is for the operator and
+    # 'fleet key' minting.
+    ports:
+      - "127.0.0.1:${PLANE_LITELLM_PORT:-4000}:4000"
+    networks:
+      - e2e-plane-net
+    depends_on:
+      litellm-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:4000/health/liveliness', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      # First boot runs the prisma schema migration against postgres.
+      start_period: 120s
+    security_opt:
+      - no-new-privileges:true
+      - label=disable
+    cap_drop: [ALL]
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1g
+
+networks:
+  e2e-plane-net:
+    name: e2e-plane-net
+
+volumes:
+  plane-litellm-db:

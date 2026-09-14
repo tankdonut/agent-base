@@ -64,14 +64,16 @@ func runFleetAdd(cmd *cobra.Command, name string, port int, agentName, baseTag s
 	if agentName == "" {
 		agentName = scaffold.DefaultAgentName(name)
 	}
+	planeShared := m.Plane.Enabled && m.Plane.LiteLLM == fleet.LiteLLMShared
 	cfg := scaffold.Config{
-		ProjectName: name,
-		AgentName:   agentName,
-		BaseTag:     baseTag,
-		Model:       scaffold.DefaultModel,
-		GatewayPort: port,
-		Telegram:    telegram,
-		TargetDir:   root,
+		ProjectName:   name,
+		AgentName:     agentName,
+		BaseTag:       baseTag,
+		Model:         scaffold.DefaultModel,
+		GatewayPort:   port,
+		Telegram:      telegram,
+		TargetDir:     root,
+		SharedLiteLLM: planeShared,
 	}
 	created, err := scaffold.Agent(cfg, name)
 	if err != nil {

@@ -57,6 +57,9 @@ fleet.yaml — never authored.`,
 	fleetCmd.AddCommand(newFleetLsCmd())
 	fleetCmd.AddCommand(newFleetCheckCmd())
 	fleetCmd.AddCommand(newFleetAddCmd())
+	fleetCmd.AddCommand(newFleetPlaneCmd())
+	fleetCmd.AddCommand(newFleetRenderCmd())
+	fleetCmd.AddCommand(newFleetKeyCmd())
 	fleetCmd.AddCommand(newFleetVerbCmds()...)
 	return fleetCmd
 }

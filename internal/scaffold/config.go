@@ -48,6 +48,10 @@ type Config struct {
 	Model       string
 	GatewayPort int
 	Telegram    bool
+	// SharedLiteLLM skips the agent-local litellm/ tree (fleet add on
+	// a plane-shared fleet: the plane owns the proxy, the agent gets a
+	// minted virtual key via `fleet key`).
+	SharedLiteLLM bool
 
 	TargetDir string // absolute path to the scaffold destination
 	GitInit   bool   // run `git init` in the target after scaffolding

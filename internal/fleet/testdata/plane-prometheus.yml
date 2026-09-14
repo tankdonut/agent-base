@@ -1,0 +1,13 @@
+# RENDERED by agentctl — scrape targets are the shared-plane roster
+# (per-agent aliases on e2e-plane-net; sidecar agents are not reachable from
+# the plane and are not scraped). Each agent must run the
+# diagnostics-prometheus plugin (docs: docs/standard-agent.md) and —
+# because that plugin requires operator auth — the job needs the
+# agent's gateway token as a bearer credential; wiring tokens lands
+# with the live-observability phase, which owns the scrape contract.
+global:
+  scrape_interval: 30s
+scrape_configs:
+  - job_name: grow
+    static_configs:
+      - targets: ["grow:18789"]

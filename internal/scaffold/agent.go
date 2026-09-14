@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // Agent emits the agent-scoped template subset (everything except the
@@ -14,7 +15,10 @@ import (
 // workspace, knowledge, litellm, dev overlay) under
 // <target>/agents/<key>/. It refuses when the agent directory already
 // carries a spec.json — adding never clobbers an existing agent — and
-// returns the created paths relative to the target.
+// returns the created paths relative to the target. When the fleet's
+// plane provides the shared proxy (cfg.SharedLiteLLM), the agent-local
+// litellm/ tree is skipped: the plane owns the proxy and the agent
+// gets a minted virtual key instead.
 func Agent(cfg Config, key string) ([]string, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
@@ -44,6 +48,9 @@ func Agent(cfg Config, key string) ([]string, error) {
 	created := []string{}
 	for _, rel := range paths {
 		if repoFiles[rel] {
+			continue
+		}
+		if cfg.SharedLiteLLM && strings.HasPrefix(rel, "litellm/") {
 			continue
 		}
 		out := OutputPath(rel, key)

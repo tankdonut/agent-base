@@ -997,8 +997,54 @@ Rules the new shape enforces (all fail-closed):
   and every verb — renames go through the manifest, never silently
   shrinking the fleet.
 
-Adding a second agent: `mkdir -p agents/<name>/agent` with a spec,
-register the entry, allocate a port — `fleet check` guides both.
+Adding a second agent: `agentctl fleet add <name>` scaffolds the
+agent-scoped tree, registers the manifest entry with an explicit
+next-free port, and warns when existing implicit allocations would
+shift. Batch verbs (`fleet deploy/status/logs/backup/stop/start`) take
+`--agent <name>` or `--all` — batches are never implicit; per-agent
+failures isolate (the run continues, the summary names every failure,
+the exit code is 1).
+
+### The plane (shared services, optional)
+
+`fleet.yaml`'s `plane:` block turns on the shared-services plane:
+
+```yaml
+plane:
+  enabled: true
+  name: my-plane        # network becomes my-plane-net
+  litellm: shared       # shared | none
+  observability: true   # prometheus + loki + alloy + grafana
+```
+
+Everything under `plane/` is derived state + secrets and is gitignored
+wholesale: `plane/compose.yml`, the litellm seed config, the
+observability configs, and `plane/.env` (the ONLY authored file —
+copy `plane/.env.example`, fill every GENERATE_ME; it is both the
+compose interpolation source and the proxy's env_file, so provider
+keys set there serve the whole fleet).
+
+- `plane.litellm: shared` renders the `litellm-db` (postgres; budgets
+  and virtual keys REQUIRE the database — db-less LiteLLM fails budgets
+  open) plus one shared proxy. Agents with `litellm: shared` (or unset,
+  inheriting the plane) drop their local sidecar and litellm/ tree,
+  join `my-plane-net` with a per-agent alias, and hold a per-agent
+  virtual key instead of the master key.
+- Lifecycle: `agentctl fleet plane up|down|status|logs` (`down`
+  keeps the named volumes unless `--volumes`). `fleet render`
+  materializes every derived artifact without touching an engine.
+- Virtual keys: `agentctl fleet key <agent>` mints a key through the
+  running proxy (master key from `plane/.env`) and writes it to
+  `agents/<agent>/.env` as `LITELLM_API_KEY`. Neither key value is
+  ever printed; `doctor` checks presence by shape only.
+- Observability: agents' gateways are scrape targets by plane-net
+  alias; alloy collects container logs by compose project (the engine
+  socket mounts read-only at a fixed in-container path — the host side
+  follows `defaults.compose.engine`, and rootless podman sets
+  `PLANE_ENGINE_SOCK` in `plane/.env`).
+- Resilience contract: the plane is a shared dependency, not a
+  lifecycle owner — with the plane down, agents' gateways stay up and
+  answer /healthz; only model traffic degrades until `fleet plane up`.
 
 Each guide below is the exact cutover for that project onto
 `ghcr.io/tankdonut/agent-base:2026.08.24.1`. Both keep their existing named
