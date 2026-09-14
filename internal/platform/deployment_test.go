@@ -3,6 +3,7 @@ package platform
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -10,6 +11,7 @@ func writeProject(t *testing.T, files map[string]string) string {
 	t.Helper()
 	root := t.TempDir()
 	for rel, content := range files {
+		rel = strings.TrimPrefix(rel, "agent/")
 		p := filepath.Join(root, filepath.FromSlash(rel))
 		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 			t.Fatal(err)
@@ -92,8 +94,8 @@ func TestDeriveFailsClosed(t *testing.T) {
 		name    string
 		missing string
 	}{
-		{"no dockerfile pin", "agent/Dockerfile"},
-		{"no spec", "agent/spec.json"},
+		{"no dockerfile pin", "Dockerfile"},
+		{"no spec", "spec.json"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

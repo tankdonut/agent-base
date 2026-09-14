@@ -36,11 +36,11 @@ func Derive(root string) (Deployment, error) {
 	if err != nil {
 		return Deployment{}, fmt.Errorf("resolving %s: %w", root, err)
 	}
-	tag, err := project.BaseTagFromDockerfile(filepath.Join(abs, "agent", "Dockerfile"))
+	tag, err := project.BaseTagFromDockerfile(filepath.Join(abs, "Dockerfile"))
 	if err != nil {
 		return Deployment{}, err
 	}
-	info, err := project.ReadSpec(filepath.Join(abs, "agent", "spec.json"))
+	info, err := project.ReadSpec(filepath.Join(abs, "spec.json"))
 	if err != nil {
 		return Deployment{}, err
 	}

@@ -1,0 +1,13 @@
+# Fleet manifest — the single authored deployment-shape source. This
+# repo is a fleet of one; add agents/<name>/ directories with registry
+# entries to grow it. Compose envelopes are RENDERED from this file by
+# agentctl (agents/<name>/compose.yml, gitignored) — never authored.
+plane:
+  # Enable shared services (a shared LiteLLM proxy + observability)
+  # when a second agent joins — `agentctl fleet check` will remind you.
+  # enabled: true
+  # name: {{.AgentKey}}-plane
+  gateway_base_port: {{.GatewayPort}}
+agents:
+  "{{.AgentKey}}":
+    gateway_port: {{.GatewayPort}}

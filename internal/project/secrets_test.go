@@ -20,10 +20,10 @@ func TestSecretsInit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(paths) != 1 || paths[0] != filepath.Join(root, "agent", ".env") {
+	if len(paths) != 1 || paths[0] != filepath.Join(root, ".env") {
 		t.Errorf("returned paths = %v", paths)
 	}
-	data, err := os.ReadFile(filepath.Join(root, "agent", ".env"))
+	data, err := os.ReadFile(filepath.Join(root, ".env"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,14 +43,14 @@ func TestSecretsInit(t *testing.T) {
 	}
 
 	// Mode 0600, and the example file is untouched.
-	fi, err := os.Stat(filepath.Join(root, "agent", ".env"))
+	fi, err := os.Stat(filepath.Join(root, ".env"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if fi.Mode().Perm() != 0o600 {
 		t.Errorf("mode = %o, want 600", fi.Mode().Perm())
 	}
-	example, _ := os.ReadFile(filepath.Join(root, "agent", ".env.example"))
+	example, _ := os.ReadFile(filepath.Join(root, ".env.example"))
 	if string(example) != envExampleWithToken {
 		t.Error("agent/.env.example was modified")
 	}
@@ -84,7 +84,7 @@ func TestSecretsInitLitellm(t *testing.T) {
 	if len(paths) != 2 {
 		t.Fatalf("paths = %v, want agent/.env and litellm/.env", paths)
 	}
-	if paths[0] != filepath.Join(root, "agent", ".env") || paths[1] != filepath.Join(root, "litellm", ".env") {
+	if paths[0] != filepath.Join(root, ".env") || paths[1] != filepath.Join(root, "litellm", ".env") {
 		t.Fatalf("paths = %v", paths)
 	}
 	aenv, err := os.ReadFile(paths[0])
@@ -132,7 +132,7 @@ func TestSecretsInitLitellmRefusals(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "secrets edit") {
 		t.Fatalf("err = %v, want refusal pointing at secrets edit", err)
 	}
-	if _, err := os.Stat(filepath.Join(root, "agent", ".env")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(root, ".env")); !os.IsNotExist(err) {
 		t.Error("agent/.env must not be created when litellm/.env already exists")
 	}
 	existing, _ := os.ReadFile(filepath.Join(root, "litellm", ".env"))
@@ -160,7 +160,7 @@ func TestSecretsInitAppendsWhenCommentedLineAbsent(t *testing.T) {
 	if _, err := SecretsInit(root); err != nil {
 		t.Fatal(err)
 	}
-	data, err := os.ReadFile(filepath.Join(root, "agent", ".env"))
+	data, err := os.ReadFile(filepath.Join(root, ".env"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,7 +182,7 @@ func TestSecretsInitRefusesExistingEnv(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "secrets edit") {
 		t.Fatalf("err = %v, want refusal pointing at secrets edit", err)
 	}
-	data, _ := os.ReadFile(filepath.Join(root, "agent", ".env"))
+	data, _ := os.ReadFile(filepath.Join(root, ".env"))
 	if string(data) != "EXISTING=1\n" {
 		t.Error("existing agent/.env must not be touched")
 	}
@@ -192,7 +192,7 @@ func TestSecretsInitRefusesSymlinkAtEnvPath(t *testing.T) {
 	// A dangling symlink (committable to git) must not be written
 	// through: O_EXCL creation fails and the target stays absent.
 	root := writeProject(t, map[string]string{"agent/.env.example": envExampleWithToken})
-	link := filepath.Join(root, "agent", ".env")
+	link := filepath.Join(root, ".env")
 	if err := os.Symlink("../outside.env", link); err != nil {
 		t.Fatal(err)
 	}
@@ -211,13 +211,13 @@ func TestSecretsInitRefusesSymlinkAtEnvPath(t *testing.T) {
 		"agent/.env.example": envExampleWithToken,
 		"agent/.env.target":  "PREEXISTING=1\n",
 	})
-	if err := os.Symlink(".env.target", filepath.Join(root2, "agent", ".env")); err != nil {
+	if err := os.Symlink(".env.target", filepath.Join(root2, ".env")); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := SecretsInit(root2); err == nil || !strings.Contains(err.Error(), "symlink") {
 		t.Fatalf("err = %v, want symlink refusal for existing target", err)
 	}
-	data, _ := os.ReadFile(filepath.Join(root2, "agent", ".env.target"))
+	data, _ := os.ReadFile(filepath.Join(root2, ".env.target"))
 	if string(data) != "PREEXISTING=1\n" {
 		t.Error("symlink target was modified through the link")
 	}

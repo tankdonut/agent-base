@@ -26,16 +26,12 @@ Subcommands: up, down, logs, restart, mcp, open.`,
 		Short: "Start the dev stack (overlay applied)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			root, engine, err := devEngine()
+			rp, engine, err := devEngine()
 			if err != nil {
 				return err
 			}
-			cfg, err := LoadConfig()
-			if err != nil {
-				return err
-			}
-			project.WarnGatewayPortBusy(cmd.ErrOrStderr(), root, cfg.ComposeGatewayPort())
-			return compose.Dev(newRunner(), engine, root)
+			project.WarnGatewayPortBusy(cmd.ErrOrStderr(), rp.Root, rp.Manifest.Agents[rp.Agent].GatewayPort)
+			return compose.Dev(newRunner(), engine, rp.Root)
 		},
 	}
 	var down = &cobra.Command{
@@ -90,31 +86,27 @@ Subcommands: up, down, logs, restart, mcp, open.`,
 		Short: "Print and open the gateway URL (xdg-open)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			root, err := chdirProject()
+			rp, err := resolveProject()
 			if err != nil {
 				return err
 			}
-			cfg, err := LoadConfig()
-			if err != nil {
-				return err
-			}
-			return Open(newRunner(), root, cfg.ComposeGatewayPort(), cmd.OutOrStdout())
+			return Open(newRunner(), rp.Root, rp.Manifest.Agents[rp.Agent].GatewayPort, cmd.OutOrStdout())
 		},
 	}
 	dev.AddCommand(up, down, logs, restart, mcp, open)
 	return dev
 }
 
-// devEngine resolves the project root and the local compose engine in
-// one step for the dev group.
-func devEngine() (string, string, error) {
-	root, err := chdirProject()
+// devEngine resolves the project and the local compose engine in one
+// step for the dev group.
+func devEngine() (*resolvedProject, string, error) {
+	rp, err := resolveProject()
 	if err != nil {
-		return "", "", err
+		return nil, "", err
 	}
 	engine, err := resolveComposeEngine()
 	if err != nil {
-		return "", "", err
+		return nil, "", err
 	}
-	return root, engine, nil
+	return rp, engine, nil
 }

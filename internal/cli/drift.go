@@ -43,7 +43,7 @@ func checkTemplateDrift(add addCheck, root string, info project.SpecInfo, gatewa
 		case err != nil:
 			add("template/"+rel, StatusWarn, "reading %s: %v", rel, err)
 		case string(got) != string(want):
-			add("template/"+rel, StatusWarn, "differs from the scaffolded shape — keep deliberate edits, but reconcile against a fresh init tree before an upgrade; a non-default gateway port belongs in .agentctl.yaml (compose.gateway_port)")
+			add("template/"+rel, StatusWarn, "differs from the scaffolded shape — keep deliberate edits, but reconcile against a fresh init tree before an upgrade; a non-default gateway port belongs in fleet.yaml (agents.<name>.gateway_port)")
 		default:
 			add("template/"+rel, StatusOK, "matches the scaffolded shape")
 		}

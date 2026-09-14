@@ -14,6 +14,7 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
+	"github.com/tankdonut/agent-base/internal/fleet"
 	"github.com/tankdonut/agent-base/internal/project"
 )
 
@@ -173,34 +174,57 @@ func agentctlConfigPath() string {
 	return ""
 }
 
-// pinPlatform writes `platform: <name>` into the project's
-// .agentctl.yaml, replacing an existing platform line in place or
-// appending one. Line-oriented on purpose: the scaffolded file is
-// comment-heavy and must survive intact.
-func pinPlatform(root, name string) error {
-	path := filepath.Join(root, ConfigName)
-	data, err := os.ReadFile(path)
-	replace := err == nil
-	if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("reading %s: %w", path, err)
+// pinFleetAgentPlatform writes `platform: <name>` into the agent's
+// fleet.yaml registry entry, replacing an existing platform line in
+// place or inserting one directly under `  <agent>:`. Line-oriented on
+// purpose: fleet.yaml is comment-heavy and must survive intact.
+func pinFleetAgentPlatform(m *fleet.Manifest, agent, name string) error {
+	data, err := os.ReadFile(m.Path)
+	if err != nil {
+		return fmt.Errorf("reading %s: %w", m.Path, err)
 	}
-	line := "platform: " + name
-	if replace {
-		lines := strings.Split(string(data), "\n")
-		found := false
-		for i, ln := range lines {
-			if strings.HasPrefix(strings.TrimSpace(ln), "platform:") {
-				lines[i] = line
-				found = true
+	lines := strings.Split(string(data), "\n")
+	entryIdx := -1
+	inAgents := false
+	for i, ln := range lines {
+		if !inAgents {
+			if ln == "agents:" {
+				inAgents = true
+			}
+			continue
+		}
+		if strings.TrimSpace(ln) == "" {
+			continue
+		}
+		if !strings.HasPrefix(ln, "  ") {
+			break // a new top-level key ends the agents block
+		}
+		if strings.HasPrefix(ln, "  ") && !strings.HasPrefix(ln, "   ") {
+			label := strings.Trim(strings.TrimSuffix(strings.TrimSpace(ln), ":"), `"'`)
+			if label == agent {
+				entryIdx = i
 				break
 			}
 		}
-		if !found {
-			lines = append(lines, line)
-		}
-		data = []byte(strings.Join(lines, "\n"))
-	} else {
-		data = []byte("# agentctl config — see `agentctl platform ls`\n" + line + "\n")
 	}
-	return os.WriteFile(path, data, 0o644)
+	if entryIdx == -1 {
+		return fmt.Errorf("agents.%s entry not found in %s", agent, m.Path)
+	}
+	pin := "    platform: " + name
+	for i := entryIdx + 1; i < len(lines); i++ {
+		ln := lines[i]
+		if strings.TrimSpace(ln) != "" && !strings.HasPrefix(ln, "    ") {
+			break // entry body ended
+		}
+		if strings.HasPrefix(ln, "    platform:") {
+			lines[i] = pin
+			return os.WriteFile(m.Path, []byte(strings.Join(lines, "\n")), 0o644)
+		}
+	}
+	// No existing platform line: insert as the entry's first key.
+	out := make([]string, 0, len(lines)+1)
+	out = append(out, lines[:entryIdx+1]...)
+	out = append(out, pin)
+	out = append(out, lines[entryIdx+1:]...)
+	return os.WriteFile(m.Path, []byte(strings.Join(out, "\n")), 0o644)
 }

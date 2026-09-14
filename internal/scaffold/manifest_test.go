@@ -16,8 +16,7 @@ import (
 // is contract-load-bearing. spec.json and AGENTS.md are deliberately
 // absent (operator-owned surfaces).
 var wantContractFiles = []string{
-	"agent/.env.example",
-	"compose.yml",
+	".env.example",
 	"litellm/.env.example",
 	"litellm/config.yaml",
 }
@@ -105,7 +104,7 @@ func TestRenderContractFileMatchesRun(t *testing.T) {
 				t.Fatalf("Run: %v", err)
 			}
 			for _, rel := range ContractFiles() {
-				want, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(rel)))
+				want, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(OutputPath(rel, ComposeProject(d.ProjectName)))))
 				if err != nil {
 					t.Fatalf("read scaffolded %s: %v", rel, err)
 				}

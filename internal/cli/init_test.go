@@ -32,9 +32,13 @@ func TestInitCmdScaffoldsGoldenTree(t *testing.T) {
 		t.Fatalf("init: %v", err)
 	}
 
-	want, err := scaffold.Paths()
+	wantSources, err := scaffold.Paths()
 	if err != nil {
 		t.Fatal(err)
+	}
+	want := make([]string, 0, len(wantSources))
+	for _, rel := range wantSources {
+		want = append(want, scaffold.OutputPath(rel, "my-agent"))
 	}
 	sort.Strings(want)
 	var found []string
@@ -60,7 +64,7 @@ func TestInitCmdScaffoldsGoldenTree(t *testing.T) {
 		t.Fatalf("scaffolded tree mismatch:\n got  %v\n want %v", found, want)
 	}
 
-	spec, err := os.ReadFile(filepath.Join(dir, "agent", "spec.json"))
+	spec, err := os.ReadFile(filepath.Join(dir, "agents", "my-agent", "spec.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,14 +89,16 @@ func TestInitCmdAppliesFlags(t *testing.T) {
 	if err != nil {
 		t.Fatalf("init: %v", err)
 	}
-	compose, err := os.ReadFile(filepath.Join(dir, "compose.yml"))
+	// The gateway port lands in fleet.yaml now — the compose envelope is
+	// rendered from it (8080 as the interpolation default).
+	manifest, err := os.ReadFile(filepath.Join(dir, "fleet.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(compose), "8080") {
-		t.Errorf("compose.yml does not carry --gateway-port 8080")
+	if !strings.Contains(string(manifest), "8080") {
+		t.Errorf("fleet.yaml does not carry --gateway-port 8080:\n%s", manifest)
 	}
-	spec, err := os.ReadFile(filepath.Join(dir, "agent", "spec.json"))
+	spec, err := os.ReadFile(filepath.Join(dir, "agents", "flagged", "spec.json"))
 	if err != nil {
 		t.Fatal(err)
 	}

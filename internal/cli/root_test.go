@@ -149,17 +149,11 @@ func runWithArgs(t *testing.T, args ...string) int {
 }
 
 func TestSecretsInitAndEnvAlias(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(dir, "agent"), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	example := "#OPENCLAW_GATEWAY_TOKEN=\n#ZAI_API_KEY=\n"
-	if err := os.WriteFile(filepath.Join(dir, "agent", ".env.example"), []byte(example), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "agent", "spec.json"), []byte("{}"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	dir := writeProject(t, map[string]string{
+		"agent/.env.example": example,
+		"agent/spec.json":    "{}",
+	})
 	restore := chdir(t, dir)
 	defer restore()
 
@@ -171,10 +165,10 @@ func TestSecretsInitAndEnvAlias(t *testing.T) {
 		if err := root.Execute(); err != nil {
 			t.Fatalf("%v: %v", args, err)
 		}
-		if _, err := os.Stat(filepath.Join(dir, "agent", ".env")); err != nil {
+		if _, err := os.Stat(filepath.Join(agentDir(dir), ".env")); err != nil {
 			t.Fatalf("%v: agent/.env not created", args)
 		}
-		if err := os.Remove(filepath.Join(dir, "agent", ".env")); err != nil {
+		if err := os.Remove(filepath.Join(agentDir(dir), ".env")); err != nil {
 			t.Fatal(err)
 		}
 	}

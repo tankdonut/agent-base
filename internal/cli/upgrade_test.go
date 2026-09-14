@@ -12,7 +12,7 @@ import (
 // dockerfilePin reads the fixture's current base tag back.
 func dockerfilePin(t *testing.T, root string) string {
 	t.Helper()
-	tag, err := project.BaseTagFromDockerfile(filepath.Join(root, "agent", "Dockerfile"))
+	tag, err := project.BaseTagFromDockerfile(filepath.Join(agentDir(root), "Dockerfile"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +64,6 @@ func TestUpgradeSameTag(t *testing.T) {
 // carries the runbook.
 func TestUpgradeGateFailureAborts(t *testing.T) {
 	root := litellmFixture(t)
-	addLitellmSidecar(t, root)
 	pinFixture(t, root, "2026.08.22")
 	r := stubbedRunner(t, "podman")
 	r.runOutputOK = true

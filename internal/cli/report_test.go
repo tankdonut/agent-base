@@ -49,7 +49,7 @@ func TestDoctorReport(t *testing.T) {
 	// Secrets canary (mirrors the image-side SecretsCanary): a planted
 	// value whose KEY must ship and whose VALUE must not.
 	const canary = "canary-value-9f2c1"
-	envPath := filepath.Join(root, "agent", ".env")
+	envPath := filepath.Join(agentDir(root), ".env")
 	if err := os.WriteFile(envPath, []byte("FALLBACK_MODEL=m\nZAI_API_KEY=k\nSECRET_CANARY="+canary+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -81,10 +81,10 @@ func TestDoctorReport(t *testing.T) {
 	if doc.Meta.Tag != "2026.09.05" {
 		t.Errorf("meta.tag = %q, want 2026.09.05", doc.Meta.Tag)
 	}
-	if want := fileHex(t, filepath.Join(root, "agent", "spec.json")); doc.Bundle.SpecSha256 != want {
+	if want := fileHex(t, filepath.Join(agentDir(root), "spec.json")); doc.Bundle.SpecSha256 != want {
 		t.Errorf("spec_sha256 = %s, want %s", doc.Bundle.SpecSha256, want)
 	}
-	if want := fileHex(t, filepath.Join(root, "compose.yml")); doc.Bundle.ComposeSha256 != want {
+	if want := fileHex(t, filepath.Join(agentDir(root), "compose.yml")); doc.Bundle.ComposeSha256 != want {
 		t.Errorf("compose_sha256 = %s, want %s", doc.Bundle.ComposeSha256, want)
 	}
 	if doc.Bundle.LastImageVersion != "2026.09.05" {

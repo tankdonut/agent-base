@@ -7,9 +7,14 @@ import (
 	"path/filepath"
 )
 
-// composeArgv builds the base compose invocation for the project root:
-// <engine> compose -f compose.yml [-f compose.dev.yml] <verb...>. Paths
-// are relative, so callers must run with the project root as cwd.
+// composeArgv builds the base compose invocation for the agent root:
+// <engine> compose -f compose.yml [-f compose.dev.yml] <verb...>.
+// Paths are relative, so callers must run with the agent directory as
+// cwd. The rendered envelope sits AT the agent dir root deliberately:
+// both docker compose (project-dir = first -f file's dir) and
+// podman-compose (compose-file-dir-relative) resolve context,
+// dockerfile, env_file, and mounts identically only when the file
+// lives at the build-context root.
 func composeArgv(engine string, dev bool, verb ...string) []string {
 	argv := []string{engine, "compose", "-f", "compose.yml"}
 	if dev {
@@ -19,14 +24,14 @@ func composeArgv(engine string, dev bool, verb ...string) []string {
 }
 
 // RequireEnvFile is the secrets gate for start commands: compose mounts
-// agent/.env via env_file, so a missing file fails deep inside the
-// engine. Fail early with the fix instead. Projects shipping a LiteLLM
-// sidecar (litellm/.env.example) must also have litellm/.env — the
-// proxy's env_file — with the same early failure. Exported for platform
+// .env via env_file, so a missing file fails deep inside the engine.
+// Fail early with the fix instead. Projects shipping a LiteLLM sidecar
+// (litellm/.env.example) must also have litellm/.env — the proxy's
+// env_file — with the same early failure. Exported for platform
 // adapters that gate their own deploy paths.
 func RequireEnvFile(root string) error {
-	if _, err := os.Stat(filepath.Join(root, "agent", ".env")); err != nil {
-		return fmt.Errorf("agent/.env not found — run `agentctl secrets init` first")
+	if _, err := os.Stat(filepath.Join(root, ".env")); err != nil {
+		return fmt.Errorf(".env not found — run `agentctl secrets init` first")
 	}
 	if _, err := os.Stat(filepath.Join(root, "litellm", ".env.example")); err == nil {
 		if _, err := os.Stat(filepath.Join(root, "litellm", ".env")); err != nil {

@@ -13,14 +13,16 @@ import (
 	"sort"
 )
 
-// contractFiles lists the drift-scope output paths: files a downstream
-// project should keep scaffold-shaped because agentctl and the base
-// image rely on their structure (volumes and networks, env
-// indirection, the litellm sidecar). spec.json and AGENTS.md are
-// deliberately absent — operator-owned surfaces.
+// contractFiles lists the drift-scope output paths, agent-dir-relative
+// (the drift check runs with the agent directory as root): files a
+// downstream project should keep scaffold-shaped because agentctl and
+// the base image rely on their structure (env indirection, the litellm
+// sidecar config). compose.yml is deliberately absent — it is RENDERED
+// from fleet.yaml, and its drift surface is the fleet check's artifact
+// comparison. spec.json and AGENTS.md are deliberately absent —
+// operator-owned surfaces.
 var contractFiles = []string{
-	"agent/.env.example",
-	"compose.yml",
+	".env.example",
 	"litellm/.env.example",
 	"litellm/config.yaml",
 }

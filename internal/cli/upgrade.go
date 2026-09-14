@@ -53,7 +53,7 @@ func runUpgrade(cmd *cobra.Command, target string, dryRun, yes bool) error {
 	if err != nil {
 		return err
 	}
-	dockerfile := filepath.Join(root, "agent", "Dockerfile")
+	dockerfile := filepath.Join(root, "Dockerfile")
 	old, err := project.BaseTagFromDockerfile(dockerfile)
 	if err != nil {
 		return err
@@ -110,7 +110,7 @@ func runUpgrade(cmd *cobra.Command, target string, dryRun, yes bool) error {
 		return fail(derr, "deploy failed — the pin points at %s; revert it to %s to roll back", target, old)
 	}
 
-	info, serr := project.ReadSpec(filepath.Join(root, "agent", "spec.json"))
+	info, serr := project.ReadSpec(filepath.Join(root, "spec.json"))
 	if serr != nil {
 		return fail(serr, "post-upgrade verify could not read the spec")
 	}

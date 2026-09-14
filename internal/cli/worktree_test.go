@@ -13,7 +13,7 @@ func TestWorktreeCreateNewBranch(t *testing.T) {
 	// show-ref fails → branch does not exist yet → create with -b.
 	r.failArgv = [][]string{{"git", "show-ref", "--verify", "--quiet", "refs/heads/feat/x"}}
 
-	if err := WorktreeCreate(r, root, "feat/x"); err != nil {
+	if err := WorktreeCreate(r, agentDir(root), "feat/x"); err != nil {
 		t.Fatal(err)
 	}
 	assertCalls(t, r.calls, [][]string{
@@ -21,7 +21,7 @@ func TestWorktreeCreateNewBranch(t *testing.T) {
 		{"git", "worktree", "add", "-b", "feat/x", ".worktrees/feat/x"},
 	})
 
-	link := filepath.Join(root, ".worktrees", "feat", "x", "agent", ".env")
+	link := filepath.Join(agentDir(root), ".worktrees", "feat", "x", "agent", ".env")
 	fi, err := os.Lstat(link)
 	if err != nil {
 		t.Fatalf("symlink not created: %v", err)
@@ -36,7 +36,7 @@ func TestWorktreeCreateNewBranch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantTarget, err := filepath.Rel(filepath.Dir(link), filepath.Join(root, "agent", ".env"))
+	wantTarget, err := filepath.Rel(filepath.Dir(link), filepath.Join(agentDir(root), ".env"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,15 +47,15 @@ func TestWorktreeCreateNewBranch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resolved != filepath.Join(root, "agent", ".env") {
-		t.Errorf("symlink resolves to %q, want %q", resolved, filepath.Join(root, "agent", ".env"))
+	if resolved != filepath.Join(agentDir(root), ".env") {
+		t.Errorf("symlink resolves to %q, want %q", resolved, filepath.Join(agentDir(root), ".env"))
 	}
 }
 
 func TestWorktreeCreateExistingBranch(t *testing.T) {
 	root := writeProject(t, map[string]string{"agent/spec.json": "{}", "agent/.env": "X=1\n"})
 	r := newStubRunner("git") // show-ref succeeds → branch exists
-	if err := WorktreeCreate(r, root, "main"); err != nil {
+	if err := WorktreeCreate(r, agentDir(root), "main"); err != nil {
 		t.Fatal(err)
 	}
 	assertCalls(t, r.calls, [][]string{
@@ -65,12 +65,16 @@ func TestWorktreeCreateExistingBranch(t *testing.T) {
 }
 
 func TestWorktreeCreateRefusesRegularFileAtLink(t *testing.T) {
-	root := writeProject(t, map[string]string{
-		"agent/spec.json":            "{}",
-		".worktrees/main/agent/.env": "REAL FILE\n",
-	})
+	root := writeProject(t, map[string]string{"agent/spec.json": "{}"})
+	planted := filepath.Join(agentDir(root), ".worktrees", "main", "agent", ".env")
+	if err := os.MkdirAll(filepath.Dir(planted), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(planted, []byte("REAL FILE\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	r := newStubRunner("git")
-	err := WorktreeCreate(r, root, "main")
+	err := WorktreeCreate(r, agentDir(root), "main")
 	if err == nil || !strings.Contains(err.Error(), "not a symlink") {
 		t.Fatalf("err = %v, want not-a-symlink refusal", err)
 	}
@@ -90,14 +94,14 @@ func TestWorktreeRejectsHostileBranchNames(t *testing.T) {
 	for _, tt := range tests {
 		root := writeProject(t, map[string]string{"agent/spec.json": "{}", "agent/.env": "X=1\n"})
 		r := newStubRunner("git")
-		err := WorktreeCreate(r, root, tt.branch)
+		err := WorktreeCreate(r, agentDir(root), tt.branch)
 		if err == nil || !strings.Contains(err.Error(), tt.want) {
 			t.Fatalf("create(%q) err = %v, want %q", tt.branch, err, tt.want)
 		}
 		if len(r.calls) != 0 {
 			t.Errorf("create(%q) ran git before validating: %v", tt.branch, r.calls)
 		}
-		err = WorktreeRemove(r, root, tt.branch)
+		err = WorktreeRemove(r, agentDir(root), tt.branch)
 		if err == nil || !strings.Contains(err.Error(), tt.want) {
 			t.Fatalf("remove(%q) err = %v, want %q", tt.branch, err, tt.want)
 		}
@@ -109,16 +113,16 @@ func TestWorktreeRejectsHostileBranchNames(t *testing.T) {
 
 func TestWorktreeRemove(t *testing.T) {
 	root := writeProject(t, map[string]string{"agent/spec.json": "{}", "agent/.env": "X=1\n"})
-	link := filepath.Join(root, ".worktrees", "feat", "agent", ".env")
+	link := filepath.Join(agentDir(root), ".worktrees", "feat", "agent", ".env")
 	if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(filepath.Join("..", "..", "..", "agent", ".env"), link); err != nil {
+	if err := os.Symlink(filepath.Join("..", "..", ".env"), link); err != nil {
 		t.Fatal(err)
 	}
 
 	r := newStubRunner("git")
-	if err := WorktreeRemove(r, root, "feat"); err != nil {
+	if err := WorktreeRemove(r, agentDir(root), "feat"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Lstat(link); !os.IsNotExist(err) {
@@ -128,15 +132,19 @@ func TestWorktreeRemove(t *testing.T) {
 }
 
 func TestWorktreeRemoveKeepsRegularFile(t *testing.T) {
-	root := writeProject(t, map[string]string{
-		"agent/spec.json":            "{}",
-		".worktrees/feat/agent/.env": "REAL FILE\n",
-	})
-	r := newStubRunner("git")
-	if err := WorktreeRemove(r, root, "feat"); err != nil {
+	root := writeProject(t, map[string]string{"agent/spec.json": "{}"})
+	planted := filepath.Join(agentDir(root), ".worktrees", "feat", "agent", ".env")
+	if err := os.MkdirAll(filepath.Dir(planted), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	data, err := os.ReadFile(filepath.Join(root, ".worktrees", "feat", "agent", ".env"))
+	if err := os.WriteFile(planted, []byte("REAL FILE\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := newStubRunner("git")
+	if err := WorktreeRemove(r, agentDir(root), "feat"); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(planted)
 	if err != nil || string(data) != "REAL FILE\n" {
 		t.Errorf("regular file must be left alone: %v %q", err, data)
 	}

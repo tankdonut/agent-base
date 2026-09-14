@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/tankdonut/agent-base/internal/fleet"
 )
 
 func TestLoadConfigDefaults(t *testing.T) {
@@ -163,43 +165,63 @@ func TestBadGatewayPortEnvFails(t *testing.T) {
 	}
 }
 
-func TestPinPlatform(t *testing.T) {
-	t.Run("creates file when absent", func(t *testing.T) {
+func TestPinFleetAgentPlatform(t *testing.T) {
+	newManifest := func(t *testing.T) *fleet.Manifest {
+		t.Helper()
+		body := "# fleet manifest\nplane:\n  gateway_base_port: 18789\nagents:\n  grow:\n    gateway_port: 18789\n"
 		root := t.TempDir()
-		if err := pinPlatform(root, "compose"); err != nil {
+		path := filepath.Join(root, fleet.ManifestName)
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		data, err := os.ReadFile(filepath.Join(root, ConfigName))
+		m, err := fleet.LoadManifest(root)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(string(data), "platform: compose\n") {
-			t.Errorf("pinned file = %q", data)
-		}
-	})
+		return m
+	}
 
-	t.Run("replaces existing line, keeps comments", func(t *testing.T) {
-		root := t.TempDir()
-		original := "# agentctl config\nplatform: compose\ncompose:\n  engine: podman\n"
-		if err := os.WriteFile(filepath.Join(root, ConfigName), []byte(original), 0o644); err != nil {
+	t.Run("inserts the pin as the entry's first key", func(t *testing.T) {
+		m := newManifest(t)
+		if err := pinFleetAgentPlatform(m, "grow", "fly"); err != nil {
 			t.Fatal(err)
 		}
-		if err := pinPlatform(root, "fly"); err != nil {
-			t.Fatal(err)
-		}
-		data, err := os.ReadFile(filepath.Join(root, ConfigName))
+		data, err := os.ReadFile(m.Path)
 		if err != nil {
 			t.Fatal(err)
 		}
 		got := string(data)
-		if strings.Contains(got, "platform: compose") {
-			t.Errorf("old pin still present: %q", got)
+		if !strings.Contains(got, "  grow:\n    platform: fly\n    gateway_port: 18789\n") {
+			t.Errorf("pin misplaced:\n%s", got)
 		}
-		if !strings.Contains(got, "platform: fly") {
-			t.Errorf("new pin missing: %q", got)
+		if !strings.Contains(got, "# fleet manifest") {
+			t.Errorf("comments must survive:\n%s", got)
 		}
-		if !strings.Contains(got, "# agentctl config") || !strings.Contains(got, "engine: podman") {
-			t.Errorf("comments and namespace must survive: %q", got)
+	})
+
+	t.Run("replaces an existing pin in place", func(t *testing.T) {
+		m := newManifest(t)
+		if err := pinFleetAgentPlatform(m, "grow", "fly"); err != nil {
+			t.Fatal(err)
+		}
+		if err := pinFleetAgentPlatform(m, "grow", "compose"); err != nil {
+			t.Fatal(err)
+		}
+		data, err := os.ReadFile(m.Path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := string(data)
+		if strings.Count(got, "platform:") != 1 || !strings.Contains(got, "platform: compose") {
+			t.Errorf("pin not replaced exactly once:\n%s", got)
+		}
+	})
+
+	t.Run("unknown agent fails closed", func(t *testing.T) {
+		m := newManifest(t)
+		err := pinFleetAgentPlatform(m, "ghost", "fly")
+		if err == nil || !strings.Contains(err.Error(), "agents.ghost entry not found") {
+			t.Fatalf("err = %v, want missing-entry error", err)
 		}
 	})
 }

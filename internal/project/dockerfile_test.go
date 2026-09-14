@@ -26,7 +26,7 @@ func TestBaseTagFromDockerfile(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			root := writeProject(t, map[string]string{"agent/Dockerfile": tt.docker})
-			got, err := BaseTagFromDockerfile(filepath.Join(root, "agent", "Dockerfile"))
+			got, err := BaseTagFromDockerfile(filepath.Join(root, "Dockerfile"))
 			if tt.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 					t.Fatalf("err = %v, want containing %q", err, tt.wantErr)
@@ -94,7 +94,7 @@ func TestRewriteBaseTag(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			path := filepath.Join(writeProject(t, map[string]string{"agent/Dockerfile": tt.docker}), "agent", "Dockerfile")
+			path := filepath.Join(writeProject(t, map[string]string{"agent/Dockerfile": tt.docker}), "Dockerfile")
 			err := RewriteBaseTag(path, tt.to)
 			if tt.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {

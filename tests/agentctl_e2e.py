@@ -180,7 +180,7 @@ def dump_container_diag() -> None:
 
 def read_gateway_token(project: Path) -> str:
     try:
-        for line in (project / "agent" / ".env").read_text(encoding="utf-8").splitlines():
+        for line in (project / ".env").read_text(encoding="utf-8").splitlines():
             if line.startswith("OPENCLAW_GATEWAY_TOKEN="):
                 return line.split("=", 1)[1].strip()
     except OSError:
@@ -294,25 +294,25 @@ def main() -> int:
             check=True,
         )
 
-        # Pin the project's compose engine to the harness engine: CI
+        # Pin the fleet's compose engine to the harness engine: CI
         # runners preinstall podman, and agentctl's auto-detect would
         # build the stack there while these assertions drive E2E_ENGINE
         # — the mixed-engine split makes every state check lie. The
-        # random gateway port is recorded here too — the home the
-        # scaffolded file itself names for it — so doctor's
-        # template-drift render recovers the real port instead of the
-        # default.
-        with (project / ".agentctl.yaml").open("a", encoding="utf-8") as f:
-            f.write(f"\ncompose:\n  engine: {ENGINE}\n  gateway_port: {port}\n")
+        # random gateway port is recorded by init itself (fleet.yaml
+        # agents entry), so doctor's drift render recovers the real
+        # port, not the default.
+        agent = project / "agents" / "e2e-agent"
+        with (project / "fleet.yaml").open("a", encoding="utf-8") as f:
+            f.write(f"\ndefaults:\n  compose:\n    engine: {ENGINE}\n")
 
         agentctl_cmd("secrets", "init", check=True)
-        client_key = read_env_value(project, "agent/.env", "LITELLM_API_KEY")
-        master_key = read_env_value(project, "litellm/.env", "LITELLM_MASTER_KEY")
+        client_key = read_env_value(agent, ".env", "LITELLM_API_KEY")
+        master_key = read_env_value(agent, "litellm/.env", "LITELLM_MASTER_KEY")
         if client_key.startswith("sk-") and master_key == client_key:
             pass_("secrets init generated a mirrored sk- master/client key pair")
         else:
             fail("secrets init did not mirror LITELLM_API_KEY / LITELLM_MASTER_KEY")
-        mode = (project / "litellm" / ".env").stat().st_mode & 0o777
+        mode = (agent / "litellm" / ".env").stat().st_mode & 0o777
         if mode == 0o600:
             pass_("litellm/.env is 0600")
         else:
@@ -343,13 +343,13 @@ def main() -> int:
         pass_("doctor --report wrote the bundle")
         bundle = json.loads(report_path.read_text(encoding="utf-8"))
         drift = [c for c in bundle["checks"] if c["name"].startswith("template/")]
-        if len(drift) == 4 and all(c["status"] == "ok" for c in drift):
+        if len(drift) == 3 and all(c["status"] == "ok" for c in drift):
             pass_("zero template drift on the fresh scaffold")
         else:
-            fail(f"expected 4 ok template checks, got: {drift}")
+            fail(f"expected 3 ok template checks, got: {drift}")
         values = []
-        for env_file in ("agent/.env", "litellm/.env"):
-            for line in (project / env_file).read_text(encoding="utf-8").splitlines():
+        for env_file in (".env", "litellm/.env"):
+            for line in (agent / env_file).read_text(encoding="utf-8").splitlines():
                 if "=" in line:
                     value = line.split("=", 1)[1].strip()
                     if value:
@@ -368,7 +368,7 @@ def main() -> int:
             pass_("validate: base image parses spec + automations")
         else:
             fail(f"validate failed:\n{indent(proc.stdout + proc.stderr)}")
-        spec_path = project / "agent" / "spec.json"
+        spec_path = agent / "spec.json"
         original_spec = spec_path.read_text(encoding="utf-8")
         spec_path.write_text(
             '{\n  "specVersion": 1,\n  "agent": {"name": "x"},\n  "bogus_key": true\n}',
@@ -388,7 +388,7 @@ def main() -> int:
         else:
             fail(f"validate still failing after restore:\n{indent(proc.stdout + proc.stderr)}")
 
-        token = read_gateway_token(project)
+        token = read_gateway_token(agent)
         print("[e2e] deploy → healthy")
         proc = agentctl_cmd("deploy")
         if proc.returncode != 0:
@@ -477,7 +477,7 @@ def main() -> int:
             fail(f"upgrade failed:\n{indent(proc.stdout + proc.stderr)}")
         from_lines = [
             line
-            for line in (project / "agent" / "Dockerfile").read_text(encoding="utf-8").splitlines()
+            for line in (agent / "Dockerfile").read_text(encoding="utf-8").splitlines()
             if line.startswith("FROM ")
         ]
         if from_lines and from_lines[0].endswith(":2099.12.31.1"):

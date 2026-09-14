@@ -12,7 +12,7 @@ import (
 // host-side compose interpolation var) and falls back to the configured
 // default when unset or unparseable.
 func ResolveGatewayPort(root string, fallback int) int {
-	data, err := readFileIfExists(filepath.Join(root, "agent", ".env"))
+	data, err := readFileIfExists(filepath.Join(root, ".env"))
 	if err != nil {
 		return fallback
 	}

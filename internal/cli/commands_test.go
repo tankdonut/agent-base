@@ -5,9 +5,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
+	"go.yaml.in/yaml/v3"
+
+	"github.com/tankdonut/agent-base/internal/fleet"
 	"github.com/tankdonut/agent-base/internal/platform/fly"
 	"github.com/tankdonut/agent-base/internal/process"
 )
@@ -63,11 +67,66 @@ func (s *stubRunner) LookPath(name string) (string, error) {
 	return "", fmt.Errorf("%s: not found", name)
 }
 
-// writeProject materializes a fixture project tree in a temp dir.
+// writeProject materializes a fixture fleet repo in a temp dir. Files
+// are authored root-relative as in the legacy layout; this helper maps
+// them into the canonical fleet shape: agent-scoped paths (agent/,
+// litellm/, knowledge/, deploy/, compose.dev.yml) land under
+// agents/<key>/, compose.yml is dropped (the verb-time render owns it),
+// and .agentctl.yaml folds into the synthesized fleet.yaml entry.
 func writeProject(t *testing.T, files map[string]string) string {
 	t.Helper()
 	root := t.TempDir()
+	// Fixed fixture key: temp-dir basenames are numeric ("001") and an
+	// unquoted numeric YAML key changes the decode shape.
+	key := "grow"
+	prefix := "agents/" + key + "/"
+	out := map[string]string{}
+	var platform, port, flyApp, flyRegion string
 	for rel, content := range files {
+		switch {
+		case rel == "compose.yml":
+			continue
+		case rel == ConfigName:
+			var cfg map[string]any
+			if err := yaml.Unmarshal([]byte(content), &cfg); err == nil {
+				if p, ok := cfg["platform"].(string); ok {
+					platform = p
+				}
+				if comp, ok := cfg["compose"].(map[string]any); ok {
+					if n, ok := comp["gateway_port"].(int); ok {
+						port = strconv.Itoa(n)
+					}
+				}
+				if f, ok := cfg["fly"].(map[string]any); ok {
+					flyApp, _ = f["app"].(string)
+					flyRegion, _ = f["region"].(string)
+				}
+			}
+			continue
+		case rel == "compose.dev.yml" || strings.HasPrefix(rel, "agent/") || strings.HasPrefix(rel, "litellm/") || strings.HasPrefix(rel, "knowledge/") || strings.HasPrefix(rel, "deploy/"):
+			// Legacy-form keys: the agent/ wrapper flattens away.
+			out[prefix+strings.TrimPrefix(rel, "agent/")] = content
+		default:
+			out[rel] = content
+		}
+	}
+	manifest := &strings.Builder{}
+	manifest.WriteString("agents:\n  " + key + ":\n")
+	if platform != "" {
+		manifest.WriteString("    platform: " + platform + "\n")
+	}
+	if port != "" {
+		manifest.WriteString("    gateway_port: " + port + "\n")
+	}
+	if flyApp != "" {
+		manifest.WriteString("    fly: {app: " + flyApp)
+		if flyRegion != "" {
+			manifest.WriteString(", region: " + flyRegion)
+		}
+		manifest.WriteString("}\n")
+	}
+	out[fleet.ManifestName] = manifest.String()
+	for rel, content := range out {
 		p := filepath.Join(root, filepath.FromSlash(rel))
 		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 			t.Fatal(err)
@@ -79,13 +138,18 @@ func writeProject(t *testing.T, files map[string]string) string {
 	return root
 }
 
-// fixtureProject materializes a minimal but contract-shaped project:
-// spec with one required env ref, pinned Dockerfile, complete .env, and
-// a compose.yml with the agent service and both contract volumes.
+// agentDir returns the fixture's per-agent directory — tests writing
+// into a fixture tree address files under it.
+func agentDir(root string) string {
+	return filepath.Join(root, fleet.AgentsDir, "grow")
+}
+
+// fixtureProject materializes a minimal but contract-shaped fleet
+// repo: spec with one required env ref, pinned Dockerfile, complete
+// .env — the deployment envelope is the verb-time render.
 func fixtureProject(t *testing.T) string {
 	t.Helper()
-	root := t.TempDir()
-	files := map[string]string{
+	return writeProject(t, map[string]string{
 		"agent/spec.json": `{
   "specVersion": 1,
   "setup": {"auth_choice": "zai-coding-global"},
@@ -95,25 +159,7 @@ func fixtureProject(t *testing.T) string {
 		"agent/.env.example":        "#FALLBACK_MODEL=\n",
 		"agent/.env":                "FALLBACK_MODEL=m\nZAI_API_KEY=k\n",
 		"agent/automations/jobs.md": "---\nname: probe\ncron: 0 9 * * *\ndeliver: announce\n---\nbody\n",
-		"compose.yml": `name: fixture-agent
-services:
-  agent:
-    build: {context: ., dockerfile: agent/Dockerfile}
-volumes:
-  agent-data:
-  agent-backups:
-`,
-	}
-	for rel, content := range files {
-		p := filepath.Join(root, filepath.FromSlash(rel))
-		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	return root
+	})
 }
 
 // stubbedRunner swaps the cli runner seam for a stub and restores it.
@@ -162,7 +208,7 @@ func TestDoctorPassesOnContractProject(t *testing.T) {
 
 func TestDoctorFailsOnIncompleteProject(t *testing.T) {
 	root := fixtureProject(t)
-	if err := os.Remove(filepath.Join(root, "agent", ".env")); err != nil {
+	if err := os.Remove(filepath.Join(agentDir(root), ".env")); err != nil {
 		t.Fatal(err)
 	}
 	stubbedRunner(t, "podman")
@@ -178,11 +224,11 @@ func TestDoctorFailsOnIncompleteProject(t *testing.T) {
 func litellmFixture(t *testing.T) string {
 	t.Helper()
 	root := fixtureProject(t)
-	if err := os.WriteFile(filepath.Join(root, "agent", "Dockerfile"),
+	if err := os.WriteFile(filepath.Join(agentDir(root), "Dockerfile"),
 		[]byte("FROM ghcr.io/tankdonut/agent-base:2026.09.12\nCOPY agent/spec.json /opt/agent/spec.json\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	spec := filepath.Join(root, "agent", "spec.json")
+	spec := filepath.Join(agentDir(root), "spec.json")
 	body, err := os.ReadFile(spec)
 	if err != nil {
 		t.Fatal(err)
@@ -191,7 +237,7 @@ func litellmFixture(t *testing.T) string {
 	if err := os.WriteFile(spec, []byte(flipped), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	env := filepath.Join(root, "agent", ".env")
+	env := filepath.Join(agentDir(root), ".env")
 	body, err = os.ReadFile(env)
 	if err != nil {
 		t.Fatal(err)
@@ -199,37 +245,29 @@ func litellmFixture(t *testing.T) string {
 	if err := os.WriteFile(env, []byte(string(body)+"LITELLM_API_KEY=sk-doctor\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Join(root, "litellm"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(agentDir(root), "litellm"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "litellm", ".env.example"), []byte("#LITELLM_MASTER_KEY=\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(agentDir(root), "litellm", ".env.example"), []byte("#LITELLM_MASTER_KEY=\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "litellm", ".env"), []byte("LITELLM_MASTER_KEY=sk-doctor\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(agentDir(root), "litellm", ".env"), []byte("LITELLM_MASTER_KEY=sk-doctor\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return root
 }
 
-// addLitellmSidecar rewrites the fixture compose.yml to carry the
-// litellm service and model-net — the full blessed shape.
-func addLitellmSidecar(t *testing.T, root string) {
+// sharedLiteLLMFixture flips the manifest to shared plane placement —
+// the fleet-world shape gap doctor must FAIL on (the plane compose
+// render ships with P2).
+func sharedLiteLLMFixture(t *testing.T) string {
 	t.Helper()
-	compose := filepath.Join(root, "compose.yml")
-	body, err := os.ReadFile(compose)
-	if err != nil {
+	root := litellmFixture(t)
+	body := "plane:\n  enabled: true\n  name: p-plane\n  litellm: shared\nagents:\n  grow:\n    litellm: shared\n"
+	if err := os.WriteFile(filepath.Join(root, fleet.ManifestName), []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	withSidecar := strings.Replace(string(body), "volumes:\n  agent-data:",
-		`  litellm:
-    image: ghcr.io/berriai/litellm:v1.100.0
-networks:
-  model-net: {}
-volumes:
-  agent-data:`, 1)
-	if err := os.WriteFile(compose, []byte(withSidecar), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	return root
 }
 
 func TestDoctorWarnsWhenSidecarNotAdopted(t *testing.T) {
@@ -250,21 +288,20 @@ func TestDoctorWarnsWhenSidecarNotAdopted(t *testing.T) {
 	}
 }
 
-func TestDoctorLitellmShapeFailsOnMissingSidecar(t *testing.T) {
-	root := litellmFixture(t)
+func TestDoctorLitellmShapeFailsOnSharedPlane(t *testing.T) {
+	root := sharedLiteLLMFixture(t)
 	stubbedRunner(t, "podman")
 	out, err := execIn(t, root, "doctor")
 	if err == nil {
-		t.Fatal("doctor must fail when the litellm spec lacks the compose sidecar")
+		t.Fatal("doctor must fail when a litellm spec rides the not-yet-rendered shared plane")
 	}
-	if !strings.Contains(out, "compose.yml lacks the litellm sidecar") {
+	if !strings.Contains(out, "agents.grow.litellm: shared but the plane compose render ships with P2") {
 		t.Errorf("output lacks the shape FAIL line:\n%s", out)
 	}
 }
 
 func TestDoctorLitellmShapePasses(t *testing.T) {
 	root := litellmFixture(t)
-	addLitellmSidecar(t, root)
 	r := stubbedRunner(t, "podman")
 	r.runOutputOK = true
 	out, err := execIn(t, root, "doctor")
@@ -287,8 +324,7 @@ func TestDoctorLitellmShapePasses(t *testing.T) {
 
 func TestDoctorFailsWhenImagePreDatesLitellmSeed(t *testing.T) {
 	root := litellmFixture(t)
-	addLitellmSidecar(t, root)
-	if err := os.WriteFile(filepath.Join(root, "agent", "Dockerfile"),
+	if err := os.WriteFile(filepath.Join(agentDir(root), "Dockerfile"),
 		[]byte("FROM ghcr.io/tankdonut/agent-base:2026.08.31\nCOPY agent/spec.json /opt/agent/spec.json\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -309,8 +345,7 @@ func TestDoctorFailsWhenImagePreDatesLitellmSeed(t *testing.T) {
 
 func TestDoctorIgnoresHarnessTagEra(t *testing.T) {
 	root := litellmFixture(t)
-	addLitellmSidecar(t, root)
-	if err := os.WriteFile(filepath.Join(root, "agent", "Dockerfile"),
+	if err := os.WriteFile(filepath.Join(agentDir(root), "Dockerfile"),
 		[]byte("FROM ghcr.io/tankdonut/agent-base:2000.01.01\nCOPY agent/spec.json /opt/agent/spec.json\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -392,7 +427,7 @@ func TestDeployBuildsThenUps(t *testing.T) {
 
 func TestDeployRefusesWithoutEnvFile(t *testing.T) {
 	root := fixtureProject(t)
-	if err := os.Remove(filepath.Join(root, "agent", ".env")); err != nil {
+	if err := os.Remove(filepath.Join(agentDir(root), ".env")); err != nil {
 		t.Fatal(err)
 	}
 	r := stubbedRunner(t, "podman")
@@ -449,11 +484,14 @@ func TestBackupDrivesInInstancePrimitive(t *testing.T) {
 }
 
 func TestBackupFlyUsesSSHConsole(t *testing.T) {
-	root := fixtureProject(t)
-	if err := os.WriteFile(filepath.Join(root, ConfigName), []byte("platform: fly\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := fly.ScaffoldConfig(root, "my-agent", "sjc"); err != nil {
+	root := writeProject(t, map[string]string{
+		"agent/spec.json":    `{"specVersion": 1, "setup": {"auth_choice": "zai-coding-global"}}`,
+		"agent/Dockerfile":   "FROM ghcr.io/tankdonut/agent-base:2026.09.05\nCOPY agent/spec.json /opt/agent/spec.json\n",
+		"agent/.env.example": "#FALLBACK_MODEL=\n",
+		"agent/.env":         "FALLBACK_MODEL=m\nZAI_API_KEY=k\n",
+		".agentctl.yaml":     "platform: fly\n",
+	})
+	if err := fly.ScaffoldConfig(agentDir(root), "my-agent", "sjc"); err != nil {
 		t.Fatal(err)
 	}
 	r := stubbedRunner(t, "podman", "fly")
@@ -519,7 +557,7 @@ func TestPlatformSetFlyScaffoldsAndPins(t *testing.T) {
 	if err != nil {
 		t.Fatalf("platform set fly: %v\n%s", err, out)
 	}
-	manifest, err := os.ReadFile(filepath.Join(root, "deploy", "fly.toml"))
+	manifest, err := os.ReadFile(filepath.Join(agentDir(root), "deploy", "fly.toml"))
 	if err != nil {
 		t.Fatalf("deploy/fly.toml not scaffolded: %v", err)
 	}
@@ -535,9 +573,9 @@ func TestPlatformSetFlyScaffoldsAndPins(t *testing.T) {
 			t.Errorf("fly.toml lacks %q:\n%s", want, manifest)
 		}
 	}
-	cfgData, err := os.ReadFile(filepath.Join(root, ConfigName))
-	if err != nil || !strings.Contains(string(cfgData), "platform: fly") {
-		t.Errorf("platform not pinned: %v %s", err, cfgData)
+	fleetData, err := os.ReadFile(filepath.Join(root, fleet.ManifestName))
+	if err != nil || !strings.Contains(string(fleetData), "platform: fly") {
+		t.Errorf("platform not pinned in fleet.yaml: %v %s", err, fleetData)
 	}
 	if !strings.Contains(out, "fly launch") {
 		t.Errorf("output lacks fly next steps:\n%s", out)
@@ -563,12 +601,15 @@ func TestPlatformSetFlyRequiresFlags(t *testing.T) {
 }
 
 func TestDestroyGateOnNonVolumePreservingPlatform(t *testing.T) {
-	root := fixtureProject(t)
-	if err := os.WriteFile(filepath.Join(root, ConfigName), []byte("platform: fly\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	root := writeProject(t, map[string]string{
+		"agent/spec.json":    `{"specVersion": 1, "setup": {"auth_choice": "zai-coding-global"}}`,
+		"agent/Dockerfile":   "FROM ghcr.io/tankdonut/agent-base:2026.09.05\nCOPY agent/spec.json /opt/agent/spec.json\n",
+		"agent/.env.example": "#FALLBACK_MODEL=\n",
+		"agent/.env":         "FALLBACK_MODEL=m\nZAI_API_KEY=k\n",
+		".agentctl.yaml":     "platform: fly\n",
+	})
 	stubbedRunner(t, "podman", "fly")
-	if err := fly.ScaffoldConfig(root, "my-agent", "sjc"); err != nil {
+	if err := fly.ScaffoldConfig(agentDir(root), "my-agent", "sjc"); err != nil {
 		t.Fatal(err)
 	}
 	_, err := execIn(t, root, "destroy")
@@ -584,12 +625,12 @@ func TestPlatformSetPinsAndChecks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("platform set compose: %v\n%s", err, out)
 	}
-	data, err := os.ReadFile(filepath.Join(root, ConfigName))
+	data, err := os.ReadFile(filepath.Join(root, fleet.ManifestName))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(data), "platform: compose") {
-		t.Errorf("config = %q", data)
+		t.Errorf("fleet.yaml = %q", data)
 	}
 }
 
@@ -605,18 +646,10 @@ func TestPlatformCheckPasses(t *testing.T) {
 	}
 }
 
-func TestPlatformCheckFailsOnContractlessManifest(t *testing.T) {
-	root := fixtureProject(t)
-	broken := "services:\n  agent:\n    build: {context: .}\n"
-	if err := os.WriteFile(filepath.Join(root, "compose.yml"), []byte(broken), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	stubbedRunner(t, "podman")
-	_, err := execIn(t, root, "platform", "check")
-	if err == nil || !strings.Contains(err.Error(), "agent-data") {
-		t.Fatalf("err = %v, want missing volume error", err)
-	}
-}
+// The contractless-manifest negative case is structurally unreachable
+// in fleet repos: every verb re-renders the envelope from fleet.yaml,
+// so a hand-planted compose.yml cannot drift into a contractless
+// shape. Volume presence is pinned by the renderer goldens.
 
 func TestReleaseVerbsNeedProject(t *testing.T) {
 	stubbedRunner(t, "podman")

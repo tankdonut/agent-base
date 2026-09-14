@@ -1,0 +1,83 @@
+# RENDERED by agentctl from fleet.yaml — DO NOT EDIT.
+# The envelope (pinned project name, volumes, networks, hardening) is
+# owned by the fleet renderer; changes belong in fleet.yaml or the
+# renderer, not here. Regenerated on every fleet verb.
+
+# Pinned compose project name: every generated resource (containers,
+# volumes, the agent-net network) is prefixed with it, so the stack is
+# immune to directory renames and cannot collide with another agent on
+# the same host. Real volume names are <project>_agent-data/-backups.
+name: grow
+
+services:
+  agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    # Keep the engine stop timeout above AGENT_SHUTDOWN_GRACE (600s
+    # default) or the engine SIGKILLs the gateway process group
+    # mid-drain.
+    stop_grace_period: 11m
+    # Hardening baseline matches the sidecar variant; see that render
+    # for the rationale (rootless-podman label confinement off,
+    # read-only root, tmpfs /tmp).
+    security_opt:
+      - no-new-privileges:true
+      - label=disable
+    cap_drop: [ALL]
+    read_only: true
+    tmpfs:
+      - /tmp
+    env_file:
+      - .env
+    # agent-net stays dedicated to the gateway port. The plane network
+    # carries the shared LiteLLM proxy (and metrics scraping): the
+    # per-agent alias is how siblings and the plane reach THIS agent —
+    # every project names its service "agent", so the alias is the only
+    # collision-free address.
+    networks:
+      agent-net: {}
+      my-plane-net:
+        aliases:
+          - grow
+    volumes:
+      - agent-data:/home/node/.openclaw
+      # Verified upgrade backups land here before any image-version
+      # delta mutates a warm volume.
+      - agent-backups:/backups
+    # Loopback-only bind; remote access goes through a TLS-terminating
+    # reverse proxy. AGENT_GATEWAY_PORT is host-side compose
+    # interpolation and never enters the container; the fleet manifest
+    # owns it (an AGENT_GATEWAY_PORT line in .env is an error).
+    ports:
+      - "127.0.0.1:${AGENT_GATEWAY_PORT:-18789}:18789"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:18789/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      # First boot runs setup + reconcile + seed before the gateway
+      # starts; upgrade boots add a verified backup.
+      start_period: 300s
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2g
+          pids: 512
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+networks:
+  agent-net: {}
+  my-plane-net:
+    name: my-plane-net
+    external: true
+
+volumes:
+  agent-data:
+  agent-backups:

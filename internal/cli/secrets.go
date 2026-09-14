@@ -67,7 +67,7 @@ func newSecretsCmd() *cobra.Command {
 				return err
 			}
 			editor := os.Getenv("EDITOR")
-			if err := SecretsEdit(newRunner(), editor, filepath.Join(root, "agent", ".env")); err != nil {
+			if err := SecretsEdit(newRunner(), editor, filepath.Join(root, ".env")); err != nil {
 				return err
 			}
 			litellmPath := filepath.Join(root, "litellm", ".env")

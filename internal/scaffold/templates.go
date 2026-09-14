@@ -38,6 +38,10 @@ func Mode(path string) fs.FileMode {
 // Paths returns every generated output path (the tmpl tree minus the
 // ".tmpl" suffix), sorted. It fails loudly on stray files so a template
 // added without the suffix cannot silently ship.
+//
+// Paths are SOURCE-relative: the fleet-of-one layout renders repo files
+// at the root and everything else under agents/<key>/ — see
+// OutputPath. Generated-location lists come from Run.
 func Paths() ([]string, error) {
 	var out []string
 	err := fs.WalkDir(embedded, "tmpl", func(p string, d fs.DirEntry, err error) error {
@@ -59,4 +63,34 @@ func Paths() ([]string, error) {
 	}
 	sort.Strings(out)
 	return out, nil
+}
+
+// agentsDir is the fleet per-agent directory. It must equal
+// fleet.AgentsDir; scaffold is a self-contained leaf (it may not import
+// internal/fleet), so cli tests assert the equality instead.
+const agentsDir = "agents"
+
+// repoFiles lists template sources that render to the repo root; every
+// other source renders under agents/<key>/ (agent content, the dev
+// overlay, litellm, knowledge).
+var repoFiles = map[string]bool{
+	".gitignore":               true,
+	".markdownlint-cli2.yaml":  true,
+	".pre-commit-config.yaml":  true,
+	".github/workflows/ci.yml": true,
+	"AGENTS.md":                true,
+	"README.md":                true,
+	"fleet.yaml":               true,
+	"make.sh":                  true,
+	"renovate.json":            true,
+}
+
+// OutputPath maps a template source path to its generated location for
+// the given agent key: repo files at the root, agent-scoped content
+// under agents/<key>/.
+func OutputPath(rel, agentKey string) string {
+	if repoFiles[rel] {
+		return rel
+	}
+	return agentsDir + "/" + agentKey + "/" + rel
 }

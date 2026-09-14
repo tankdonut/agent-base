@@ -52,7 +52,7 @@ type doctorBundle struct {
 // never fails the report).
 func buildReportBundle(ctx context.Context, plat platform.Platform, deploy *platform.Deployment, root string, info project.SpecInfo) reportBundle {
 	var b reportBundle
-	if sum, err := fileSha256(filepath.Join(root, "agent", "spec.json")); err == nil {
+	if sum, err := fileSha256(filepath.Join(root, "spec.json")); err == nil {
 		b.SpecSha256 = sum
 	}
 	if sum, err := fileSha256(filepath.Join(root, "compose.yml")); err == nil {

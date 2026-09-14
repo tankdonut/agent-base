@@ -950,6 +950,55 @@ catches schema, templating, and automation errors in seconds.
 
 ## Migrations
 
+### The fleet layout (all projects, agentctl breaking change)
+
+agentctl's repo shape is now the **fleet shape**: `fleet.yaml` at the root,
+per-agent content directly under `agents/<name>/` (spec.json,
+Dockerfile, .env, automations/, skills/, workspace/, knowledge/,
+litellm/), and the deployment envelope RENDERED from the manifest on
+every verb (`agents/<name>/compose.yml`, gitignored — never
+authored; it lives at the build-context root because docker compose
+and podman-compose resolve relative paths against different bases).
+`agents/<name>/.agentctl/` is agentctl's reserved host-side state
+namespace. `.agentctl.yaml` is retired; its settings
+live in the manifest. A single-agent repo is a fleet of one — same
+structure, one roster entry.
+
+One command carries a legacy repo over, in place:
+
+```sh
+cd my-agent && agentctl migrate
+```
+
+`migrate` flattens `agent/`'s children into `agents/<basename>/`
+(rewriting the Dockerfile's COPY lines), moves `litellm/`,
+`knowledge/`, `compose.dev.yml`, and `deploy/` alongside, deletes the authored
+`compose.yml` (the renderer replaces it), folds `.agentctl.yaml` into
+the synthesized `fleet.yaml` (platform, gateway port — recovered from
+the compose interpolation default when no config recorded it, fly app),
+and appends the rendered-envelope pattern to `.gitignore`. Review with
+`git status`, commit, then `agentctl fleet check` + `agentctl doctor`.
+
+Rules the new shape enforces (all fail-closed):
+
+- **Ports are manifest-owned.** `AGENT_GATEWAY_PORT` in `agent/.env` is
+  a hard error inside a fleet — a stale env line silently beats the
+  allocation. Per-agent `gateway_port:` or the sorted-from-base
+  allocation owns every port.
+- **The envelope is not editable.** Hand-edits to the rendered
+  `compose.yml` are detected (`fleet check`) and overwritten on the
+  next verb. Bounded deltas belong in the manifest as
+  `overrides:` (volumes, port publishes, resource limits); oddballs can
+  opt out entirely with `compose_file:` (an authored file that replaces
+  the render).
+- **Renames are hard errors.** An `agents/<name>/` directory carrying
+  `agent/spec.json` that is not registered in `fleet.yaml` fails check
+  and every verb — renames go through the manifest, never silently
+  shrinking the fleet.
+
+Adding a second agent: `mkdir -p agents/<name>/agent` with a spec,
+register the entry, allocate a port — `fleet check` guides both.
+
 Each guide below is the exact cutover for that project onto
 `ghcr.io/tankdonut/agent-base:2026.08.24.1`. Both keep their existing named
 volumes: the base swap changes the image and entrypoint only, never volume

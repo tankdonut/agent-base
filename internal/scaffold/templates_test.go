@@ -10,12 +10,13 @@ import (
 	"text/template"
 )
 
-// data mirrors the scaffold template surface (scaffold.Config's first
-// six fields plus the derived ComposeProject); templates may reference
-// nothing else.
+// data mirrors the scaffold template surface (Config's template fields
+// plus the derived ComposeProject and AgentKey); templates may
+// reference nothing else.
 type data struct {
 	ProjectName    string
 	ComposeProject string
+	AgentKey       string
 	AgentName      string
 	BaseTag        string
 	Model          string
@@ -27,6 +28,7 @@ func sampleData(telegram bool) data {
 	return data{
 		ProjectName:    "my-agent",
 		ComposeProject: "my-agent",
+		AgentKey:       "my-agent",
 		AgentName:      "My Agent",
 		BaseTag:        "2026.08.28",
 		Model:          "litellm/glm-5.3-flash",
@@ -35,31 +37,31 @@ func sampleData(telegram bool) data {
 	}
 }
 
-// manifest is the exact set of files the tmpl tree must generate.
+// manifest is the exact set of files the tmpl tree must generate
+// (source-relative; agent-scoped sources render under agents/<key>/).
 var manifest = []string{
-	".agentctl.yaml",
+	".env.example",
 	".github/workflows/ci.yml",
 	".gitignore",
 	".markdownlint-cli2.yaml",
 	".pre-commit-config.yaml",
 	"AGENTS.md",
+	"Dockerfile",
 	"README.md",
-	"agent/.env.example",
-	"agent/Dockerfile",
-	"agent/automations/daily-briefing.md",
-	"agent/skills/.gitkeep",
-	"agent/spec.json",
-	"agent/workspace/AGENTS.md",
-	"agent/workspace/MEMORY.md",
-	"agent/workspace/SOUL.md",
-	"agent/workspace/USER.md",
+	"automations/daily-briefing.md",
 	"compose.dev.yml",
-	"compose.yml",
+	"fleet.yaml",
 	"knowledge/content/index.md",
 	"litellm/.env.example",
 	"litellm/config.yaml",
 	"make.sh",
 	"renovate.json",
+	"skills/.gitkeep",
+	"spec.json",
+	"workspace/AGENTS.md",
+	"workspace/MEMORY.md",
+	"workspace/SOUL.md",
+	"workspace/USER.md",
 }
 
 func mustPaths(t *testing.T) []string {

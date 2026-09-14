@@ -98,13 +98,24 @@ func TestDefaultAgentName(t *testing.T) {
 	}
 }
 
+// agentScoped resolves the per-agent directory for a scaffolded target
+// (same key derivation Run uses).
+func agentScoped(dir string) string {
+	return filepath.Join(dir, "agents", ComposeProject(filepath.Base(dir)))
+}
+
 func TestRunGoldenTree(t *testing.T) {
 	dir := t.TempDir()
 	created, err := Run(validConfig(dir))
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	want := goldenPaths(t)
+	sources := goldenPaths(t)
+	want := make([]string, 0, len(sources))
+	for _, rel := range sources {
+		want = append(want, OutputPath(rel, ComposeProject(filepath.Base(dir))))
+	}
+	sort.Strings(want)
 	sort.Strings(created)
 	if !reflect.DeepEqual(created, want) {
 		t.Fatalf("created paths mismatch:\n got  %v\n want %v", created, want)
@@ -165,76 +176,16 @@ func TestComposeProject(t *testing.T) {
 	}
 }
 
-func TestRunComposeCarriesHardeningBaseline(t *testing.T) {
-	dir := t.TempDir()
-	cfg := validConfig(dir)
-	if _, err := Run(cfg); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	b, err := os.ReadFile(filepath.Join(dir, "compose.yml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	compose := string(b)
-	for _, want := range []string{
-		"name: " + ComposeProject(cfg.ProjectName),
-		"no-new-privileges:true",
-		"cap_drop: [ALL]",
-		"read_only: true",
-		"tmpfs:",
-		"agent-net",
-		"stop_grace_period: 11m",
-		"127.0.0.1:${AGENT_GATEWAY_PORT:-18789}:18789",
-		"- agent-data:/home/node/.openclaw",
-		"- agent-backups:/backups",
-	} {
-		if !strings.Contains(compose, want) {
-			t.Errorf("compose.yml lacks the prod hardening baseline entry %q", want)
-		}
-	}
-	if strings.Contains(compose, "security_opt:\n      - label=disable") {
-		t.Error("compose.yml activates label=disable instead of documenting it as a rootless-podman fallback")
-	}
-}
-
-func TestRunComposeCarriesLitellmStack(t *testing.T) {
-	dir := t.TempDir()
-	if _, err := Run(validConfig(dir)); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	b, err := os.ReadFile(filepath.Join(dir, "compose.yml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	compose := string(b)
-	for _, want := range []string{
-		"image: ghcr.io/berriai/litellm:v1.100.0@sha256:c8756e7b9a61fe45df2ccb5b781d388c3b2f3a21ef9e4956630caef20f9f03aa",
-		"--config",
-		"/app/proxy_server_config.yaml",
-		"./litellm/config.yaml:/app/proxy_server_config.yaml:ro,Z",
-		"litellm/.env",
-		"model-net",
-		"depends_on:",
-		"- litellm",
-		"/health/liveliness",
-		"      - agent-net\n      - model-net",
-	} {
-		if !strings.Contains(compose, want) {
-			t.Errorf("compose.yml lacks the litellm stack entry %q", want)
-		}
-	}
-	// The proxy publishes nothing: the only ports: key belongs to agent.
-	if got := strings.Count(compose, "\n    ports:"); got != 1 {
-		t.Errorf("compose.yml has %d ports: keys, want exactly 1 (agent only)", got)
-	}
-}
+// The compose envelope tests moved with the envelope: the fleet
+// renderer owns it now (internal/fleet render goldens pin the
+// hardening baseline and the litellm stack side by side).
 
 func TestRunScaffoldedSpecIsLitellm(t *testing.T) {
 	dir := t.TempDir()
 	if _, err := Run(validConfig(dir)); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	spec, err := os.ReadFile(filepath.Join(dir, "agent", "spec.json"))
+	spec, err := os.ReadFile(filepath.Join(agentScoped(dir), "spec.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -247,7 +198,7 @@ func TestRunScaffoldedSpecIsLitellm(t *testing.T) {
 			t.Errorf("spec.json lacks %q:\n%s", want, spec)
 		}
 	}
-	aenv, err := os.ReadFile(filepath.Join(dir, "agent", ".env.example"))
+	aenv, err := os.ReadFile(filepath.Join(agentScoped(dir), ".env.example"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -262,14 +213,14 @@ func TestRunScaffoldedSpecIsLitellm(t *testing.T) {
 			t.Errorf("agent/.env.example carries a fillable %s row — provider/master keys must never surface there", banned)
 		}
 	}
-	lenv, err := os.ReadFile(filepath.Join(dir, "litellm", ".env.example"))
+	lenv, err := os.ReadFile(filepath.Join(agentScoped(dir), "litellm", ".env.example"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(lenv), "#LITELLM_MASTER_KEY=") {
 		t.Errorf("litellm/.env.example lacks the LITELLM_MASTER_KEY row:\n%s", lenv)
 	}
-	lcfg, err := os.ReadFile(filepath.Join(dir, "litellm", "config.yaml"))
+	lcfg, err := os.ReadFile(filepath.Join(agentScoped(dir), "litellm", "config.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -324,8 +275,8 @@ func TestRunRenderedJSONParses(t *testing.T) {
 		if _, err := Run(cfg); err != nil {
 			t.Fatalf("Run(telegram=%v): %v", telegram, err)
 		}
-		for _, rel := range []string{"agent/spec.json", "renovate.json"} {
-			b, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(rel)))
+		for _, rel := range []string{"spec.json", "renovate.json"} {
+			b, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(OutputPath(rel, ComposeProject(filepath.Base(dir))))))
 			if err != nil {
 				t.Fatalf("read %s: %v", rel, err)
 			}
@@ -347,7 +298,7 @@ func TestRunTelegramAllowlistPairIsCoGuarded(t *testing.T) {
 	if _, err := Run(validConfig(dir)); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	b, err := os.ReadFile(filepath.Join(dir, "agent", "spec.json"))
+	b, err := os.ReadFile(filepath.Join(agentScoped(dir), "spec.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -386,23 +337,23 @@ func TestRunNoTelegramVariant(t *testing.T) {
 	if _, err := Run(cfg); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	spec, err := os.ReadFile(filepath.Join(dir, "agent", "spec.json"))
+	spec, err := os.ReadFile(filepath.Join(agentScoped(dir), "spec.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(string(spec), "telegram") {
 		t.Errorf("spec.json still wires telegram:\n%s", spec)
 	}
-	for _, rel := range []string{
-		filepath.Join("agent", ".env.example"),
-		filepath.Join("make.sh"),
+	for _, path := range []string{
+		filepath.Join(agentScoped(dir), ".env.example"),
+		filepath.Join(dir, "make.sh"),
 	} {
-		b, err := os.ReadFile(filepath.Join(dir, rel))
+		b, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if strings.Contains(string(b), "TELEGRAM_BOT_TOKEN") {
-			t.Errorf("%s still requires TELEGRAM_BOT_TOKEN", rel)
+			t.Errorf("%s still requires TELEGRAM_BOT_TOKEN", path)
 		}
 	}
 }
@@ -476,8 +427,11 @@ func TestRunForceRefusesSymlinkAtManifestPath(t *testing.T) {
 
 func TestRunMidTreeFailureNamesRecovery(t *testing.T) {
 	dir := t.TempDir()
-	agent := filepath.Join(dir, "agent")
-	if err := os.Mkdir(agent, 0o555); err != nil {
+	if err := os.MkdirAll(filepath.Join(agentScoped(dir), "agent"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	agent := filepath.Join(agentScoped(dir), "agent")
+	if err := os.Chmod(agent, 0o555); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { os.Chmod(agent, 0o755) })

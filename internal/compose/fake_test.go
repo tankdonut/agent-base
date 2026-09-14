@@ -60,11 +60,13 @@ func assertCalls(t *testing.T, got, want [][]string) {
 	}
 }
 
-// writeProject materializes a fixture project tree in a temp dir.
+// writeProject materializes a fixture agent-dir tree in a temp dir;
+// legacy "agent/"-prefixed keys flatten (the wrapper is gone).
 func writeProject(t *testing.T, files map[string]string) string {
 	t.Helper()
 	root := t.TempDir()
 	for rel, content := range files {
+		rel = strings.TrimPrefix(rel, "agent/")
 		p := filepath.Join(root, filepath.FromSlash(rel))
 		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 			t.Fatal(err)

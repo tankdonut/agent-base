@@ -43,6 +43,8 @@ Exit codes: 0 success, 1 any error — usage and flag errors included.`,
 		newDoctorCmd(),
 		newPlatformCmd(),
 		newDevCmd(),
+		newFleetCmd(),
+		newMigrateCmd(),
 	)
 	root.AddCommand(newReleaseCmds()...)
 	root.AddCommand(newUpgradeCmd())

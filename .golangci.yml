@@ -5,10 +5,12 @@
 #
 #   project, process              -> nothing internal (foundations)
 #   scaffold                      -> self-contained leaf (owns its embedded tmpl/ tree)
-#   compose                      -> process, project only
-#   platform (port, top level)   -> project, process only; never an adapter
-#   platform/* (adapters)        -> port + compose + foundations; never each other
-#   cli                          -> everything (composition root; no rule needed)
+#   fleet                         -> foundations + the platform port (manifest, roster,
+#                                     renderer; cli injects Platform impls — never imports adapters)
+#   compose                       -> process, project only
+#   platform (port, top level)    -> project, process only; never an adapter
+#   platform/* (adapters)         -> port + compose + foundations; never each other
+#   cli                           -> everything (composition root; no rule needed)
 #
 # depguard pkg entries are PREFIX matches (an entry denies the package
 # and its whole subtree; braces/stars are literals, and an allow list
@@ -36,6 +38,23 @@ linters:
             - pkg: "github.com/tankdonut/agent-base/internal"
               desc: "foundations import nothing internal"
 
+        fleet-foundations-and-port-only:
+          files:
+            - "**/internal/fleet/**.go"
+          deny:
+            - pkg: "github.com/tankdonut/agent-base/internal/cli"
+              desc: "fleet imports foundations + the platform port only — the composition root injects Platform impls"
+            - pkg: "github.com/tankdonut/agent-base/internal/compose"
+              desc: "fleet imports foundations + the platform port only"
+            - pkg: "github.com/tankdonut/agent-base/internal/scaffold"
+              desc: "fleet imports foundations + the platform port only"
+            - pkg: "github.com/tankdonut/agent-base/internal/templates"
+              desc: "fleet imports foundations + the platform port only"
+            - pkg: "github.com/tankdonut/agent-base/internal/platform/dockercompose"
+              desc: "fleet never imports adapters — cli resolves them via the registry"
+            - pkg: "github.com/tankdonut/agent-base/internal/platform/fly"
+              desc: "fleet never imports adapters — cli resolves them via the registry"
+
         scaffold-is-a-self-contained-leaf:
           files:
             - "**/internal/scaffold/**.go"
@@ -48,6 +67,8 @@ linters:
             - "**/internal/compose/**.go"
           deny:
             - pkg: "github.com/tankdonut/agent-base/internal/cli"
+              desc: "compose (engine argv vocabulary) may import only internal/process and internal/project"
+            - pkg: "github.com/tankdonut/agent-base/internal/fleet"
               desc: "compose (engine argv vocabulary) may import only internal/process and internal/project"
             - pkg: "github.com/tankdonut/agent-base/internal/platform"
               desc: "compose (engine argv vocabulary) may import only internal/process and internal/project"
@@ -64,6 +85,8 @@ linters:
               desc: "the port may import only internal/project and internal/process"
             - pkg: "github.com/tankdonut/agent-base/internal/compose"
               desc: "the port may import only internal/project and internal/process"
+            - pkg: "github.com/tankdonut/agent-base/internal/fleet"
+              desc: "the port may import only internal/project and internal/process"
             - pkg: "github.com/tankdonut/agent-base/internal/scaffold"
               desc: "the port may import only internal/project and internal/process"
             - pkg: "github.com/tankdonut/agent-base/internal/templates"
@@ -77,6 +100,8 @@ linters:
           deny:
             - pkg: "github.com/tankdonut/agent-base/internal/cli"
               desc: "adapters import the port + compose + foundations only — never cli"
+            - pkg: "github.com/tankdonut/agent-base/internal/fleet"
+              desc: "adapters import the port + compose + foundations only"
             - pkg: "github.com/tankdonut/agent-base/internal/scaffold"
               desc: "adapters import the port + compose + foundations only"
             - pkg: "github.com/tankdonut/agent-base/internal/templates"

@@ -49,11 +49,11 @@ func GenerateMasterKey() (string, error) {
 // holds; provider keys live solely in litellm/.env). Every file lands
 // 0600; the returned paths list what was written.
 func SecretsInit(root string) ([]string, error) {
-	envPath := filepath.Join(root, "agent", ".env")
+	envPath := filepath.Join(root, ".env")
 	if err := refuseExisting(envPath); err != nil {
 		return nil, err
 	}
-	data, err := os.ReadFile(filepath.Join(root, "agent", ".env.example"))
+	data, err := os.ReadFile(filepath.Join(root, ".env.example"))
 	if err != nil {
 		return nil, fmt.Errorf("reading agent/.env.example: %w", err)
 	}
@@ -207,7 +207,7 @@ func contains(names []string, want string) bool {
 // when the file is absent. Names only — values never leave the file —
 // so callers can print the result (platform.Deployment.EnvKeys).
 func EnvKeyNames(root string) ([]string, error) {
-	data, err := os.ReadFile(filepath.Join(root, "agent", ".env"))
+	data, err := os.ReadFile(filepath.Join(root, ".env"))
 	if os.IsNotExist(err) {
 		return nil, nil
 	}
@@ -230,12 +230,12 @@ func EnvKeyNames(root string) ([]string, error) {
 // here, never printed). On success it returns the count of agent-side
 // vars checked; on failure the error lists every offender.
 func SecretsCheck(root string) (int, error) {
-	envPath := filepath.Join(root, "agent", ".env")
+	envPath := filepath.Join(root, ".env")
 	data, err := os.ReadFile(envPath)
 	if err != nil {
 		return 0, fmt.Errorf("agent/.env not found — run `agentctl secrets init` first")
 	}
-	info, err := ReadSpec(filepath.Join(root, "agent", "spec.json"))
+	info, err := ReadSpec(filepath.Join(root, "spec.json"))
 	if err != nil {
 		return 0, err
 	}

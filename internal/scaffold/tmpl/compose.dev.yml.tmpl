@@ -21,7 +21,7 @@ services:
     environment:
       - AGENT_SKIP_SEED=1
     volumes:
-      - ./agent/workspace:/opt/seed/workspace:z
-      - ./agent/skills:/opt/seed/skills:z
+      - ./workspace:/opt/seed/workspace:z
+      - ./skills:/opt/seed/skills:z
       - ./knowledge/content:/opt/seed/docs:z
     restart: ""

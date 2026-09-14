@@ -69,7 +69,7 @@ func linkWorktreeEnv(root, branch string) error {
 			return fmt.Errorf("removing stale symlink %s: %w", link, err)
 		}
 	}
-	target, err := filepath.Rel(filepath.Dir(link), filepath.Join(root, "agent", ".env"))
+	target, err := filepath.Rel(filepath.Dir(link), filepath.Join(root, ".env"))
 	if err != nil {
 		return fmt.Errorf("computing relative target: %w", err)
 	}

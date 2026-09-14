@@ -127,7 +127,7 @@ func runPostUpgradeChecks(ctx context.Context, plat platform.Platform, r process
 		}
 	}
 
-	if expected := automationJobNames(root); len(expected) == 0 && dirExists(filepath.Join(root, "agent", "automations")) {
+	if expected := automationJobNames(root); len(expected) == 0 && dirExists(filepath.Join(root, "automations")) {
 		add("cron", StatusWarn, "agent/automations exists but holds no .md specs — nothing to seed; check the tree")
 	} else if listing, cerr := probe(probeCronList); cerr != nil {
 		add("cron", StatusFail, "openclaw cron list failed (%v) — agentctl logs", cerr)
@@ -337,7 +337,7 @@ func envActiveMcpNames(root string, info project.SpecInfo) ([]string, bool) {
 // under agent/automations, which the image's loader requires to equal
 // each job's declared name.
 func automationJobNames(root string) []string {
-	entries, err := os.ReadDir(filepath.Join(root, "agent", "automations"))
+	entries, err := os.ReadDir(filepath.Join(root, "automations"))
 	if err != nil {
 		return nil
 	}

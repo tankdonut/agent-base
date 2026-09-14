@@ -14,9 +14,9 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"github.com/tankdonut/agent-base/internal/compose"
+	"github.com/tankdonut/agent-base/internal/fleet"
 	"github.com/tankdonut/agent-base/internal/platform"
 	"github.com/tankdonut/agent-base/internal/project"
-	"github.com/tankdonut/agent-base/internal/scaffold"
 )
 
 // newDoctorCmd is the one-command pre-issue report: project shape,
@@ -138,10 +138,11 @@ func runDoctor(out io.Writer, asJSON bool, target string, postUpgrade bool, expe
 	if reportPath != "" && (target != "" || postUpgrade) {
 		return fmt.Errorf("--report bundles a standard doctor run — pass it without --target/--post-upgrade")
 	}
-	root, err := chdirProject()
+	rp, err := resolveProject()
 	if err != nil {
 		return err
 	}
+	root := rp.Root
 	var results []CheckResult
 	add := func(name string, status CheckStatus, format string, a ...any) {
 		results = append(results, CheckResult{
@@ -156,7 +157,7 @@ func runDoctor(out io.Writer, asJSON bool, target string, postUpgrade bool, expe
 	}
 
 	specOK := true
-	info, err := project.ReadSpec(filepath.Join(root, "agent", "spec.json"))
+	info, err := project.ReadSpec(filepath.Join(root, "spec.json"))
 	switch {
 	case err != nil:
 		add("spec", StatusFail, "spec.json: %v", err)
@@ -166,7 +167,7 @@ func runDoctor(out io.Writer, asJSON bool, target string, postUpgrade bool, expe
 	}
 
 	tagOK := true
-	tag, err := project.BaseTagFromDockerfile(filepath.Join(root, "agent", "Dockerfile"))
+	tag, err := project.BaseTagFromDockerfile(filepath.Join(root, "Dockerfile"))
 	switch {
 	case err != nil:
 		add("base-tag", StatusFail, "Dockerfile base tag: %v", err)
@@ -179,15 +180,19 @@ func runDoctor(out io.Writer, asJSON bool, target string, postUpgrade bool, expe
 	if n, err := project.SecretsCheck(root); err != nil {
 		add("secrets", StatusFail, "secrets: %v", err)
 	} else {
-		add("secrets", StatusOK, "agent/.env sets all %d required vars", n)
+		add("secrets", StatusOK, ".env sets all %d required vars", n)
 	}
 
 	// The litellm provider shape is load-bearing for litellm specs: the
 	// tree, the compose sidecar, and model-net must all be present — and
 	// the pinned image must actually ship the litellm seed. For other
 	// providers the report is advisory only — direct-provider
-	// deployments remain supported.
-	if specOK && info.AuthChoice == "litellm-api-key" {
+	// deployments remain supported. Placement comes from the manifest:
+	// sidecar renders carry the proxy by construction; shared placement
+	// needs the plane compose render, which lands with P2.
+	if specOK && info.AuthChoice == "litellm-api-key" && rp.Manifest.Agents[rp.Agent].LiteLLMUsed == fleet.LiteLLMShared {
+		add("litellm-tree", StatusFail, "agents.%s.litellm: shared but the plane compose render ships with P2 — set litellm: sidecar (or remove the override) until the plane lands", rp.Agent)
+	} else if specOK && info.AuthChoice == "litellm-api-key" {
 		if seed, ok := eraByID("litellm-baseurl-seed"); ok {
 			if day := tagDate(tag); tagOK && !day.IsZero() && day.Year() >= 2026 && day.Before(seed.Day) {
 				add("litellm-era", StatusFail, "pinned base image %s predates the litellm seed (%s) — bump agent/Dockerfile; the old image never seeds baseUrl and its loader does not gate the key", tag, seed.Day.Format("2006.01.02"))
@@ -196,7 +201,7 @@ func runDoctor(out io.Writer, asJSON bool, target string, postUpgrade bool, expe
 		if _, err := os.Stat(filepath.Join(root, "litellm", ".env.example")); err != nil {
 			add("litellm-tree", StatusFail, "litellm/.env.example not found — adopt the litellm tree (docs/standard-agent.md \"Model providers via LiteLLM\")")
 		} else if !composeCarriesLitellm(filepath.Join(root, "compose.yml")) {
-			add("litellm-tree", StatusFail, "compose.yml lacks the litellm sidecar or model-net — re-emit it from the current scaffold template or add the service block")
+			add("litellm-tree", StatusFail, "compose.yml lacks the litellm sidecar or model-net — re-render it: agents.%s uses sidecar placement, and the fleet renderer always emits the service; a hand-planted compose_file is the only way here", rp.Agent)
 		} else {
 			add("litellm-tree", StatusOK, "litellm sidecar shape present (tree, compose service, model-net)")
 		}
@@ -208,7 +213,7 @@ func runDoctor(out io.Writer, asJSON bool, target string, postUpgrade bool, expe
 	// volume probes below gate on plat != nil.
 	var plat platform.Platform
 	var deploy platform.Deployment
-	cfg, cfgErr := LoadConfig()
+	cfg, cfgErr := fleetConfig(rp)
 	if cfgErr != nil {
 		add("config", StatusFail, "config: %v", cfgErr)
 	} else {
@@ -237,10 +242,7 @@ func runDoctor(out io.Writer, asJSON bool, target string, postUpgrade bool, expe
 	// byte-compared. Skipped when the spec failed to parse — agent name
 	// and telegram wiring come from it.
 	if specOK {
-		port := scaffold.DefaultGatewayPort
-		if cfgErr == nil {
-			port = cfg.ComposeGatewayPort()
-		}
+		port := rp.Manifest.Agents[rp.Agent].GatewayPort
 		checkTemplateDrift(add, root, info, port)
 	}
 

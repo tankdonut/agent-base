@@ -64,6 +64,7 @@ func writeProject(t *testing.T, files map[string]string) string {
 	t.Helper()
 	root := t.TempDir()
 	for rel, content := range files {
+		rel = strings.TrimPrefix(rel, "agent/")
 		p := filepath.Join(root, filepath.FromSlash(rel))
 		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 			t.Fatal(err)
@@ -211,7 +212,7 @@ func TestCheckContract(t *testing.T) {
 
 	t.Run("incomplete secrets", func(t *testing.T) {
 		root := fixtureProject(t)
-		if err := os.WriteFile(filepath.Join(root, "agent", ".env"), []byte("FALLBACK_MODEL=m\n"), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(root, ".env"), []byte("FALLBACK_MODEL=m\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
 		err := p.Check(root, &platform.Deployment{})

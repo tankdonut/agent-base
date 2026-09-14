@@ -8,7 +8,13 @@ import (
 )
 
 func TestFindProjectRootWalksUp(t *testing.T) {
-	root := writeProject(t, map[string]string{"agent/spec.json": "{}"})
+	root := writeProject(t, map[string]string{})
+	if err := os.MkdirAll(filepath.Join(root, "agent"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "agent", "spec.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	nested := filepath.Join(root, "a", "b", "c")
 	if err := os.MkdirAll(nested, 0o755); err != nil {
 		t.Fatal(err)

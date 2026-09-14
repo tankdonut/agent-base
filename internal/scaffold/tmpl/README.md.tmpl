@@ -42,16 +42,21 @@ token-authenticated when OPENCLAW_GATEWAY_TOKEN is set.
 
 | Path | Purpose |
 | ---- | ------- |
-| `.agentctl.yaml` | Optional agentctl config (platform, compose.engine, compose.gateway_port); defaults apply while commented out |
-| `agent/spec.json` | Declarative boot contract (fail-closed loader) |
-| `agent/Dockerfile` | Thin project image: FROM agent-base + five COPY lines |
-| `agent/.env` | Agent secrets (gitignored), created from `agent/.env.example` |
-| `litellm/config.yaml` | Model routing: `litellm/<alias>` → upstream providers |
-| `litellm/.env` | Proxy + provider secrets (gitignored); NEVER enters the agent container |
-| `agent/automations/` | Cron jobs, image-baked (never bind-mounted) |
-| `agent/workspace/`, `agent/skills/`, `knowledge/content/` | Seed content for the data volume |
-| `compose.yml` / `compose.dev.yml` | Production service + dev overlay |
+| `fleet.yaml` | THE manifest: roster, gateway ports, plane (shared services) — the only authored deployment shape |
+| `agents/{{.AgentKey}}/spec.json` | Declarative boot contract (fail-closed loader) |
+| `agents/{{.AgentKey}}/Dockerfile` | Thin project image: FROM agent-base + five COPY lines |
+| `agents/{{.AgentKey}}/.env` | Agent secrets (gitignored), created from `agent/.env.example` |
+| `agents/{{.AgentKey}}/litellm/config.yaml` | Model routing: `litellm/<alias>` → upstream providers |
+| `agents/{{.AgentKey}}/litellm/.env` | Proxy + provider secrets (gitignored); NEVER enters the agent container |
+| `agents/{{.AgentKey}}/automations/` | Cron jobs, image-baked (never bind-mounted) |
+| `agents/{{.AgentKey}}/workspace/`, `agent/skills/`, `knowledge/content/` | Seed content for the data volume |
+| `agents/{{.AgentKey}}/compose.yml` | RENDERED from fleet.yaml on every agentctl verb (gitignored) — never hand-edit |
+| `agents/{{.AgentKey}}/compose.dev.yml` | Dev overlay (authored; applied on top of the rendered envelope) |
 | `make.sh` | Thin shim over agentctl (`exec agentctl "$@"`) |
+
+A single-agent repo is a fleet of one: add `agents/<name>/` directories
+and their `fleet.yaml` registry entries to grow it (`agentctl fleet
+ls` / `fleet check` operate the roster).
 
 ## Next steps
 

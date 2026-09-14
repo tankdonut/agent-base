@@ -82,28 +82,28 @@ func (a *Adapter) Capabilities() platform.Capabilities {
 	return platform.Capabilities{Exec: true, StopStart: true, VolumePreservingDestroy: true}
 }
 
-// Check fail-closed lints the repo-owned manifest against the image
-// contract: compose.yml must exist with the agent service and both
-// named volumes ({data} at /home/node/.openclaw, /backups), and
-// agent/.env must be present (compose mounts it via env_file).
+// Check fail-closed lints the rendered envelope against the image
+// contract: the rendered compose must carry the agent service and both
+// named volumes ({data} at /home/node/.openclaw, /backups), and .env
+// must be present (compose mounts it via env_file).
 func (a *Adapter) Check(root string, d *platform.Deployment) error {
 	path := filepath.Join(root, "compose.yml")
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return fmt.Errorf("compose.yml not found — run `agentctl init` (or restore it from git)")
+		return fmt.Errorf("rendered compose.yml not found — re-run the verb (agentctl regenerates it from fleet.yaml)")
 	}
 	var manifest map[string]any
 	if err := yaml.Unmarshal(data, &manifest); err != nil {
-		return fmt.Errorf("parsing compose.yml: %w", err)
+		return fmt.Errorf("parsing the rendered envelope: %w", err)
 	}
 	services, _ := manifest["services"].(map[string]any)
 	if _, ok := services["agent"]; !ok {
-		return fmt.Errorf("compose.yml: missing the `agent` service")
+		return fmt.Errorf("rendered envelope: missing the `agent` service")
 	}
 	volumes, _ := manifest["volumes"].(map[string]any)
 	for _, name := range []string{"agent-data", "agent-backups"} {
 		if _, ok := volumes[name]; !ok {
-			return fmt.Errorf("compose.yml: missing named volume %q — the warm {data} and /backups mounts are contract", name)
+			return fmt.Errorf("rendered envelope: missing named volume %q — the warm {data} and /backups mounts are contract", name)
 		}
 	}
 	return compose.RequireEnvFile(root)

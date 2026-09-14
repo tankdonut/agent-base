@@ -5,6 +5,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/tankdonut/agent-base/internal/fleet"
 	"github.com/tankdonut/agent-base/internal/platform"
 	"github.com/tankdonut/agent-base/internal/platform/fly"
 )
@@ -26,9 +27,12 @@ compose is the default; pin another with ` + "`agentctl platform set`" + `.`,
 		Short: "List available platforms and mark the pinned one",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := LoadConfig()
-			if err != nil {
-				return err
+			cfg := Config{Platform: "compose", Namespaces: map[string]map[string]any{}}
+			if rp, err := resolveProject(); err == nil {
+				cfg, err = fleetConfig(rp)
+				if err != nil {
+					return err
+				}
 			}
 			out := cmd.OutOrStdout()
 			for _, info := range platformInfos() {
@@ -46,23 +50,24 @@ compose is the default; pin another with ` + "`agentctl platform set`" + `.`,
 
 	var set = &cobra.Command{
 		Use:   "set <name>",
-		Short: "Pin the platform in .agentctl.yaml and lint the project",
-		Long: `Pins the platform and scaffolds its repo-owned manifest when the
-adapter has one: fly writes deploy/fly.toml (--app and --region are
+		Short: "Pin the platform for the resolved agent in fleet.yaml and lint the project",
+		Long: `Pins the platform on the resolved agent's fleet.yaml entry and
+scaffolds its repo-owned manifest when the adapter has one: fly writes
+deploy/fly.toml under the agent directory (--app and --region are
 required for it, and an existing manifest is never overwritten).`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			root, err := chdirProject()
+			rp, err := resolveProject()
 			if err != nil {
 				return err
 			}
-			cfg, err := LoadConfig()
+			cfg, err := fleetConfig(rp)
 			if err != nil {
 				return err
 			}
 			switch args[0] {
 			case "fly":
-				if err := fly.ScaffoldConfig(root, setApp, setRegion); err != nil {
+				if err := fly.ScaffoldConfig(rp.Root, setApp, setRegion); err != nil {
 					return err
 				}
 			}
@@ -70,17 +75,17 @@ required for it, and an existing manifest is never overwritten).`,
 			if err != nil {
 				return err
 			}
-			d, err := platform.Derive(root)
+			d, err := platform.Derive(rp.Root)
 			if err != nil {
 				return err
 			}
-			if err := p.Check(root, &d); err != nil {
+			if err := p.Check(rp.Root, &d); err != nil {
 				return fmt.Errorf("not pinning: %w", err)
 			}
-			if err := pinPlatform(root, args[0]); err != nil {
+			if err := pinFleetAgentPlatform(rp.Manifest, rp.Agent, args[0]); err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "pinned platform %q in %s\n", args[0], ConfigName)
+			fmt.Fprintf(cmd.OutOrStdout(), "pinned platform %q for agent %q in %s\n", args[0], rp.Agent, fleet.ManifestName)
 			if args[0] == "fly" {
 				fmt.Fprintf(cmd.OutOrStdout(), "next: `fly launch --no-deploy --copy-config -c deploy/fly.toml` once, then `fly secrets import < agent/.env` — then `agentctl deploy`\n")
 			}

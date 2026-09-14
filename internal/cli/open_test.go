@@ -28,7 +28,7 @@ func TestOpenPortResolution(t *testing.T) {
 
 			var out strings.Builder
 			r := newStubRunner("xdg-open")
-			if err := Open(r, root, tt.fallback, &out); err != nil {
+			if err := Open(r, agentDir(root), tt.fallback, &out); err != nil {
 				t.Fatal(err)
 			}
 			if got := strings.TrimSpace(out.String()); got != tt.wantURL {
@@ -46,7 +46,7 @@ func TestOpenWithoutXdgOpen(t *testing.T) {
 	})
 	var out strings.Builder
 	r := newStubRunner() // no xdg-open on PATH
-	if err := Open(r, root, 18789, &out); err != nil {
+	if err := Open(r, agentDir(root), 18789, &out); err != nil {
 		t.Fatalf("absent xdg-open must still succeed: %v", err)
 	}
 	if len(r.calls) != 0 {

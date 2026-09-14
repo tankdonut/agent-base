@@ -156,7 +156,7 @@ func TestEnvActiveMcpNames(t *testing.T) {
 			{Name: "sentiment", IfEnv: []string{"SENTIMENT_API_KEY"}},
 		},
 	}
-	got, ok := envActiveMcpNames(root, info)
+	got, ok := envActiveMcpNames(agentDir(root), info)
 	if !ok {
 		t.Fatal("envActiveMcpNames unexpectedly reported .env unreadable")
 	}
@@ -169,10 +169,10 @@ func TestEnvActiveMcpNames(t *testing.T) {
 
 func TestAutomationJobNames(t *testing.T) {
 	root := fixtureProject(t)
-	if got := automationJobNames(root); !reflect.DeepEqual(got, []string{"jobs"}) {
+	if got := automationJobNames(agentDir(root)); !reflect.DeepEqual(got, []string{"jobs"}) {
 		t.Errorf("automationJobNames = %v, want [jobs]", got)
 	}
-	if got := automationJobNames(filepath.Join(root, "nonexistent")); got != nil {
+	if got := automationJobNames(filepath.Join(agentDir(root), "nonexistent")); got != nil {
 		t.Errorf("automationJobNames on a missing dir = %v, want nil", got)
 	}
 }
@@ -371,7 +371,7 @@ func writeSpecWithMcp(t *testing.T, root string) {
     {"name": "sentiment", "url": "https://mcp.example.com", "if_env": ["SENTIMENT_API_KEY"]}
   ]
 }`
-	if err := os.WriteFile(filepath.Join(root, "agent", "spec.json"), []byte(spec), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(agentDir(root), "spec.json"), []byte(spec), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }

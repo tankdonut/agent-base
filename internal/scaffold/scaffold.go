@@ -12,10 +12,11 @@ import (
 
 // templateData is the complete template surface: templates may use ONLY
 // these fields. Keep in sync with the Config fields of the same names
-// (ComposeProject is derived from ProjectName via ComposeProject).
+// (ComposeProject and AgentKey are derived from ProjectName).
 type templateData struct {
 	ProjectName    string
 	ComposeProject string
+	AgentKey       string
 	AgentName      string
 	BaseTag        string
 	Model          string
@@ -24,10 +25,12 @@ type templateData struct {
 }
 
 // Run validates cfg, renders the embedded template tree into
-// cfg.TargetDir, optionally runs git init, and returns the created paths
-// relative to the target. A non-empty existing target is an error unless
-// cfg.Force is set (then generated files are overwritten; unrelated
-// files are left alone).
+// cfg.TargetDir in the fleet-of-one layout (fleet.yaml + README + repo
+// tooling at the root; agent content under agents/<key>/), optionally
+// runs git init, and returns the created paths relative to the target.
+// A non-empty existing target is an error unless cfg.Force is set
+// (then generated files are overwritten; unrelated files are left
+// alone).
 func Run(cfg Config) ([]string, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
@@ -35,9 +38,11 @@ func Run(cfg Config) ([]string, error) {
 	if err := checkTarget(cfg.TargetDir, cfg.Force); err != nil {
 		return nil, err
 	}
+	key := ComposeProject(cfg.ProjectName)
 	data := templateData{
 		ProjectName:    cfg.ProjectName,
-		ComposeProject: ComposeProject(cfg.ProjectName),
+		ComposeProject: key,
+		AgentKey:       key,
 		AgentName:      cfg.AgentName,
 		BaseTag:        cfg.BaseTag,
 		Model:          cfg.Model,
@@ -52,10 +57,11 @@ func Run(cfg Config) ([]string, error) {
 	}
 	created := make([]string, 0, len(paths))
 	for _, rel := range paths {
-		if err := renderFile(tmplFS, cfg.TargetDir, rel, data); err != nil {
+		out := OutputPath(rel, key)
+		if err := renderFile(tmplFS, cfg.TargetDir, rel, out, data); err != nil {
 			return nil, fmt.Errorf("%w — partial scaffold left in %s: re-run with --force to overwrite generated files", err, cfg.TargetDir)
 		}
-		created = append(created, rel)
+		created = append(created, out)
 	}
 	if cfg.GitInit {
 		if err := gitInit(cfg.TargetDir); err != nil {
@@ -83,15 +89,15 @@ func checkTarget(dir string, force bool) error {
 	return nil
 }
 
-// renderFile renders tmpl/<rel>.tmpl into <target>/<rel> with the
-// mode from the templates table. Every non-empty file ends with a
-// newline, keeping output deterministic.
-func renderFile(fsys fs.FS, target, rel string, data templateData) error {
-	out, err := renderBytes(fsys, rel, data)
+// renderFile renders tmpl/<src>.tmpl into <target>/<out> with the mode
+// from the templates table (keyed by source path). Every non-empty file
+// ends with a newline, keeping output deterministic.
+func renderFile(fsys fs.FS, target, src, out string, data templateData) error {
+	bytes, err := renderBytes(fsys, src, data)
 	if err != nil {
 		return err
 	}
-	dest := filepath.Join(target, filepath.FromSlash(rel))
+	dest := filepath.Join(target, filepath.FromSlash(out))
 	// --force must never write through a symlink planted at a manifest
 	// path (WriteFile follows symlinks); refuse anything non-regular.
 	if fi, err := os.Lstat(dest); err == nil && !fi.Mode().IsRegular() {
@@ -100,8 +106,8 @@ func renderFile(fsys fs.FS, target, rel string, data templateData) error {
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 		return fmt.Errorf("creating %s: %w", filepath.Dir(dest), err)
 	}
-	mode := Mode(rel)
-	if err := os.WriteFile(dest, out, mode); err != nil {
+	mode := Mode(src)
+	if err := os.WriteFile(dest, bytes, mode); err != nil {
 		return fmt.Errorf("writing %s: %w", dest, err)
 	}
 	// WriteFile applies mode only on create; chmod keeps modes

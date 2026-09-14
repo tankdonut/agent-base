@@ -17,7 +17,7 @@ func Validate(r process.Runner, engine, root string) error {
 	if r == nil {
 		return process.ErrNilRunner
 	}
-	tag, err := project.BaseTagFromDockerfile(filepath.Join(root, "agent", "Dockerfile"))
+	tag, err := project.BaseTagFromDockerfile(filepath.Join(root, "Dockerfile"))
 	if err != nil {
 		return err
 	}
@@ -33,7 +33,7 @@ func Validate(r process.Runner, engine, root string) error {
 //	  -v <root>/agent/spec.json:/opt/agent/spec.json:ro \
 //	  -v <root>/agent/automations:/opt/agent/automations:ro \
 //	  [-v <root>/agent/scripts:/opt/agent/scripts:ro — when shipped] \
-//	  --env-file agent/.env.example \
+//	  --env-file .env.example \
 //	  [-e NAME=dummy ...] <ref> --validate-spec
 //
 // Every {env:NAME} ref gets a dummy -e value so resolution never fails
@@ -46,15 +46,15 @@ func ValidateRef(r process.Runner, engine, root, ref string) error {
 	if r == nil {
 		return process.ErrNilRunner
 	}
-	info, err := project.ReadSpec(filepath.Join(root, "agent", "spec.json"))
+	info, err := project.ReadSpec(filepath.Join(root, "spec.json"))
 	if err != nil {
 		return err
 	}
-	envExample := filepath.Join(root, "agent", ".env.example")
+	envExample := filepath.Join(root, ".env.example")
 	if _, err := os.Stat(envExample); err != nil {
 		return fmt.Errorf("agent/.env.example not found — run `agentctl init`")
 	}
-	automations := filepath.Join(root, "agent", "automations")
+	automations := filepath.Join(root, "automations")
 	if fi, err := os.Stat(automations); err != nil || !fi.IsDir() {
 		return fmt.Errorf("agent/automations not found — every project ships one (`agentctl init`)")
 	}
@@ -65,13 +65,13 @@ func ValidateRef(r process.Runner, engine, root, ref string) error {
 	argv := []string{
 		"run", "--rm",
 		"--security-opt", "label=disable",
-		"-v", filepath.Join(root, "agent", "spec.json") + ":/opt/agent/spec.json:ro",
+		"-v", filepath.Join(root, "spec.json") + ":/opt/agent/spec.json:ro",
 		"-v", automations + ":/opt/agent/automations:ro",
 	}
-	if scripts := filepath.Join(root, "agent", "scripts"); dirExists(scripts) {
+	if scripts := filepath.Join(root, "scripts"); dirExists(scripts) {
 		argv = append(argv, "-v", scripts+":/opt/agent/scripts:ro")
 	}
-	argv = append(argv, "--env-file", "agent/.env.example")
+	argv = append(argv, "--env-file", ".env.example")
 	dummies := append([]string{}, info.EnvRefs...)
 	if k := info.AuthEnvKey(); k != "" && !contains(dummies, k) {
 		dummies = append(dummies, k)

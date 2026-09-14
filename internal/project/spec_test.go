@@ -7,7 +7,7 @@ import (
 
 func TestReadSpec(t *testing.T) {
 	path := writeProject(t, map[string]string{"agent/spec.json": fixtureSpec})
-	info, err := ReadSpec(path + "/agent/spec.json")
+	info, err := ReadSpec(path + "/spec.json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,7 +37,7 @@ func TestReadSpecMcpServers(t *testing.T) {
   ]
 }`
 	path := writeProject(t, map[string]string{"agent/spec.json": spec})
-	info, err := ReadSpec(path + "/agent/spec.json")
+	info, err := ReadSpec(path + "/spec.json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +53,7 @@ func TestReadSpecMcpServers(t *testing.T) {
 func TestReadSpecNoZAIAuth(t *testing.T) {
 	spec := `{"setup": {"auth_choice": "anthropic"}, "config": []}`
 	path := writeProject(t, map[string]string{"agent/spec.json": spec})
-	info, err := ReadSpec(path + "/agent/spec.json")
+	info, err := ReadSpec(path + "/spec.json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +140,7 @@ func TestReadSpecAgentIdentity(t *testing.T) {
   "channels": [{"type": "telegram"}, {"type": "discord"}]
 }`
 	path := writeProject(t, map[string]string{"agent/spec.json": spec})
-	info, err := ReadSpec(path + "/agent/spec.json")
+	info, err := ReadSpec(path + "/spec.json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +152,7 @@ func TestReadSpecAgentIdentity(t *testing.T) {
 	}
 
 	bare := writeProject(t, map[string]string{"agent/spec.json": `{}`})
-	info, err = ReadSpec(bare + "/agent/spec.json")
+	info, err = ReadSpec(bare + "/spec.json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +161,7 @@ func TestReadSpecAgentIdentity(t *testing.T) {
 	}
 
 	noTelegram := writeProject(t, map[string]string{"agent/spec.json": `{"channels": [{"type": "discord"}]}`})
-	info, err = ReadSpec(noTelegram + "/agent/spec.json")
+	info, err = ReadSpec(noTelegram + "/spec.json")
 	if err != nil {
 		t.Fatal(err)
 	}
