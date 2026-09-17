@@ -96,7 +96,10 @@ services:
     security_opt:
       - no-new-privileges:true
       - label=disable
-    cap_drop: [ALL]
+    # NO cap_drop here: the postgres entrypoint needs CHOWN/SETUID/
+    # SETGID/FOWNER to init and switch to the postgres user — dropping
+    # all caps makes it crash-loop (exit 1), which starves the
+    # litellm service_healthy gate forever (the plane-up wedge).
 
   # The fleet's one model/provider home: every provider API key lives
   # in plane/.env, agents hold per-agent virtual keys minted by
@@ -132,7 +135,8 @@ services:
     security_opt:
       - no-new-privileges:true
       - label=disable
-    cap_drop: [ALL]
+    # NO cap_drop: the entrypoint's prisma migration steps need the
+    # default cap set (same crash-loop class as litellm-db).
     deploy:
       resources:
         limits:

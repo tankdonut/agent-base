@@ -91,6 +91,12 @@ case $target in
   agentctl-test)
     go test ./...
     ;;
+  agentctl-integration)
+    # Tier A (e2e re-imagining): real-engine integration tests,
+    # contained by internal/e2e — budgeted, group-killed, artifacts on
+    # breach under logs/e2e/.
+    go test -tags=integration -count=1 -timeout 15m ./internal/integration/
+    ;;
   agentctl-build)
     go build -o agentctl ./cmd/agentctl
     ;;
