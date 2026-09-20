@@ -23,7 +23,7 @@ import (
 // the envelope materialized (the pre-deploy render every verb does).
 func convergeFixture(t *testing.T) (*fleet.Manifest, platform.Platform, string, string) {
 	t.Helper()
-	engine := pickEngine(t)
+	engine := composeEngine(t)
 	ref := ensureBaseImage(t, engine)
 	port := freePort(t)
 	m, dir, dockerfile := fixtureAgent(t, engine, "grow", port)
@@ -48,6 +48,7 @@ func cleanupStack(t *testing.T, engine, dir string) {
 		_ = e2e.Run(ctx, e2e.Step{
 			Name: "down-" + filepath.Base(dir), Dir: dir,
 			Argv: []string{engine, "compose", "-f", "compose.yml", "down", "--volumes"},
+			Env:  composeChildEnv(nil),
 		})
 	})
 }
@@ -118,7 +119,7 @@ func TestConvergeAgentReachesRunningState(t *testing.T) {
 }
 
 func TestRunningPortDriftFlagsAfterManifestEdit(t *testing.T) {
-	engine := pickEngine(t)
+	engine := composeEngine(t)
 	ref := ensureBaseImage(t, engine)
 	port := freePort(t)
 	m, dir, dockerfile := fixtureAgent(t, engine, "grow", port)

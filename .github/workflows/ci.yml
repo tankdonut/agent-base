@@ -61,6 +61,11 @@ jobs:
       - name: Test
         run: go test ./...
 
+      - name: Integration (Tier A + B, real engine + real image)
+        env:
+          AGENT_E2E_ENGINE: docker
+        run: go test -tags=integration -count=1 -timeout 30m -v ./internal/integration/
+
   contract:
     needs: [lint, test]
     # Real-image CLI drift gate (roadmap N4): unit tests and the shim-based
@@ -115,11 +120,6 @@ jobs:
       - name: agentctl front-door e2e (init → deploy → destroy)
         env:
           E2E_ENGINE: docker
-          # The plane stage hangs inside compose up against the
-          # litellm-db plane stack (reproduced locally on podman;
-          # root cause open) — gate it off until the wedge is fixed,
-          # then drop this back to the full default.
-          E2E_STAGES: core,dev,fleet
         run: ./make.sh agentctl-e2e
 
   # Multi-arch image (L1): native per-arch builds keep the docker media

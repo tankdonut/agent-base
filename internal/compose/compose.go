@@ -189,7 +189,9 @@ func Restart(r process.Runner, engine, root string, services []string) error {
 }
 
 // Rebuild rebuilds the named services' images and force-recreates them
-// (all services when none given).
+// (all services when none given). The FROM-line change of an upgrade
+// invalidates every dependent layer, so the default cache behavior is
+// correct here — no --no-cache (podman-compose rejects its position).
 func Rebuild(r process.Runner, engine, root string, services []string) error {
 	if r == nil {
 		return process.ErrNilRunner

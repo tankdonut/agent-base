@@ -89,6 +89,12 @@ func New(deps Deps) *Server {
 // ListenAndServe binds addr and serves until ctx is cancelled. A
 // non-loopback host is a hard error: the API has no TLS story and its
 // bearer is a local-automation credential, not a network one.
+// Mux exposes the routed handler for hosts that manage their own
+// http.Server (tests, `fleet serve` variants). The loopback-only
+// bind policy lives in ListenAndServe and does NOT transfer — callers
+// of Mux own their bind address.
+func (s *Server) Mux() *http.ServeMux { return s.mux }
+
 func (s *Server) ListenAndServe(ctx context.Context, addr string) error {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
