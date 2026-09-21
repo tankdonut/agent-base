@@ -6,9 +6,13 @@ package gatewayclient
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -84,8 +88,8 @@ func Connect(ctx context.Context, rawURL, token string, opts Options) (*Client, 
 	}
 	c := &Client{ws: ws, token: token, timeout: opts.RequestTimeout, pending: map[string]chan frame{}}
 
-	// 1. The gateway opens with connect.challenge; its nonce is for
-	// device-signed connects, which shared-token operators skip.
+	// 1. The gateway opens with connect.challenge; its nonce is bound
+	// into the device signature below.
 	helloDeadline := time.Now().Add(15 * time.Second)
 	ws.setDeadline(helloDeadline)
 	first, err := ws.readMessage()
@@ -98,15 +102,38 @@ func Connect(ctx context.Context, rawURL, token string, opts Options) (*Client, 
 		ws.close()
 		return nil, fmt.Errorf("first frame was not connect.challenge (got %.80s)", first)
 	}
+	nonce := challengeStringField(challenge.Payload, "nonce")
 
-	// 2. connect request: protocol pinned to 4 on both ends. The
-	// client identity is the load-bearing part: a device-less connect
-	// keeps its declared scopes ONLY in the first-party local-CLI
-	// shape (client.id "cli" + mode "cli", loopback, shared token, no
-	// browser Origin) — docs/gateway/operator-scopes "Shared-secret
-	// auth" + handshake scope-preservation rules. Any other identity
-	// connects but lands with cleared scopes (MISSING_SCOPE on every
-	// call).
+	// 2. connect request: protocol pinned to 4 on both ends, with
+	// DEVICE identity. A published-port connection arrives on the
+	// container's network interface — remote locality — and remote
+	// device-less connects get their scopes cleared (MISSING_SCOPE on
+	// every call), so the client signs the challenge: Ed25519 over the
+	// v3 payload built from the connect params (buildDeviceAuthPayloadV3
+	// in the gateway's device-auth module).
+	scopes := []string{"operator.read", "operator.approvals"}
+	signedAtMs := time.Now().UnixMilli()
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		ws.close()
+		return nil, fmt.Errorf("device keypair: %w", err)
+	}
+	deviceID := fmt.Sprintf("%x", sha256.Sum256(pub))
+	platform := strings.ToLower(strings.TrimSpace("linux"))
+	devicePayload := strings.Join([]string{
+		"v3",
+		deviceID,
+		"cli",
+		"cli",
+		"operator",
+		strings.Join(scopes, ","),
+		strconv.FormatInt(signedAtMs, 10),
+		token,
+		nonce,
+		platform,
+		"",
+	}, "|")
+	sig := base64.RawURLEncoding.EncodeToString(ed25519.Sign(priv, []byte(devicePayload)))
 	connect := map[string]any{
 		"type":   "req",
 		"id":     "connect",
@@ -117,16 +144,23 @@ func Connect(ctx context.Context, rawURL, token string, opts Options) (*Client, 
 			"client": map[string]any{
 				"id":       "cli",
 				"version":  opts.ClientVersion,
-				"platform": "linux",
+				"platform": platform,
 				"mode":     "cli",
 			},
 			"role":      "operator",
-			"scopes":    []string{"operator.read", "operator.approvals"},
+			"scopes":    scopes,
 			"caps":      []string{},
 			"commands":  []string{},
 			"auth":      map[string]any{"token": token},
 			"locale":    "en-US",
 			"userAgent": "agentctl/" + opts.ClientVersion,
+			"device": map[string]any{
+				"id":        deviceID,
+				"publicKey": base64.RawURLEncoding.EncodeToString(pub),
+				"signature": sig,
+				"signedAt":  signedAtMs,
+				"nonce":     nonce,
+			},
 		},
 	}
 	body, err := json.Marshal(connect)
@@ -188,6 +222,17 @@ func Connect(ctx context.Context, rawURL, token string, opts Options) (*Client, 
 	ws.setDeadline(time.Time{})
 	go c.readLoop()
 	return c, nil
+}
+
+// challengeStringField extracts a top-level string field from the
+// connect.challenge payload.
+func challengeStringField(payload json.RawMessage, key string) string {
+	var m map[string]any
+	if err := json.Unmarshal(payload, &m); err != nil {
+		return ""
+	}
+	s, _ := m[key].(string)
+	return s
 }
 
 // ServerVersion reports the hello-ok server version.
