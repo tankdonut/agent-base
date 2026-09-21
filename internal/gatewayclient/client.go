@@ -10,7 +10,10 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -53,6 +56,39 @@ type Options struct {
 	ClientVersion string
 	// RequestTimeout overrides the per-RPC budget.
 	RequestTimeout time.Duration
+	// DeviceKeyPath persists this client's Ed25519 device identity
+	// (raw 32-byte private key). Created on first use; a stable key
+	// means a device, once paired, stays paired across invocations.
+	DeviceKeyPath string
+	// ApproveDevice resolves a NOT_PAIRED connect: the gateway held
+	// the device-signed handshake as an unapproved pairing request and
+	// the caller approves it host-side (compose exec `openclaw devices
+	// approve`), after which the connect is retried once.
+	ApproveDevice func() error
+}
+
+// loadOrCreateDeviceKey returns the persisted Ed25519 private key,
+// generating and writing it (0600) on first use. An empty path yields
+// an ephemeral key (tests).
+func loadOrCreateDeviceKey(path string) (ed25519.PrivateKey, error) {
+	if path == "" {
+		_, priv, err := ed25519.GenerateKey(nil)
+		return priv, err
+	}
+	if data, err := os.ReadFile(path); err == nil && len(data) == ed25519.PrivateKeySize {
+		return ed25519.PrivateKey(data), nil
+	}
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(path, []byte(priv), 0o600); err != nil {
+		return nil, err
+	}
+	return priv, nil
 }
 
 // Client is one connected gateway RPC session. Safe for concurrent
@@ -82,6 +118,24 @@ func Connect(ctx context.Context, rawURL, token string, opts Options) (*Client, 
 	if opts.ClientVersion == "" {
 		opts.ClientVersion = "dev"
 	}
+	c, err := connectOnce(ctx, rawURL, token, opts)
+	if err != nil {
+		var rpcErr *RPCError
+		if errors.As(err, &rpcErr) && rpcErr.Code == "NOT_PAIRED" && opts.ApproveDevice != nil {
+			// The handshake registered this device as a pending
+			// pairing request. The caller approves it host-side (it
+			// holds the stack), then one retry completes the pairing.
+			if approveErr := opts.ApproveDevice(); approveErr != nil {
+				return nil, fmt.Errorf("device approval failed: %w (connect error: %w)", approveErr, err)
+			}
+			return connectOnce(ctx, rawURL, token, opts)
+		}
+		return nil, err
+	}
+	return c, nil
+}
+
+func connectOnce(ctx context.Context, rawURL, token string, opts Options) (*Client, error) {
 	ws, err := dialWS(ctx, rawURL)
 	if err != nil {
 		return nil, err
@@ -113,11 +167,12 @@ func Connect(ctx context.Context, rawURL, token string, opts Options) (*Client, 
 	// in the gateway's device-auth module).
 	scopes := []string{"operator.read", "operator.approvals"}
 	signedAtMs := time.Now().UnixMilli()
-	pub, priv, err := ed25519.GenerateKey(nil)
+	priv, err := loadOrCreateDeviceKey(opts.DeviceKeyPath)
 	if err != nil {
 		ws.close()
-		return nil, fmt.Errorf("device keypair: %w", err)
+		return nil, fmt.Errorf("device key: %w", err)
 	}
+	pub := priv.Public().(ed25519.PublicKey)
 	deviceID := fmt.Sprintf("%x", sha256.Sum256(pub))
 	platform := strings.ToLower(strings.TrimSpace("linux"))
 	devicePayload := strings.Join([]string{

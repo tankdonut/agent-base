@@ -122,6 +122,7 @@ wider bind.`,
 				},
 				Version:         Version,
 				Token:           token,
+				DeviceKeyPath:   deviceKeyPath(m.Root),
 				UpgradesPreview: func(agent, target string) (any, error) { return upgradesPreview(m, agent, target) },
 			}
 			srv := api.New(deps)
@@ -181,6 +182,16 @@ WantedBy=default.target
 			return nil
 		},
 	}
+}
+
+// deviceKeyPath is the fleet-scoped WS device identity, a sibling of
+// the serve token: one pairing per fleet, reused across invocations.
+func deviceKeyPath(fleetRoot string) string {
+	path, err := serveTokenPath(fleetRoot)
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(path), "device.key")
 }
 
 func mustServeTokenPath(fleetRoot string) string {

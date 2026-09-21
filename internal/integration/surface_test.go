@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/tankdonut/agent-base/internal/api"
+	"github.com/tankdonut/agent-base/internal/compose"
 	"github.com/tankdonut/agent-base/internal/e2e"
 	"github.com/tankdonut/agent-base/internal/fleet"
 	"github.com/tankdonut/agent-base/internal/gatewayclient"
@@ -308,11 +309,27 @@ func (l *liveAgent) authedGet(t *testing.T, path string) map[string]any {
 	return body
 }
 
+// tierbOptions is the Tier B connect profile: the persisted device
+// identity plus the self-pairing hook (the product's own behavior —
+// the operator holds the stack, so NOT_PAIRED resolves itself).
+func tierbOptions(live *liveAgent) gatewayclient.Options {
+	return gatewayclient.Options{
+		ClientVersion: "tierb",
+		DeviceKeyPath: filepath.Join(live.fleetRoot, "device.key"),
+		ApproveDevice: func() error {
+			return compose.ApproveOwnDevice(processRunner{}, live.engine, live.agentDir)
+		},
+	}
+}
+
 func TestGatewayRealProtocol(t *testing.T) {
 	live := liveFixture(t)
+	_, connectErr := gatewayclient.Connect(context.Background(), live.gatewayURL, live.token, tierbOptions(live))
+	if connectErr != nil && strings.Contains(connectErr.Error(), "NOT_PAIRED") {
+		t.Fatalf("self-pairing did not resolve NOT_PAIRED: %v", connectErr)
+	}
 
-	// Real gateway, real v4 handshake, real token.
-	c, err := gatewayclient.Connect(context.Background(), live.gatewayURL, live.token, gatewayclient.Options{ClientVersion: "tierb"})
+	c, err := gatewayclient.Connect(context.Background(), live.gatewayURL, live.token, tierbOptions(live))
 	if err != nil {
 		t.Fatalf("real gateway connect: %v", err)
 	}
@@ -328,14 +345,14 @@ func TestGatewayRealProtocol(t *testing.T) {
 	}
 
 	// Wrong token: the real gateway must refuse the connect.
-	if _, err := gatewayclient.Connect(context.Background(), live.gatewayURL, "wrong-token", gatewayclient.Options{}); err == nil {
+	if _, err := gatewayclient.Connect(context.Background(), live.gatewayURL, "wrong-token", tierbOptions(live)); err == nil {
 		t.Error("wrong token must be rejected by the real gateway")
 	}
 }
 
 func TestApprovalsProtocolAgainstRealGateway(t *testing.T) {
 	live := liveFixture(t)
-	c, err := gatewayclient.Connect(context.Background(), live.gatewayURL, live.token, gatewayclient.Options{})
+	c, err := gatewayclient.Connect(context.Background(), live.gatewayURL, live.token, tierbOptions(live))
 	if err != nil {
 		t.Fatal(err)
 	}

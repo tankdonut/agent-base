@@ -1,6 +1,7 @@
 package compose
 
 import (
+	"encoding/json"
 	"fmt"
 	"github.com/tankdonut/agent-base/internal/process"
 	"os"
@@ -202,4 +203,41 @@ func Rebuild(r process.Runner, engine, root string, services []string) error {
 	}
 	recreate := append([]string{"up", "-d", "--force-recreate"}, services...)
 	return process.RunArgvIn(r, root, nil, composeArgv(engine, false, recreate...)...)
+}
+
+// ApproveOwnDevice resolves the agent's pending WS device pairing:
+// `openclaw devices list --json` finds the newest request and
+// `openclaw devices approve <requestId>` approves it — the operator
+// already holds the stack, so the host-side exec IS the approval.
+func ApproveOwnDevice(r process.Runner, engine, root string) error {
+	argv := composeArgv(engine, false, "exec", "-T", "agent", "openclaw", "devices", "list", "--json")
+	list, err := r.RunOutputIn(root, nil, argv[0], argv[1:]...)
+	if err != nil {
+		return fmt.Errorf("devices list: %w", err)
+	}
+	requestID := ""
+	var parsed struct {
+		Pending []struct {
+			RequestID string `json:"requestId"`
+		} `json:"pending"`
+	}
+	if err := json.Unmarshal(list, &parsed); err == nil && len(parsed.Pending) > 0 {
+		requestID = parsed.Pending[0].RequestID
+	}
+	if requestID == "" {
+		var arr []struct {
+			RequestID string `json:"requestId"`
+		}
+		if err := json.Unmarshal(list, &arr); err == nil && len(arr) > 0 {
+			requestID = arr[0].RequestID
+		}
+	}
+	if requestID == "" {
+		return fmt.Errorf("no pending device request (list: %.200s)", list)
+	}
+	approve := composeArgv(engine, false, "exec", "-T", "agent", "openclaw", "devices", "approve", requestID)
+	if err := process.RunArgvIn(r, root, nil, approve...); err != nil {
+		return fmt.Errorf("devices approve %s: %w", requestID, err)
+	}
+	return nil
 }
