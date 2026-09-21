@@ -75,6 +75,9 @@ func bootLiveAgent() (*liveAgent, error) {
 	if tmpBase == "" {
 		tmpBase = os.TempDir()
 	}
+	if err := os.MkdirAll(tmpBase, 0o755); err != nil {
+		return nil, err
+	}
 	root, err := os.MkdirTemp(tmpBase, "tierb-fleet-")
 	if err != nil {
 		return nil, err

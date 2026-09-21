@@ -75,10 +75,7 @@ func TestConvergeAgentReachesRunningState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var rows []map[string]any
-	if err := json.Unmarshal(data, &rows); err != nil {
-		t.Fatalf("ps json: %v", err)
-	}
+	rows := psRows(data)
 	foundAgent := false
 	for _, row := range rows {
 		// podman ps --format json names containers under "Names" as an
@@ -190,27 +187,32 @@ func itoa(n int) string {
 
 // publishedHostPorts normalizes compose ps --format json across
 // engines (docker Publishers[].PublishedPort; podman Ports[].host_port).
+// psRows decodes `ps --format json` output: docker compose v2 emits
+// newline-delimited objects, podman emits an array.
+func psRows(data []byte) []map[string]any {
+	var rows []map[string]any
+	dec := json.NewDecoder(bytes.NewReader(data))
+	for {
+		var row map[string]any
+		if err := dec.Decode(&row); err != nil {
+			break
+		}
+		rows = append(rows, row)
+	}
+	if len(rows) == 0 {
+		_ = json.Unmarshal(data, &rows)
+	}
+	return rows
+}
+
 // publishedHostPorts normalizes the ps --format json shapes: docker
 // compose v2 emits NEWLINE-DELIMITED objects (NDJSON), podman emits an
 // array; docker rows report Publishers[].PublishedPort, podman rows
 // Ports[].host_port.
 func publishedHostPorts(data []byte) map[int]bool {
 	ports := map[int]bool{}
-	dec := json.NewDecoder(bytes.NewReader(data))
-	for {
-		var row map[string]any
-		if err := dec.Decode(&row); err != nil {
-			break // trailing whitespace or end of stream
-		}
+	for _, row := range psRows(data) {
 		collectPorts(row, ports)
-	}
-	if len(ports) == 0 {
-		var rows []map[string]any
-		if err := json.Unmarshal(data, &rows); err == nil {
-			for _, row := range rows {
-				collectPorts(row, ports)
-			}
-		}
 	}
 	return ports
 }
