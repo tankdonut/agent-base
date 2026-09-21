@@ -23,6 +23,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/tankdonut/agent-base/internal/compose"
 	"github.com/tankdonut/agent-base/internal/fleet"
 	"github.com/tankdonut/agent-base/internal/gatewayclient"
 	"github.com/tankdonut/agent-base/internal/platform"
@@ -53,6 +54,9 @@ type Deps struct {
 	// crossings + downgrade warning) for a target tag. Injected from
 	// the composition root — the era table lives with doctor.
 	UpgradesPreview func(agent, target string) (any, error)
+	// DeviceKeyPath persists the serve process's WS device identity
+	// (one pairing per fleet, reused across restarts).
+	DeviceKeyPath string
 }
 
 // Server is the serve instance.
@@ -89,6 +93,12 @@ func New(deps Deps) *Server {
 // ListenAndServe binds addr and serves until ctx is cancelled. A
 // non-loopback host is a hard error: the API has no TLS story and its
 // bearer is a local-automation credential, not a network one.
+// Mux exposes the routed handler for hosts that manage their own
+// http.Server (tests, `fleet serve` variants). The loopback-only
+// bind policy lives in ListenAndServe and does NOT transfer — callers
+// of Mux own their bind address.
+func (s *Server) Mux() *http.ServeMux { return s.mux }
+
 func (s *Server) ListenAndServe(ctx context.Context, addr string) error {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -340,7 +350,14 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 		row := map[string]any{"agent": name, "gateway": "unreachable"}
 		if token := gatewayToken(entry.Dir); token != "" {
-			if c, err := connectGateway(ctx, fmt.Sprintf("ws://127.0.0.1:%d", entry.GatewayPort), token, gatewayclient.Options{}); err == nil {
+			opts := gatewayclient.Options{DeviceKeyPath: s.deps.DeviceKeyPath}
+			if s.deps.NewRunner != nil {
+				if engine, err := process.ResolveEngine(s.deps.Manifest.Defaults.ComposeEngine, s.deps.NewRunner()); err == nil {
+					agentDir := entry.Dir
+					opts.ApproveDevice = func() error { return compose.ApproveOwnDevice(s.deps.NewRunner(), engine, agentDir) }
+				}
+			}
+			if c, err := connectGateway(ctx, fmt.Sprintf("ws://127.0.0.1:%d", entry.GatewayPort), token, opts); err == nil {
 				approvals, _ := c.ListApprovals(ctx)
 				row["gateway"] = c.ServerVersion()
 				row["pending_approvals"] = len(approvals)
@@ -382,9 +399,14 @@ func (s *Server) listApprovals(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, http.StatusConflict, fmt.Errorf("agents/%s/.env carries no gateway token", name))
 		return
 	}
+	gwOpts := gatewayclient.Options{DeviceKeyPath: s.deps.DeviceKeyPath}
+	if engine, rErr := process.ResolveEngine(s.deps.Manifest.Defaults.ComposeEngine, s.deps.NewRunner()); rErr == nil {
+		agentDir := entry.Dir
+		gwOpts.ApproveDevice = func() error { return compose.ApproveOwnDevice(s.deps.NewRunner(), engine, agentDir) }
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
-	c, err := connectGateway(ctx, fmt.Sprintf("ws://127.0.0.1:%d", entry.GatewayPort), token, gatewayclient.Options{})
+	c, err := connectGateway(ctx, fmt.Sprintf("ws://127.0.0.1:%d", entry.GatewayPort), token, gwOpts)
 	if err != nil {
 		s.fail(w, http.StatusBadGateway, fmt.Errorf("gateway unreachable for %s: %w", name, err))
 		return
@@ -425,9 +447,14 @@ func (s *Server) resolveApproval(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, http.StatusConflict, fmt.Errorf("agents/%s/.env carries no gateway token", name))
 		return
 	}
+	gwOpts := gatewayclient.Options{DeviceKeyPath: s.deps.DeviceKeyPath}
+	if engine, rErr := process.ResolveEngine(s.deps.Manifest.Defaults.ComposeEngine, s.deps.NewRunner()); rErr == nil {
+		agentDir := entry.Dir
+		gwOpts.ApproveDevice = func() error { return compose.ApproveOwnDevice(s.deps.NewRunner(), engine, agentDir) }
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
-	c, err := connectGateway(ctx, fmt.Sprintf("ws://127.0.0.1:%d", entry.GatewayPort), token, gatewayclient.Options{})
+	c, err := connectGateway(ctx, fmt.Sprintf("ws://127.0.0.1:%d", entry.GatewayPort), token, gwOpts)
 	if err != nil {
 		s.fail(w, http.StatusBadGateway, fmt.Errorf("gateway unreachable for %s: %w", name, err))
 		return

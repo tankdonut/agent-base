@@ -17,8 +17,10 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/tankdonut/agent-base/internal/compose"
 	"github.com/tankdonut/agent-base/internal/fleet"
 	"github.com/tankdonut/agent-base/internal/gatewayclient"
+	"github.com/tankdonut/agent-base/internal/process"
 )
 
 // gatewayToken reads OPENCLAW_GATEWAY_TOKEN from the agent's .env.
@@ -47,7 +49,7 @@ type gatewayRow struct {
 // probeGateway connects to one agent's loopback gateway and collects
 // the live summary. Every failure is a row, never a fatal error —
 // live status must degrade per agent like the compose path.
-func probeGateway(ctx context.Context, name, agentDir string, port int) gatewayRow {
+func probeGateway(ctx context.Context, name, agentDir, engine, deviceKey string, port int) gatewayRow {
 	row := gatewayRow{Agent: name}
 	token := gatewayToken(agentDir)
 	if token == "" {
@@ -56,7 +58,10 @@ func probeGateway(ctx context.Context, name, agentDir string, port int) gatewayR
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
 	defer cancel()
-	c, err := gatewayclient.Connect(probeCtx, fmt.Sprintf("ws://127.0.0.1:%d", port), token, gatewayclient.Options{})
+	c, err := gatewayclient.Connect(probeCtx, fmt.Sprintf("ws://127.0.0.1:%d", port), token, gatewayclient.Options{
+		DeviceKeyPath: deviceKey,
+		ApproveDevice: func() error { return compose.ApproveOwnDevice(newRunner(), engine, agentDir) },
+	})
 	if err != nil {
 		row.Detail = err.Error()
 		return row
@@ -97,10 +102,15 @@ func runFleetLiveStatus(cmd *cobra.Command, agentFlag string, all bool) error {
 	if err != nil {
 		return err
 	}
+	engine, engineErr := process.ResolveEngine(m.Defaults.ComposeEngine, newRunner())
+	if engineErr != nil {
+		return engineErr
+	}
+	deviceKey := deviceKeyPath(m.Root)
 	rows := make([]gatewayRow, 0, len(names))
 	for _, name := range names {
 		entry := m.Agents[name]
-		rows = append(rows, probeGateway(cmd.Context(), name, entry.Dir, entry.GatewayPort))
+		rows = append(rows, probeGateway(cmd.Context(), name, entry.Dir, engine, deviceKey, entry.GatewayPort))
 	}
 	printGatewayRows(cmd.OutOrStdout(), rows)
 	for _, r := range rows {
@@ -163,9 +173,16 @@ never batched: pass --agent for anything beyond a fleet of one.`,
 			if token == "" {
 				return fmt.Errorf("agents/%s/.env carries no OPENCLAW_GATEWAY_TOKEN", name)
 			}
+			engine, engineErr := process.ResolveEngine(m.Defaults.ComposeEngine, newRunner())
+			if engineErr != nil {
+				return engineErr
+			}
 			ctx, cancel := context.WithTimeout(cmd.Context(), 20*time.Second)
 			defer cancel()
-			c, err := gatewayclient.Connect(ctx, fmt.Sprintf("ws://127.0.0.1:%d", entry.GatewayPort), token, gatewayclient.Options{})
+			c, err := gatewayclient.Connect(ctx, fmt.Sprintf("ws://127.0.0.1:%d", entry.GatewayPort), token, gatewayclient.Options{
+				DeviceKeyPath: deviceKeyPath(m.Root),
+				ApproveDevice: func() error { return compose.ApproveOwnDevice(newRunner(), engine, entry.Dir) },
+			})
 			if err != nil {
 				return fmt.Errorf("gateway unreachable for %s (is the agent up?): %w", name, err)
 			}

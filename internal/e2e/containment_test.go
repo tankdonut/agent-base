@@ -55,11 +55,20 @@ func TestBudgetBreachKillsGroupAndDumps(t *testing.T) {
 	if !dumped {
 		t.Error("dumpers must run on breach")
 	}
-	// The WHOLE group died: signalling the group reports no survivors.
-	if err := syscall.Kill(-pgid, 0); err == nil {
+	// The WHOLE group died: signalling the group must eventually report
+	// no survivors. Killed members reparented to a non-reaping PID 1
+	// linger as zombies that still answer signal(0) — poll briefly for
+	// the reaper before failing.
+	groupDead := false
+	for i := 0; i < 20; i++ {
+		if err := syscall.Kill(-pgid, 0); err == syscall.ESRCH {
+			groupDead = true
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if !groupDead {
 		t.Fatal("process group survived the SIGKILL")
-	} else if err != syscall.ESRCH {
-		t.Logf("group check: %v (acceptable race if reaped)", err)
 	}
 	// Artifacts landed.
 	matches, _ := filepath.Glob(filepath.Join(root, "wedge-*"))
@@ -128,7 +137,15 @@ func TestContextCancelKillsGroup(t *testing.T) {
 	if err == nil {
 		t.Fatal("cancellation must fail the step")
 	}
-	if err := syscall.Kill(-pgid, 0); err == nil {
+	groupDead := false
+	for i := 0; i < 20; i++ {
+		if err := syscall.Kill(-pgid, 0); err == syscall.ESRCH {
+			groupDead = true
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if !groupDead {
 		t.Error("process group survived cancellation")
 	}
 }

@@ -3,6 +3,7 @@
 import os
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -41,9 +42,18 @@ class ContainedStepTests(unittest.TestCase):
         self.assertIn("artifacts:", str(caught.exception))
         self.assertEqual(len(dumped), 1)
         self.assertTrue((dumped[0] / "extra.txt").exists())
-        # The WHOLE group died: no survivor answers the group signal.
-        with self.assertRaises(ProcessLookupError):
-            os.killpg(seen["pgid"], 0)
+        # The WHOLE group died: killed members reparented to a
+        # non-reaping init linger as zombies that still answer
+        # signal(0) — poll briefly for the reaper before failing.
+        group_dead = False
+        for _ in range(20):
+            try:
+                os.killpg(seen["pgid"], 0)
+            except ProcessLookupError:
+                group_dead = True
+                break
+            time.sleep(0.1)
+        self.assertTrue(group_dead, "process group survived the SIGKILL")
 
     def test_nonzero_exit_carries_tail(self):
         with self.assertRaises(containment.ContainedFailure) as caught:

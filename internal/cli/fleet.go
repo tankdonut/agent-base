@@ -290,9 +290,19 @@ func checkRunningPortDrift(m *fleet.Manifest) []fleetFinding {
 // unparsable yields an empty set (the caller skips).
 func publishedHostPorts(data []byte) map[int]bool {
 	ports := map[int]bool{}
+	// docker compose v2 emits NEWLINE-DELIMITED objects (not an
+	// array) — stream-decode, then fall back to the array shape.
+	dec := json.NewDecoder(bytes.NewReader(data))
 	var rows []map[string]any
-	if err := json.Unmarshal(data, &rows); err != nil {
-		return ports
+	for {
+		var row map[string]any
+		if err := dec.Decode(&row); err != nil {
+			break
+		}
+		rows = append(rows, row)
+	}
+	if len(rows) == 0 {
+		_ = json.Unmarshal(data, &rows)
 	}
 	for _, row := range rows {
 		if pubs, ok := row["Publishers"].([]any); ok {

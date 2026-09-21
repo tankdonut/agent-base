@@ -248,7 +248,9 @@ func TestFleetCheckFindings(t *testing.T) {
 func TestPublishedHostPorts(t *testing.T) {
 	docker := `[{"Name":"grow-agent-1","Publishers":[{"PublishedPort":18789},{"PublishedPort":0}]}]`
 	podman := `[{"Names":"grow_agent_1","Ports":[{"host_port":18789,"container_port":18789}]}]`
-	for name, body := range map[string]string{"docker shape": docker, "podman shape": podman} {
+	// docker compose v2 emits NDJSON lines, not an array.
+	ndjson := "{\"Name\":\"grow-agent-1\",\"Publishers\":[{\"PublishedPort\":18789}]}\n"
+	for name, body := range map[string]string{"docker shape": docker, "podman shape": podman, "docker ndjson": ndjson} {
 		got := publishedHostPorts([]byte(body))
 		if !got[18789] || len(got) != 1 {
 			t.Errorf("%s: parsed %v, want [18789] only", name, got)

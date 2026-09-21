@@ -3,6 +3,7 @@
 package integration
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -23,7 +24,7 @@ import (
 // the envelope materialized (the pre-deploy render every verb does).
 func convergeFixture(t *testing.T) (*fleet.Manifest, platform.Platform, string, string) {
 	t.Helper()
-	engine := pickEngine(t)
+	engine := composeEngine(t)
 	ref := ensureBaseImage(t, engine)
 	port := freePort(t)
 	m, dir, dockerfile := fixtureAgent(t, engine, "grow", port)
@@ -48,6 +49,7 @@ func cleanupStack(t *testing.T, engine, dir string) {
 		_ = e2e.Run(ctx, e2e.Step{
 			Name: "down-" + filepath.Base(dir), Dir: dir,
 			Argv: []string{engine, "compose", "-f", "compose.yml", "down", "--volumes"},
+			Env:  composeChildEnv(nil),
 		})
 	})
 }
@@ -73,10 +75,7 @@ func TestConvergeAgentReachesRunningState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var rows []map[string]any
-	if err := json.Unmarshal(data, &rows); err != nil {
-		t.Fatalf("ps json: %v", err)
-	}
+	rows := psRows(data)
 	foundAgent := false
 	for _, row := range rows {
 		// podman ps --format json names containers under "Names" as an
@@ -118,7 +117,7 @@ func TestConvergeAgentReachesRunningState(t *testing.T) {
 }
 
 func TestRunningPortDriftFlagsAfterManifestEdit(t *testing.T) {
-	engine := pickEngine(t)
+	engine := composeEngine(t)
 	ref := ensureBaseImage(t, engine)
 	port := freePort(t)
 	m, dir, dockerfile := fixtureAgent(t, engine, "grow", port)
@@ -188,33 +187,55 @@ func itoa(n int) string {
 
 // publishedHostPorts normalizes compose ps --format json across
 // engines (docker Publishers[].PublishedPort; podman Ports[].host_port).
+// psRows decodes `ps --format json` output: docker compose v2 emits
+// newline-delimited objects, podman emits an array.
+func psRows(data []byte) []map[string]any {
+	var rows []map[string]any
+	dec := json.NewDecoder(bytes.NewReader(data))
+	for {
+		var row map[string]any
+		if err := dec.Decode(&row); err != nil {
+			break
+		}
+		rows = append(rows, row)
+	}
+	if len(rows) == 0 {
+		_ = json.Unmarshal(data, &rows)
+	}
+	return rows
+}
+
+// publishedHostPorts normalizes the ps --format json shapes: docker
+// compose v2 emits NEWLINE-DELIMITED objects (NDJSON), podman emits an
+// array; docker rows report Publishers[].PublishedPort, podman rows
+// Ports[].host_port.
 func publishedHostPorts(data []byte) map[int]bool {
 	ports := map[int]bool{}
-	var rows []map[string]any
-	if err := json.Unmarshal(data, &rows); err != nil {
-		return ports
-	}
-	for _, row := range rows {
-		if pubs, ok := row["Publishers"].([]any); ok {
-			for _, p := range pubs {
-				if m, ok := p.(map[string]any); ok {
-					if n, ok := m["PublishedPort"].(float64); ok && n > 0 {
-						ports[int(n)] = true
-					}
-				}
-			}
-		}
-		if tis, ok := row["Ports"].([]any); ok {
-			for _, p := range tis {
-				if m, ok := p.(map[string]any); ok {
-					if n, ok := m["host_port"].(float64); ok && n > 0 {
-						ports[int(n)] = true
-					}
-				}
-			}
-		}
+	for _, row := range psRows(data) {
+		collectPorts(row, ports)
 	}
 	return ports
+}
+
+func collectPorts(row map[string]any, ports map[int]bool) {
+	if pubs, ok := row["Publishers"].([]any); ok {
+		for _, p := range pubs {
+			if m, ok := p.(map[string]any); ok {
+				if n, ok := m["PublishedPort"].(float64); ok && n > 0 {
+					ports[int(n)] = true
+				}
+			}
+		}
+	}
+	if tis, ok := row["Ports"].([]any); ok {
+		for _, p := range tis {
+			if m, ok := p.(map[string]any); ok {
+				if n, ok := m["host_port"].(float64); ok && n > 0 {
+					ports[int(n)] = true
+				}
+			}
+		}
+	}
 }
 
 func keysOf(m map[int]bool) []int {
@@ -223,4 +244,24 @@ func keysOf(m map[int]bool) []int {
 		out = append(out, k)
 	}
 	return out
+}
+
+// The parser handles BOTH wire shapes without an engine: docker
+// compose v2 NDJSON lines and the podman array.
+func TestPublishedHostPortsWireShapes(t *testing.T) {
+	ndjson := "{\"Publishers\":[{\"PublishedPort\":18789}]}\n{\"Publishers\":[{\"PublishedPort\":18790}]}\n"
+	got := publishedHostPorts([]byte(ndjson))
+	if !got[18789] || !got[18790] {
+		t.Errorf("ndjson parse = %v", got)
+	}
+	array := `[{"Publishers":[{"PublishedPort":18789}]}]`
+	got = publishedHostPorts([]byte(array))
+	if !got[18789] {
+		t.Errorf("array parse = %v", got)
+	}
+	podman := `[{"Ports":[{"host_port":18789,"container_port":18789}]}]`
+	got = publishedHostPorts([]byte(podman))
+	if !got[18789] {
+		t.Errorf("podman shape parse = %v", got)
+	}
 }

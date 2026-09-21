@@ -6,9 +6,16 @@ package gatewayclient
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -49,6 +56,39 @@ type Options struct {
 	ClientVersion string
 	// RequestTimeout overrides the per-RPC budget.
 	RequestTimeout time.Duration
+	// DeviceKeyPath persists this client's Ed25519 device identity
+	// (raw 32-byte private key). Created on first use; a stable key
+	// means a device, once paired, stays paired across invocations.
+	DeviceKeyPath string
+	// ApproveDevice resolves a NOT_PAIRED connect: the gateway held
+	// the device-signed handshake as an unapproved pairing request and
+	// the caller approves it host-side (compose exec `openclaw devices
+	// approve`), after which the connect is retried once.
+	ApproveDevice func() error
+}
+
+// loadOrCreateDeviceKey returns the persisted Ed25519 private key,
+// generating and writing it (0600) on first use. An empty path yields
+// an ephemeral key (tests).
+func loadOrCreateDeviceKey(path string) (ed25519.PrivateKey, error) {
+	if path == "" {
+		_, priv, err := ed25519.GenerateKey(nil)
+		return priv, err
+	}
+	if data, err := os.ReadFile(path); err == nil && len(data) == ed25519.PrivateKeySize {
+		return ed25519.PrivateKey(data), nil
+	}
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(path, []byte(priv), 0o600); err != nil {
+		return nil, err
+	}
+	return priv, nil
 }
 
 // Client is one connected gateway RPC session. Safe for concurrent
@@ -78,14 +118,32 @@ func Connect(ctx context.Context, rawURL, token string, opts Options) (*Client, 
 	if opts.ClientVersion == "" {
 		opts.ClientVersion = "dev"
 	}
+	c, err := connectOnce(ctx, rawURL, token, opts)
+	if err != nil {
+		var rpcErr *RPCError
+		if errors.As(err, &rpcErr) && rpcErr.Code == "NOT_PAIRED" && opts.ApproveDevice != nil {
+			// The handshake registered this device as a pending
+			// pairing request. The caller approves it host-side (it
+			// holds the stack), then one retry completes the pairing.
+			if approveErr := opts.ApproveDevice(); approveErr != nil {
+				return nil, fmt.Errorf("device approval failed: %w (connect error: %w)", approveErr, err)
+			}
+			return connectOnce(ctx, rawURL, token, opts)
+		}
+		return nil, err
+	}
+	return c, nil
+}
+
+func connectOnce(ctx context.Context, rawURL, token string, opts Options) (*Client, error) {
 	ws, err := dialWS(ctx, rawURL)
 	if err != nil {
 		return nil, err
 	}
 	c := &Client{ws: ws, token: token, timeout: opts.RequestTimeout, pending: map[string]chan frame{}}
 
-	// 1. The gateway opens with connect.challenge; its nonce is for
-	// device-signed connects, which shared-token operators skip.
+	// 1. The gateway opens with connect.challenge; its nonce is bound
+	// into the device signature below.
 	helloDeadline := time.Now().Add(15 * time.Second)
 	ws.setDeadline(helloDeadline)
 	first, err := ws.readMessage()
@@ -98,15 +156,39 @@ func Connect(ctx context.Context, rawURL, token string, opts Options) (*Client, 
 		ws.close()
 		return nil, fmt.Errorf("first frame was not connect.challenge (got %.80s)", first)
 	}
+	nonce := challengeStringField(challenge.Payload, "nonce")
 
-	// 2. connect request: protocol pinned to 4 on both ends. The
-	// client identity is the load-bearing part: a device-less connect
-	// keeps its declared scopes ONLY in the first-party local-CLI
-	// shape (client.id "cli" + mode "cli", loopback, shared token, no
-	// browser Origin) — docs/gateway/operator-scopes "Shared-secret
-	// auth" + handshake scope-preservation rules. Any other identity
-	// connects but lands with cleared scopes (MISSING_SCOPE on every
-	// call).
+	// 2. connect request: protocol pinned to 4 on both ends, with
+	// DEVICE identity. A published-port connection arrives on the
+	// container's network interface — remote locality — and remote
+	// device-less connects get their scopes cleared (MISSING_SCOPE on
+	// every call), so the client signs the challenge: Ed25519 over the
+	// v3 payload built from the connect params (buildDeviceAuthPayloadV3
+	// in the gateway's device-auth module).
+	scopes := []string{"operator.read", "operator.approvals"}
+	signedAtMs := time.Now().UnixMilli()
+	priv, err := loadOrCreateDeviceKey(opts.DeviceKeyPath)
+	if err != nil {
+		ws.close()
+		return nil, fmt.Errorf("device key: %w", err)
+	}
+	pub := priv.Public().(ed25519.PublicKey)
+	deviceID := fmt.Sprintf("%x", sha256.Sum256(pub))
+	platform := strings.ToLower(strings.TrimSpace("linux"))
+	devicePayload := strings.Join([]string{
+		"v3",
+		deviceID,
+		"cli",
+		"cli",
+		"operator",
+		strings.Join(scopes, ","),
+		strconv.FormatInt(signedAtMs, 10),
+		token,
+		nonce,
+		platform,
+		"",
+	}, "|")
+	sig := base64.RawURLEncoding.EncodeToString(ed25519.Sign(priv, []byte(devicePayload)))
 	connect := map[string]any{
 		"type":   "req",
 		"id":     "connect",
@@ -117,16 +199,23 @@ func Connect(ctx context.Context, rawURL, token string, opts Options) (*Client, 
 			"client": map[string]any{
 				"id":       "cli",
 				"version":  opts.ClientVersion,
-				"platform": "linux",
+				"platform": platform,
 				"mode":     "cli",
 			},
 			"role":      "operator",
-			"scopes":    []string{"operator.read", "operator.approvals"},
+			"scopes":    scopes,
 			"caps":      []string{},
 			"commands":  []string{},
 			"auth":      map[string]any{"token": token},
 			"locale":    "en-US",
 			"userAgent": "agentctl/" + opts.ClientVersion,
+			"device": map[string]any{
+				"id":        deviceID,
+				"publicKey": base64.RawURLEncoding.EncodeToString(pub),
+				"signature": sig,
+				"signedAt":  signedAtMs,
+				"nonce":     nonce,
+			},
 		},
 	}
 	body, err := json.Marshal(connect)
@@ -188,6 +277,17 @@ func Connect(ctx context.Context, rawURL, token string, opts Options) (*Client, 
 	ws.setDeadline(time.Time{})
 	go c.readLoop()
 	return c, nil
+}
+
+// challengeStringField extracts a top-level string field from the
+// connect.challenge payload.
+func challengeStringField(payload json.RawMessage, key string) string {
+	var m map[string]any
+	if err := json.Unmarshal(payload, &m); err != nil {
+		return ""
+	}
+	s, _ := m[key].(string)
+	return s
 }
 
 // ServerVersion reports the hello-ok server version.

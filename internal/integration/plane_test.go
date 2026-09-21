@@ -24,7 +24,7 @@ import (
 // itself and leaves compose ps + logs behind instead of stalling the
 // suite.
 func TestPlaneBootLitellmHealthy(t *testing.T) {
-	engine := pickEngine(t)
+	engine := composeEngine(t)
 	port := freePort(t)
 	root := t.TempDir()
 	manifest := fmt.Sprintf(`plane:
@@ -73,6 +73,7 @@ agents:
 		_ = e2e.Run(ctx, e2e.Step{
 			Name: "plane-down", Dir: planeDir,
 			Argv: []string{engine, "compose", "-f", "compose.yml", "down", "--volumes"},
+			Env:  composeChildEnv(nil),
 		})
 	})
 

@@ -9,6 +9,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,24 +20,96 @@ import (
 	"github.com/tankdonut/agent-base/internal/scaffold"
 )
 
-// pickEngine prefers the explicit AGENT_E2E_ENGINE, then podman (the
-// local-first convention), then docker. No engine — the tier has
-// nothing to say.
-func pickEngine(t *testing.T) string {
+// composeChildEnv is the child environment for engine calls: the
+// parent's plus PODMAN_COMPOSE_PROVIDER when podman-compose resolves
+// on PATH but podman's own provider lookup misses it (it pins
+// /usr/bin/podman-compose, which distros move).
+func composeChildEnv(extra []string) []string {
+	env := os.Environ()
+	env = append(env, extra...)
+	if _, ok := os.LookupEnv("PODMAN_COMPOSE_PROVIDER"); !ok {
+		if path, err := exec.LookPath("podman-compose"); err == nil {
+			env = append(env, "PODMAN_COMPOSE_PROVIDER="+path)
+		}
+	}
+	return env
+}
+
+// composeEngine resolves the compose invocation once, probing in the
+// mandated order: `podman compose`, `docker compose`, then the
+// standalone `*-compose` binaries. The probe is a real exec with a
+// real exit code — availability by PATH lookup has lied repeatedly.
+// The engine name doubles as the argv head for every compose call.
+var (
+	composeOnce        sync.Once
+	composeName        string // "podman" | "docker" | "podman-compose" | "docker-compose"
+	composeStandalone  bool   // standalone binaries take no `compose` token
+	composeProbeFailed error
+)
+
+func composeEngine(t *testing.T) string {
 	t.Helper()
-	if pref := os.Getenv("AGENT_E2E_ENGINE"); pref != "" {
-		if _, err := exec.LookPath(pref); err != nil {
-			t.Skipf("AGENT_E2E_ENGINE=%s not found", pref)
-		}
-		return pref
+	name, err := resolveComposeEngine()
+	if err != nil {
+		t.Skipf("%v", err)
 	}
-	for _, candidate := range []string{"podman", "docker"} {
-		if _, err := exec.LookPath(candidate); err == nil {
-			return candidate
+	return name
+}
+
+func resolveComposeEngine() (string, error) {
+	composeOnce.Do(func() {
+		if pref := os.Getenv("AGENT_E2E_ENGINE"); pref != "" {
+			if _, err := exec.LookPath(pref); err == nil {
+				composeName = pref
+			}
 		}
+		if composeName == "" {
+			candidates := []struct {
+				name       string
+				standalone bool
+			}{
+				{"podman", false},
+				{"docker", false},
+				{"podman-compose", true},
+				{"docker-compose", true},
+			}
+			for _, c := range candidates {
+				if _, err := exec.LookPath(c.name); err != nil {
+					continue
+				}
+				argv := []string{c.name}
+				if !c.standalone {
+					argv = append(argv, "compose")
+				}
+				probe := exec.Command(argv[0], append(argv[1:], "version")...)
+				probe.Stdout = nil
+				probe.Stderr = nil
+				if err := probe.Run(); err == nil {
+					composeName = c.name
+					composeStandalone = c.standalone
+					break
+				}
+			}
+		}
+		if composeName == "" {
+			composeProbeFailed = fmt.Errorf("no working compose command — probed `podman compose`, `docker compose`, `podman-compose`, `docker-compose`")
+		}
+	})
+	return composeName, composeProbeFailed
+}
+
+// composeArgs renders the engine argv for a compose verb: the
+// dispatchers carry a `compose` token, the standalone binaries don't.
+func composeArgs(name string, verb ...string) []string {
+	argv := []string{name}
+	if !isStandaloneCompose(name) {
+		argv = append(argv, "compose")
 	}
-	t.Skip("no container engine (podman/docker) on PATH — Tier A needs a real engine")
-	return ""
+	return append(argv, verb...)
+}
+
+func isStandaloneCompose(name string) bool {
+	return name == "podman-compose" || name == "docker-compose"
 }
 
 // ensureBaseImage pulls the pinned base image once per run; compose
@@ -129,34 +203,48 @@ func newRunner() process.Runner { return processRunner{} }
 
 type processRunner struct{}
 
+func standaloneFixup(name string, args []string) (string, []string) {
+	if composeStandalone && isStandaloneCompose(name) && len(args) > 0 && args[0] == "compose" {
+		return name, args[1:]
+	}
+	return name, args
+}
+
 func (processRunner) Run(env []string, name string, args ...string) error {
+	name, args = standaloneFixup(name, args)
 	cmd := exec.Command(name, args...)
-	cmd.Env = env
+	cmd.Env = composeChildEnv(env)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
 }
 
 func (processRunner) RunOutput(env []string, name string, args ...string) ([]byte, error) {
+	name, args = standaloneFixup(name, args)
 	cmd := exec.Command(name, args...)
-	cmd.Env = env
+	cmd.Env = composeChildEnv(env)
 	cmd.Stderr = os.Stderr
 	return cmd.Output()
 }
 
 func (processRunner) RunIn(dir string, env []string, name string, args ...string) error {
+	name, args = standaloneFixup(name, args)
 	cmd := exec.Command(name, args...)
 	cmd.Dir = dir
-	cmd.Env = env
+	cmd.Env = composeChildEnv(env)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	return cmd.Run()
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("%s %s (dir=%s): %w", name, strings.Join(args, " "), dir, err)
+	}
+	return nil
 }
 
 func (processRunner) RunOutputIn(dir string, env []string, name string, args ...string) ([]byte, error) {
+	name, args = standaloneFixup(name, args)
 	cmd := exec.Command(name, args...)
 	cmd.Dir = dir
-	cmd.Env = env
+	cmd.Env = composeChildEnv(env)
 	cmd.Stderr = os.Stderr
 	return cmd.Output()
 }
