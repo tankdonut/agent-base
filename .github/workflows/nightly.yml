@@ -32,3 +32,36 @@ jobs:
         with:
           name: e2e-forensics
           path: logs/
+
+  full-e2e-podman:
+    # Same matrix on the local-first engine: the plane's service_healthy
+    # gating and podman-compose's provider quirks are exactly what the
+    # suite exists to catch.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - uses: tankdonut/github-actions/actions/setup-python-uv@246ecbe1d54fe84165f0b9f7d8aae44a0e5fa373 # v1
+        with:
+          python-version: "3.11"
+      - name: Install podman + compose provider
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman podman-compose
+          # Rootless port publishing needs subordinate id ranges for the
+          # runner user.
+          sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 "$(id -un)"
+          podman info --format "{{.Host.Arch}}" >/dev/null
+          podman-compose version
+      - name: agentctl full front-door e2e (all stages, podman)
+        env:
+          E2E_ENGINE: podman
+        run: ./make.sh agentctl-e2e
+      - name: Upload e2e forensics (podman)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-forensics-podman
+          path: logs/
