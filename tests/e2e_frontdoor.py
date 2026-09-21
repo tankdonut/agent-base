@@ -105,7 +105,12 @@ def main() -> int:
         if proc.returncode != 0:
             fail(f"init failed:\n{proc.stdout}{proc.stderr}")
             return finish()
-        agent_dir = project / "agents" / key
+        agent_dirs = list((project / "agents").glob("*"))
+        if len(agent_dirs) != 1:
+            fail(f"init produced {len(agent_dirs)} agent dirs, want 1")
+            return finish()
+        agent_dir = agent_dirs[0]
+        key = agent_dir.name
         # Pin the compose engine to the harness engine — the mixed-engine
         # split makes every state check lie (same as the full suite).
         with (project / "fleet.yaml").open("a", encoding="utf-8") as f:
@@ -168,7 +173,7 @@ def main() -> int:
         else:
             fail("containers survive destroy")
     finally:
-        run([str(agentctl), "destroy", "--volumes", "--yes"], cwd=project / "agents" / key)
+        run([str(agentctl), "destroy", "--volumes", "--yes"], cwd=agent_dir)
     return finish()
 
 
