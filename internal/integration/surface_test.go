@@ -105,6 +105,32 @@ func bootLiveAgent() (*liveAgent, error) {
 	if err := os.Rename(filepath.Join(dir, "docs"), filepath.Join(dir, "knowledge", "content")); err != nil {
 		return nil, err
 	}
+	// The copied fixture predates token-armed gateways: this tier
+	// authenticates with OPENCLAW_GATEWAY_TOKEN, so the spec must
+	// declare the feature or the entrypoint never arms it (and the
+	// connect lands with cleared scopes).
+	specPath := filepath.Join(dir, "spec.json")
+	specBody, err := os.ReadFile(specPath)
+	if err != nil {
+		return nil, err
+	}
+	var spec map[string]any
+	if err := json.Unmarshal(specBody, &spec); err != nil {
+		return nil, err
+	}
+	features, _ := spec["features"].(map[string]any)
+	if features == nil {
+		features = map[string]any{}
+	}
+	features["gateway_auth"] = true
+	spec["features"] = features
+	specBody, err = json.MarshalIndent(spec, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(specPath, specBody, 0o644); err != nil {
+		return nil, err
+	}
 	files := map[string]string{
 		// The five COPY lines mirror the scaffold Dockerfile contract:
 		// the entrypoint fail-closes without a baked spec, and the
@@ -347,6 +373,18 @@ func asRPCError(err error, target **gatewayclient.RPCError) bool {
 	return false
 }
 
+// dockerfileTag extracts the pinned tag from a fixture Dockerfile's
+// FROM line.
+func dockerfileTag(body string) string {
+	for _, line := range strings.Split(body, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "FROM ") {
+			parts := strings.Split(strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "FROM ")), ":")
+			return parts[len(parts)-1]
+		}
+	}
+	return ""
+}
+
 // gatewayHealthy polls the fixture's published /healthz.
 func (l *liveAgent) gatewayHealthy(t *testing.T, budget time.Duration) bool {
 	t.Helper()
@@ -369,7 +407,16 @@ func (l *liveAgent) gatewayHealthy(t *testing.T, budget time.Duration) bool {
 
 func TestUpgradeApplyRetagsAndConverges(t *testing.T) {
 	live := liveFixture(t)
-	target := "2099.12.31"
+	// Retag to the tag the fixture already runs: apply must prove the
+	// retag + converge machinery, not a registry pull.
+	dockerfileBody, err := os.ReadFile(filepath.Join(live.agentDir, "Dockerfile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := dockerfileTag(string(dockerfileBody))
+	if target == "" {
+		t.Fatalf("no FROM tag in the fixture Dockerfile:\n%s", dockerfileBody)
+	}
 
 	req, _ := http.NewRequest(http.MethodPost, live.serverURL+"/api/v1/upgrades/apply",
 		strings.NewReader(`{"agent":"grow","tag":"`+target+`"}`))
