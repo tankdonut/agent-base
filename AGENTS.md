@@ -11,7 +11,9 @@
 | Run agentctl without installing | `./make.sh agentctl <command> [flags]` (forwards to `go run`) |
 | Lint (ruff, ruff-format, hadolint, markdownlint, golangci-lint/depguard) | `./make.sh lint` |
 | Image smoke (CI + local; podman or docker, `SMOKE_ENGINE` override) | `./make.sh smoke` |
-| agentctl front-door e2e (init → deploy → destroy; `E2E_ENGINE` override; `E2E_STAGES=core,dev,fleet,plane` subset — plane stage gated off in CI pending the compose-up wedge) | `./make.sh agentctl-e2e` |
+| agentctl front-door e2e — the shipped-binary user journey (init → secrets → deploy → serve → destroy; `E2E_ENGINE` override) | `./make.sh agentctl-frontdoor` (PR gate) |
+| agentctl full e2e matrix — upgrade dual-tag, dev overlay, 2-agent fleet, shared-litellm plane | nightly (`nightly.yml`; also `E2E_STAGES` subset via `./make.sh agentctl-e2e`) |
+| agentctl integration tier — real engine + real image: converge, drift, plane boot, gateway protocol + device pairing, serve API, upgrade apply (`AGENT_E2E_ENGINE`/`AGENT_E2E_IMAGE`/`AGENT_E2E_TMPDIR` overrides) | `go test -tags=integration -count=1 ./internal/integration/` (CI: inside `image-amd64`, against the branch-built image) |
 | Build image (date tag default) | `./make.sh build` |
 | Push image | `AGENT_BASE_VERSION=YYYY.MM.DD[.N] ./make.sh push` — refuses implicit tags; same-day follow-up releases use the `.N` run suffix |
 | Validate a spec (CI gate) | `docker run --rm --env-file .env <image> --validate-spec` |
@@ -145,6 +147,7 @@ Symbols relative to `container/`.
 ## Notes
 
 - Smoke runs in CI (`smoke` job, docker via `SMOKE_ENGINE`) and locally (podman-first); logs are `logs/smoke-*.log` (gitignored) — kept on failure, removed on success.
+- The e2e tiers: PRs run the slim front-door (`agentctl-frontdoor`) + the integration tier inside `image-amd64` against the branch-built image; the FULL `agentctl-e2e` matrix (upgrade dual-tag, dev overlay, plane) runs nightly (`nightly.yml`). Engine children are contained by `internal/e2e` (process groups, budgets, artifact dumps on breach).
 - `tests/smoke_test.py` embeds a Python RUNNER mirroring `main()` minus the fork/supervise handoff — update both when phases change.
 - Project one-offs go in wrapper entrypoints that import the phases — never hooks in the base (docs "Escape hatch: wrapper entrypoints").
 - Local `container/__pycache__` (cpython-313/314) and the `.codegraph` symlink are machine-local, untracked artifacts.
