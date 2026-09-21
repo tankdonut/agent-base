@@ -64,7 +64,17 @@ jobs:
       - name: Integration (Tier A + B, real engine + real image)
         env:
           AGENT_E2E_ENGINE: docker
+          AGENT_E2E_TMPDIR: ${{ github.workspace }}/tierb
         run: go test -tags=integration -count=1 -timeout 30m -v ./internal/integration/
+
+      - name: Upload integration forensics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-forensics
+          path: |
+            tierb/
+            logs/
 
   contract:
     needs: [lint, test]

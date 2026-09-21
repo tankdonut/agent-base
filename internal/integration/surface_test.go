@@ -184,9 +184,18 @@ func bootLiveAgent() (*liveAgent, error) {
 			defer dumpCancel()
 			psOut, _ := commandIn(dumpCtx, dir, []string{engine, "compose", "-f", "compose.yml", "ps", "-a"}).CombinedOutput()
 			logsOut, _ := commandIn(dumpCtx, dir, []string{engine, "compose", "-f", "compose.yml", "logs", "--tail", "60"}).CombinedOutput()
-			agentLogs, _ := commandIn(dumpCtx, dir, []string{engine, "logs", "--tail", "80", "grow_agent_1"}).CombinedOutput()
-			return nil, fmt.Errorf("gateway never reached /healthz on %s within 600s\n== compose ps ==\n%s\n== compose logs ==\n%s\n== agent logs ==\n%s",
-				gatewayURL, psOut, logsOut, agentLogs)
+			agentLogs, _ := commandIn(dumpCtx, dir, []string{engine, "logs", "--tail", "80", "grow-agent-1"}).CombinedOutput()
+			inspectOut, _ := commandIn(dumpCtx, dir, []string{engine, "inspect", "grow-agent-1"}).CombinedOutput()
+			// Files persist for the CI artifact upload even when the
+			// inline error gets truncated.
+			dumpDir := filepath.Join(root, "tierb-dump")
+			_ = os.MkdirAll(dumpDir, 0o755)
+			_ = os.WriteFile(filepath.Join(dumpDir, "compose-ps.txt"), psOut, 0o644)
+			_ = os.WriteFile(filepath.Join(dumpDir, "compose-logs.txt"), logsOut, 0o644)
+			_ = os.WriteFile(filepath.Join(dumpDir, "agent-logs.txt"), agentLogs, 0o644)
+			_ = os.WriteFile(filepath.Join(dumpDir, "inspect.json"), inspectOut, 0o644)
+			return nil, fmt.Errorf("gateway never reached /healthz on %s within 600s\n== compose ps ==\n%s\n== compose logs ==\n%s\n== agent logs ==\n%s\n== inspect ==\n%s",
+				gatewayURL, psOut, logsOut, agentLogs, inspectOut)
 		}
 		if time.Since(start) > 30*time.Second && int(time.Since(start).Seconds())%30 < 4 {
 			fmt.Printf("[tierb] healthz poll: code=%d elapsed=%ds\n", code, int(time.Since(start).Seconds()))
