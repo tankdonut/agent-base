@@ -239,7 +239,9 @@ func bootLiveAgent() (*liveAgent, error) {
 	}
 
 	// The serve API over this fleet, driven by the tests through the
-	// product's own control plane.
+	// product's own control plane. The device key is the fixture's —
+	// already paired by the protocol tests, so the API's own WS
+	// probes connect with full scopes.
 	srv := api.New(api.Deps{
 		Manifest:  m,
 		NewRunner: func() process.Runner { return processRunner{} },
@@ -250,8 +252,9 @@ func bootLiveAgent() (*liveAgent, error) {
 			}
 			return dir, adapter, dd, nil
 		},
-		Version: "tierb",
-		Token:   "tierb-serve-canary",
+		Version:       "tierb",
+		Token:         "tierb-serve-canary",
+		DeviceKeyPath: filepath.Join(root, "device.key"),
 	})
 	apiSrv := &http.Server{Addr: "127.0.0.1:0", Handler: srv.Mux()}
 	ln, err := listenLoopback()
