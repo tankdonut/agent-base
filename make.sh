@@ -62,6 +62,11 @@ case $target in
   agentctl-e2e)
     python3 tests/agentctl_e2e.py
     ;;
+  agentctl-frontdoor)
+    # Slim PR gate: the shipped-binary user journey only. The full
+    # matrix runs nightly (see .github/workflows/nightly.yml).
+    python3 tests/e2e_frontdoor.py
+    ;;
   build)
     version=${AGENT_BASE_VERSION:-$(date +%Y.%m.%d)}
     eng=$(engine)

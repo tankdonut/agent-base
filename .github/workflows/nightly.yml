@@ -1,0 +1,34 @@
+name: nightly
+
+on:
+  schedule:
+    - cron: "0 6 * * *" # 06:00 UTC, after the daily image build window
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  full-e2e:
+    # The whole matrix the PR gate slims away: upgrade path (warm
+    # volume + dual tag), dev overlay, 2-agent fleet, shared-litellm
+    # plane, and the full stage assertions.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - uses: tankdonut/github-actions/actions/setup-python-uv@246ecbe1d54fe84165f0b9f7d8aae44a0e5fa373 # v1
+        with:
+          python-version: "3.11"
+      - name: agentctl full front-door e2e (all stages)
+        env:
+          E2E_ENGINE: docker
+        run: ./make.sh agentctl-e2e
+      - name: Upload e2e forensics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-forensics
+          path: logs/
