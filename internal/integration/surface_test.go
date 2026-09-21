@@ -156,14 +156,8 @@ func bootLiveAgent() (*liveAgent, error) {
 	if err := adapter.Deploy(ctx, processRunner{}, dir, &d, platform.DeployOptions{}, fileOutput{os.Stdout}); err != nil {
 		return nil, fmt.Errorf("deploying %s: %w", image, err)
 	}
-	cleanupOnce.Do(func() {
-		downCtx, downCancel := context.WithTimeout(context.Background(), 3*time.Minute)
-		defer downCancel()
-		_ = e2e.Run(downCtx, e2e.Step{
-			Name: "tierb-down", Dir: dir,
-			Argv: []string{engine, "compose", "-f", "compose.yml", "down", "--volumes"},
-		})
-	})
+	// Teardown is deferred to TestMain (teardownLive): a down here
+	// would delete the stack the very moment the fixture boots.
 
 	// First boot: setup + reconcile + seed before /healthz answers.
 	gatewayURL := fmt.Sprintf("http://127.0.0.1:%d", port)
@@ -206,6 +200,9 @@ func bootLiveAgent() (*liveAgent, error) {
 		time.Sleep(3 * time.Second)
 	}
 
+	liveBooted = true
+	liveEngine = engine
+	liveStackDir = dir
 	live := &liveAgent{
 		engine:     engine,
 		fleetRoot:  root,
@@ -240,7 +237,26 @@ func bootLiveAgent() (*liveAgent, error) {
 	return live, nil
 }
 
-var cleanupOnce sync.Once
+// teardownLive brings the live fixture's stack down once the process
+// is done with it. Package state set by bootLiveAgent; a no-op when
+// the fixture never booted.
+var (
+	liveBooted   bool
+	liveEngine   string
+	liveStackDir string
+)
+
+func teardownLive() {
+	if !liveBooted {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	_ = e2e.Run(ctx, e2e.Step{
+		Name: "tierb-down", Dir: liveStackDir,
+		Argv: []string{liveEngine, "compose", "-f", "compose.yml", "down", "--volumes"},
+	})
+}
 
 func (l *liveAgent) close() {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
