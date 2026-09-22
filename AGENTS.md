@@ -66,7 +66,7 @@ internal/    agentctl engine, layered by import direction:
              scaffold (self-contained leaf owning its embedded tmpl/
              tree — init emits the fleet-of-one shape: fleet.yaml +
              agents/<key>/)
-scripts/     check-image-refs.sh only (release-time GHCR tag gate)
+scripts/     check-deps.sh (Go license allowlist, agentctl CI job), check-image-refs.sh (release-time GHCR tag gate)
 examples/    Image-contract examples: spec.example.json (golden), env.example,
              compose snippets (prod template incl. the LiteLLM sidecar),
              litellm/config.example.yaml (golden proxy config), workspace
@@ -97,7 +97,7 @@ Symbols relative to `container/`.
 | ------ | ---- | -------- | ---- |
 | `main` | fn | entrypoint.py:1678 | Phase orchestration; forks post_startup then `supervise()`s the CMD — returns its exit code after graceful-shutdown drain; other int returns: `--validate-spec` (0/1) and usage (2) |
 | `supervise` / `ShutdownSupervisor` / `parse_shutdown_grace` | fn/cls | entrypoint.py:1653 / :1509 / :1490 | Graceful shutdown: CMD runs in its own process group; first SIGTERM/SIGINT forwards to the CMD pid only, the drain waits for the group to empty up to `AGENT_SHUTDOWN_GRACE` (default 600; 0 = forward + immediate force-kill), a second signal force-kills, an unprompted CMD exit kills the group (restart semantics); exit code = CMD's, 128+N when signaled |
-| `backup_before_upgrade` | fn | entrypoint.py:1427 | Verified backup on `AGENT_BASE_VERSION` delta (warm volume); failure aborts — data safety beats availability for migrations |
+| `backup_before_upgrade` | fn | entrypoint.py:1533 | Verified backup on `AGENT_BASE_VERSION` delta (warm volume); failure aborts — data safety beats availability for migrations |
 | `load_agent_spec` | fn | entrypoint.py:153 | Fail-closed load; `AGENT_SPEC_PATH` override |
 | `first_boot_setup` | fn | entrypoint.py:277 | One-time setup; gated on `openclaw.json` absent; snapshots base plugin installs to `{data}/agent-managed-plugins` |
 | `reconcile_config` / `reconcile_mcp` / `reconcile_plugins` | fn | entrypoint.py:367 / :569 / :710 | Idempotent reconcile; warn-never-raise; config writes batch via `config set --batch-json` where possible (`config_set_batch`); seeds `plugins.allow` when unowned (`_seed_plugins_allow`); seeds `gateway.bind=lan` unless the spec owns the path; seeds `models.providers.litellm.baseUrl=http://litellm:4000` for `litellm-api-key` specs unless the spec owns the path; merges spec-referenced models (model.fallback, automations.model) + the GLM 5.3 series (`zai-coding-*` specs) into an existing `agents.defaults.models` allowlist — never creates one (absent = allow-any) and stands down when a spec entry owns the path (`_seed_agents_default_models`); `features.gateway_auth` retires the legacy config pair instead of writing it (`_retire_legacy_gateway_auth_pair` — the env var is the gateway's active surface); MCP entries re-register on flag drift (args-digest marker under `{data}`), removal gated on `features.mcp_prune`, plugin prune on `features.plugin_prune` (ownership markers under `{data}`); MCP + plugin orphan reports are warn-only |

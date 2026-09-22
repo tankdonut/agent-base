@@ -11,23 +11,47 @@ on:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  # Superseded PR runs cancel themselves; main/tag runs only queue —
+  # main qualifies candidates and tags promote, neither may be killed
+  # mid-flight. Group-per-ref keeps unrelated PRs independent.
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Workflow lint (actionlint)
+        # Static checker for the workflow files themselves — catches
+        # shadowed env/inputs, unknown expressions, and schema drift
+        # before they reach a live run. Checksummed download, pinned.
+        run: |
+          bash <(curl -sf https://raw.githubusercontent.com/rhysd/actionlint/v1.7.12/scripts/download-actionlint.bash) 1.7.12
+          ./actionlint -color
 
       - name: Run pre-commit checks
         uses: tankdonut/github-actions/actions/pre-commit@246ecbe1d54fe84165f0b9f7d8aae44a0e5fa373 # v1
 
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       matrix:
         # 3.11 = image floor (bookworm); 3.14 = host-current syntax-drift guard.
         python-version: ["3.11", "3.14"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Python + uv
         uses: tankdonut/github-actions/actions/setup-python-uv@246ecbe1d54fe84165f0b9f7d8aae44a0e5fa373 # v1
@@ -42,12 +66,29 @@ jobs:
     # local pre-commit go-fmt/go-vet hooks and gates the release chain
     # via the image-* jobs' needs.
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+
+      - name: Version constants consistency
+        # Release-time version==tag gating arrives too late to be cheap;
+        # both constants must parse as date tags and agree on every PR,
+        # so drift surfaces in review, not as a fix-forward .N release.
+        run: |
+          v=$(sed -n 's/^const Version = "\(.*\)"$/\1/p' internal/cli/root.go)
+          b=$(sed -n 's/.*DefaultBaseTag[[:space:]]*=[[:space:]]*"\(.*\)".*/\1/p' internal/scaffold/config.go)
+          for x in "$v" "$b"; do
+            echo "$x" | grep -Eq '^[0-9]{4}\.[0-9]{2}\.[0-9]{2}(\.[0-9]+)?$' \
+              || { echo "::error::version constant '$x' is not a date tag (YYYY.MM.DD[.N])"; exit 1; }
+          done
+          [ "$v" = "$b" ] \
+            || { echo "::error::internal/cli Version ($v) != scaffold DefaultBaseTag ($b)"; exit 1; }
 
       - name: Check formatting (gofmt)
         run: test -z "$(gofmt -l cmd internal)"
@@ -62,7 +103,7 @@ jobs:
         run: go test ./...
 
   contract:
-    needs: [lint, test]
+    needs: [test]
     # Real-image CLI drift gate (roadmap N4): unit tests and the shim-based
     # smoke both validate agent-base's argv against itself — this job boots
     # the built image against the REAL openclaw CLI. Stage B cross-checks
@@ -74,8 +115,11 @@ jobs:
     # a warm volume (verified backup + zero-warn reconcile) — the scenario
     # automerged base-image bumps ride on.
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Build image (build-only; the image job owns publishing)
         run: docker build --build-arg AGENT_BASE_VERSION=contract
@@ -92,6 +136,27 @@ jobs:
           CONTRACT_UPGRADE: required
         run: python3 tests/contract_test.py ghcr.io/tankdonut/agent-base:contract
 
+      - name: Dump engine forensics
+        # The contract suite leaves its evidence inside engine state;
+        # capture container logs before the runner recycles.
+        if: failure()
+        run: |
+          mkdir -p logs/contract
+          {
+            echo "# docker ps -a"
+            docker ps -a
+          } > logs/contract/engine-state.txt 2>&1 || true
+          for c in $(docker ps -aq); do
+            docker logs "$c" > "logs/contract/container-$c.log" 2>&1 || true
+          done
+
+      - name: Upload contract forensics
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: contract-forensics
+          path: logs/
+
   smoke:
     needs: [lint, test]
     # Image smoke gate (formerly local-only): the contract job proves
@@ -104,13 +169,25 @@ jobs:
     # and the script's podman-first auto-detect would build into a
     # different image store.
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Image smoke (fixtures + graceful-shutdown drain)
         env:
           SMOKE_ENGINE: docker
         run: ./make.sh smoke
+
+      - name: Upload smoke forensics
+        # make.sh smoke keeps logs/smoke-*.log on failure (deleted on
+        # success) — surface them as run artifacts.
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: smoke-forensics
+          path: logs/
 
   # Multi-arch image (L1): native per-arch builds keep the docker media
   # type (a single buildx multi-platform push exports OCI and silently
@@ -120,8 +197,12 @@ jobs:
   # and cannot express per-arch runners; the ghcr-login composite action
   # is still composed below.
   image-amd64:
-    needs: [agentctl, lint, test, contract, smoke]
+    # Parallelism note: this job builds + self-tests; contract/smoke are
+    # independent gates and no longer serialize it. The tag-time release
+    # still requires them via the release job's needs.
+    needs: [agentctl, lint, test]
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     permissions:
       contents: read
       packages: write
@@ -129,6 +210,8 @@ jobs:
       IMAGE: ghcr.io/tankdonut/agent-base
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: tankdonut/github-actions/actions/ghcr-login@246ecbe1d54fe84165f0b9f7d8aae44a0e5fa373 # v1
         with:
           runtime: docker
@@ -162,7 +245,7 @@ jobs:
 
       - name: Upload integration forensics
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: integration-forensics
           path: |
@@ -170,9 +253,10 @@ jobs:
             logs/
 
   image-arm64:
-    needs: [agentctl, lint, test, contract, smoke]
+    needs: [agentctl, lint, test]
     # Free native arm64 runners are available to public repos.
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
     permissions:
       contents: read
       packages: write
@@ -180,6 +264,8 @@ jobs:
       IMAGE: ghcr.io/tankdonut/agent-base
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: tankdonut/github-actions/actions/ghcr-login@246ecbe1d54fe84165f0b9f7d8aae44a0e5fa373 # v1
         with:
           runtime: docker
@@ -200,9 +286,15 @@ jobs:
     needs: [image-amd64, image-arm64]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       packages: write
+    outputs:
+      # Downstream jobs (attest, release) consume this instead of
+      # re-querying GHCR — one authoritative resolution, no anonymous
+      # token dance against an eventually-consistent registry.
+      digest: ${{ steps.digest.outputs.digest }}
     steps:
       - uses: tankdonut/github-actions/actions/ghcr-login@246ecbe1d54fe84165f0b9f7d8aae44a0e5fa373 # v1
         with:
@@ -232,6 +324,22 @@ jobs:
             echo "$arch: HEALTHCHECK present"
           done
 
+      - name: Resolve index digest
+        id: digest
+        # sha256 of the raw index bytes == docker-content-digest; retries
+        # ride out the registry's eventual-consistency window.
+        run: |
+          REF="ghcr.io/tankdonut/agent-base:$GITHUB_REF_NAME"
+          for i in 1 2 3; do
+            RAW=$(docker buildx imagetools inspect --raw "$REF" 2>/dev/null) \
+              && [ -n "$RAW" ] && break
+            echo "digest not readable yet (attempt $i/3)"; sleep 5
+          done
+          [ -n "$RAW" ] || { echo "::error::cannot inspect $REF"; exit 1; }
+          DIGEST="sha256:$(printf '%s' "$RAW" | sha256sum | cut -d' ' -f1)"
+          echo "digest=$DIGEST" >>"$GITHUB_OUTPUT"
+          echo "index digest: $DIGEST"
+
   attest:
     # Supply chain (X5): SLSA build-provenance attestation pushed to the
     # registry + SPDX SBOM handed to the release as an asset. The caller
@@ -240,28 +348,13 @@ jobs:
     needs: [image]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       id-token: write
       attestations: write
       packages: write
       contents: read
     steps:
-      - name: Resolve published digest
-        id: digest
-        run: |
-          TOKEN=$(curl -sf "https://ghcr.io/token?scope=repository:tankdonut/agent-base:pull&service=ghcr.io" \
-            | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
-          DIGEST=$(curl -sI \
-            -H "Authorization: Bearer $TOKEN" \
-            -H "Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json, application/vnd.docker.distribution.manifest.list.v2+json" \
-            "https://ghcr.io/v2/tankdonut/agent-base/manifests/$GITHUB_REF_NAME" \
-            | tr -d '\r' | sed -n 's/^docker-content-digest:[[:space:]]*//Ip' | head -1)
-          if [ -z "$DIGEST" ]; then
-            echo "::error::no digest for $GITHUB_REF_NAME in ghcr.io (image job failed?)"
-            exit 1
-          fi
-          echo "digest=$DIGEST" >>"$GITHUB_OUTPUT"
-
       - name: Login to ghcr.io
         # actions/attest reads registry credentials from the docker config
         # — without an in-job login it cannot push the attestation
@@ -275,39 +368,46 @@ jobs:
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ghcr.io/tankdonut/agent-base
-          subject-digest: ${{ steps.digest.outputs.digest }}
+          subject-digest: ${{ needs.image.outputs.digest }}
           push-to-registry: true
 
   release:
     # Chained after the image job — a release can no longer exist while the
     # image 404s (the standalone release.yml raced the image publish on tag
     # pushes; both fired with no ordering). Tag pushes only.
-    needs: [image, attest]
+    # contract+smoke are listed here (not under image-*) so the per-arch
+    # builds parallelize on PRs while still gating every release.
+    needs: [image, attest, contract, smoke]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     steps:
       # Full history: the release notes diff the two most recent version
       # tags, and the digest query needs the published manifest.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Verify tracked image refs exist in GHCR
         run: scripts/check-image-refs.sh
 
       - name: Build release notes (changes + digest)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           TAG="$GITHUB_REF_NAME"
           BASE_URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
-          PREV=$(git tag -l '20*' | sort -V | awk -v t="$TAG" '$0==t{print p} {p=$0}')
-          TOKEN=$(curl -sf "https://ghcr.io/token?scope=repository:tankdonut/agent-base:pull&service=ghcr.io" |
-            sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
-          DIGEST=$(curl -sI -H "Authorization: Bearer $TOKEN" \
-            -H "Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json" \
-            "https://ghcr.io/v2/tankdonut/agent-base/manifests/$TAG" |
-            tr -d '\r' | sed -n 's/^docker-content-digest:[[:space:]]*//Ip')
+          # Previous RELEASE (not just nearest tag): annotated and
+          # lightweight tags alike, ordered by publication.
+          PREV=$(gh release list --limit 100 --json tagName \
+            --jq 'map(.tagName) | .[]' | grep -vx "$TAG" | head -1 || true)
+          DIGEST="${{ needs.image.outputs.digest }}"
           {
             echo "Image: \`ghcr.io/tankdonut/agent-base:$TAG\`"
             if [ -n "$DIGEST" ]; then
@@ -330,6 +430,8 @@ jobs:
             echo "### agentctl"
             echo
             echo "Operator CLI for downstream agent projects — binaries: \`agentctl-linux-amd64\`, \`agentctl-linux-arm64\` (checksums: \`agentctl-SHA256SUMS\`)."
+            echo
+            echo "Verify binary provenance: \`gh attestation verify dist/agentctl-linux-amd64 -R $GITHUB_REPOSITORY\`"
           } > release-notes.md
           cat release-notes.md
 
@@ -337,11 +439,11 @@ jobs:
         # In the release job (not attest): no artifact handoff —
         # sbom-action's artifact-name/output-file semantics conflict, so
         # the file is written straight into this workspace and uploaded
-        # as a release asset below. Scans the published tag from the
-        # registry.
+        # as a release asset below. Digest-pinned, not tag-resolved: the
+        # tag is mutable, the digest is what shipped.
         uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
         with:
-          image: ghcr.io/tankdonut/agent-base:${{ github.ref_name }}
+          image: ghcr.io/tankdonut/agent-base@${{ needs.image.outputs.digest }}
           format: spdx-json
           output-file: sbom.spdx.json
 
@@ -366,8 +468,23 @@ jobs:
             echo "::error::agentctl version $v != tag $GITHUB_REF_NAME — bump internal/cli Version and scaffold DefaultBaseTag on main, then cut the next .N"
             exit 1
           fi
-          grep -Eq "DefaultBaseTag[[:space:]]+=[[:space:]]+\"$GITHUB_REF_NAME\"" internal/scaffold/config.go \
-            || { echo "::error::scaffold DefaultBaseTag != $GITHUB_REF_NAME — bump it with the internal/cli Version on main, then cut the next .N"; exit 1; }
+          # Exact-string compare (no tag in a regex): gofmt aligns const
+          # blocks, so strip the alignment before comparing.
+          b=$(sed -n 's/.*DefaultBaseTag[[:space:]]*=[[:space:]]*"\(.*\)".*/\1/p' internal/scaffold/config.go)
+          if [ "$b" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::scaffold DefaultBaseTag ($b) != $GITHUB_REF_NAME — bump it with the internal/cli Version on main, then cut the next .N"
+            exit 1
+          fi
+
+      - name: Attest agentctl binaries
+        # Binaries carry build provenance, not just checksums: subjects
+        # are the two dist artifacts; verification via gh attestation
+        # verify (see notes).
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/agentctl-linux-amd64
+            dist/agentctl-linux-arm64
 
       - name: Create GitHub release
         env:
