@@ -146,6 +146,14 @@ Symbols relative to `container/`.
 
 ## Notes
 
+- Workflow evidence classes are never conflated: PR gates certify the **tree** (SHA correctness);
+  main-push **candidate** gates certify the **exact artifact** (image digest identity); the nightly
+  matrix certifies **mechanics drift only** (synthetic dual-bake `2099.12.31` → `.1`) and never
+  qualifies a release. Harnesses accept explicit candidate inputs — `SMOKE_IMAGE` (smoke),
+  `AGENT_E2E_IMAGE` (integration tier A + B, front-door), `E2E_BASE_IMAGE`/`E2E_UPGRADE_IMAGE`
+  (agentctl e2e), `CONTRACT_BASELINE_IMAGE` (contract stage D). An explicit override is a required
+  identity: unavailable must fail the run, never silently test different bytes; only the ambient
+  defaults stay best-effort (skip/build-if-absent).
 - Smoke runs in CI (`smoke` job, docker via `SMOKE_ENGINE`) and locally (podman-first); logs are `logs/smoke-*.log` (gitignored) — kept on failure, removed on success.
 - The e2e tiers: PRs run the slim front-door (`agentctl-frontdoor`) + the integration tier inside `image-amd64` against the branch-built image; the FULL `agentctl-e2e` matrix (upgrade dual-tag, dev overlay, plane) runs nightly (`nightly.yml`). Engine children are contained by `internal/e2e` (process groups, budgets, artifact dumps on breach).
 - `tests/smoke_test.py` embeds a Python RUNNER mirroring `main()` minus the fork/supervise handoff — update both when phases change.

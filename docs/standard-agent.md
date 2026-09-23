@@ -252,6 +252,20 @@ it safe in two ways:
    (`MCP server '<name>' registered but not in spec`) for anything
    registered that no spec entry accounts for.
 
+### Release provenance
+
+Released images carry SLSA build provenance (attested into the
+registry) and an SPDX SBOM as a release asset; the release notes pin
+the exact digest. Pull by digest to make upgrades byte-reproducible:
+
+```text
+ghcr.io/tankdonut/agent-base:<tag>@<digest>   # from the release notes
+gh attestation verify oci://ghcr.io/tankdonut/agent-base:<tag>@<digest> -R tankdonut/agent-base
+```
+
+The `agentctl` release binaries carry build-provenance attestations
+too: `gh attestation verify <binary> -R tankdonut/agent-base`.
+
 ### Upgrade runbook
 
 `agentctl upgrade <tag>` runs the whole sequence below as one verb —

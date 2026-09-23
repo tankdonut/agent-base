@@ -112,13 +112,19 @@ func isStandaloneCompose(name string) bool {
 	return name == "podman-compose" || name == "docker-compose"
 }
 
-// ensureBaseImage pulls the pinned base image once per run; compose
-// build would pull lazily anyway, but an explicit contained pull turns
-// a network problem into a clean skip instead of a build failure.
+// ensureBaseImage resolves the base image for the tier-A fixtures:
+// AGENT_E2E_IMAGE when set (CI passes the branch-built candidate, which
+// may be digest-pinned), else the pinned public DefaultBaseTag. The
+// explicit input is a required identity — unavailable must fail, never
+// silently test different bytes; the ambient default stays best-effort
+// so a network problem is still a clean skip for fresh checkouts.
 func ensureBaseImage(t *testing.T, engine string) string {
 	t.Helper()
-	tag := scaffold.DefaultBaseTag
-	ref := "ghcr.io/tankdonut/agent-base:" + tag
+	override := os.Getenv("AGENT_E2E_IMAGE")
+	ref := override
+	if ref == "" {
+		ref = "ghcr.io/tankdonut/agent-base:" + scaffold.DefaultBaseTag
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	if err := engineInspect(ctx, engine, ref); err == nil {
@@ -128,6 +134,9 @@ func ensureBaseImage(t *testing.T, engine string) string {
 		Name: "pull-base", Argv: []string{engine, "pull", ref}, Budget: 5 * time.Minute,
 	})
 	if err != nil {
+		if override != "" {
+			t.Fatalf("required base image %s unavailable: %v", ref, err)
+		}
 		t.Skipf("base image %s unavailable: %v", ref, err)
 	}
 	return ref
