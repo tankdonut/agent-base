@@ -28,7 +28,7 @@ jobs:
         run: ./make.sh agentctl-e2e
       - name: Upload e2e forensics
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-forensics
           path: logs/
@@ -61,7 +61,7 @@ jobs:
         run: ./make.sh agentctl-e2e
       - name: Upload e2e forensics (podman)
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-forensics-podman
           path: logs/
