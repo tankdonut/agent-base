@@ -10,8 +10,9 @@ Inputs:
   * E2E_AGENTCTL — path to a prepared agentctl binary; skips the local
     build (release-qualification runs feed the shipped artifact here).
   * AGENT_E2E_IMAGE — candidate base image ref (digest-pinned ok);
-    pins overrides.image in the fleet manifest, so the journey runs
-    against those exact bytes. Unset = the pinned public sentinel.
+    rewrites the init'ed agent's Dockerfile FROM, so the journey builds
+    and runs against those exact bytes. Unset = the pinned public
+    sentinel.
 
 Mechanics (drift parsing, gateway protocol scopes, plane boot,
 upgrades) are owned by `go test -tags=integration` — failures here are
@@ -138,26 +139,21 @@ def main() -> int:
             return finish()
         agent_dir = agent_dirs[0]
         key = agent_dir.name
-        # Candidate image input: pin overrides.image in the fleet
-        # manifest — the rendered compose deploys exactly that ref
-        # (digest-pinned ok) while the scaffold Dockerfile keeps its
-        # contract-valid public pin for agentctl's Derive. Insert after
-        # the agent key line; init's fleet-of-one shape is fixed, so
-        # the anchor is deterministic and asserted.
+        # Candidate image input: rewrite the scaffold Dockerfile's FROM
+        # to the candidate ref (digest-pinned ok — the project contract
+        # accepts both agent-base repos), then deploy: the compose build
+        # bakes the journey's spec/content FROM those exact bytes. The
+        # build is the contract under test (base layout <-> five COPY
+        # lines); agentctl stays the authority.
         if CANDIDATE_IMAGE:
-            manifest = project / "fleet.yaml"
-            text = manifest.read_text(encoding="utf-8")
-            rewritten, count = re.subn(
-                rf"(?m)^(  \"?{re.escape(key)}\"?:)$",
-                rf"\1\n    overrides:\n      image: {CANDIDATE_IMAGE}",
-                text,
-                count=1,
-            )
+            df = agent_dir / "Dockerfile"
+            text = df.read_text(encoding="utf-8")
+            rewritten, count = re.subn(r"(?m)^FROM .*$", f"FROM {CANDIDATE_IMAGE}", text, count=1)
             if count != 1:
-                fail(f"could not pin overrides.image (candidate {CANDIDATE_IMAGE})")
+                fail(f"could not rewrite Dockerfile FROM (candidate {CANDIDATE_IMAGE})")
                 return finish()
-            manifest.write_text(rewritten, encoding="utf-8")
-            stage(f"pinned overrides.image {CANDIDATE_IMAGE}")
+            df.write_text(rewritten, encoding="utf-8")
+            stage(f"pinned agent FROM {CANDIDATE_IMAGE}")
         # Pin the compose engine to the harness engine — the mixed-engine
         # split makes every state check lie (same as the full suite).
         with (project / "fleet.yaml").open("a", encoding="utf-8") as f:

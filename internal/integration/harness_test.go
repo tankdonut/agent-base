@@ -148,12 +148,14 @@ func engineInspect(ctx context.Context, engine, ref string) error {
 	return exec.CommandContext(ctx2, engine, "inspect", ref).Run()
 }
 
-// fixtureAgent writes one contract-complete agent (spec, Dockerfile
-// pinned to the public sentinel, env pair) and a fleet manifest
-// allocating ports from `base`. The agent's deployed bytes are pinned
-// by overrides.image (imageRef — the ensureBaseImage result), keeping
-// the Dockerfile a valid public pin for Derive while compose deploys
-// exactly the candidate. Returns the manifest and the agent's dir.
+// fixtureAgent writes one contract-complete agent (minimal spec, env
+// pair) and a fleet manifest allocating ports from `base`. The
+// manifest pins overrides.image to imageRef (the ensureBaseImage
+// result — candidate or public default): converge asserts envelope
+// mechanics (render with an override, deploy, ports, stop/start), not
+// boot health — the fixture spec is intentionally not boot-valid;
+// boot truth lives in Tier B, the front-door, and smoke. Returns the
+// manifest and the agent's dir.
 func fixtureAgent(t *testing.T, engine, name string, portBase int, imageRef string) (*fleet.Manifest, string, string) {
 	t.Helper()
 	root := t.TempDir()
@@ -193,15 +195,10 @@ func fixtureAgent(t *testing.T, engine, name string, portBase int, imageRef stri
 	return m, dir, filepath.Join(dir, "Dockerfile")
 }
 
-// writeDockerfile writes the fixture Dockerfile: the five COPY lines
-// over a public sentinel FROM — never built (the manifest's
-// overrides.image owns the deployed ref), but Derive validates it, so
-// it must stay a contract-valid public pin.
+// writeDockerfile pins the fixture's FROM at the pulled base ref —
+// the candidate (staging repo, digest ok) or the public default.
 func writeDockerfile(t *testing.T, path, ref string) {
 	t.Helper()
-	if ref == "" {
-		ref = "ghcr.io/tankdonut/agent-base:" + scaffold.DefaultBaseTag
-	}
 	if err := os.WriteFile(path, []byte("FROM "+ref+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
