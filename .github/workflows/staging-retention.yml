@@ -1,0 +1,47 @@
+name: staging-retention
+
+# Weekly cleanup of the private staging package: candidates are a means
+# (qualification evidence for their release window), not an archive —
+# everything older than RETENTION_DAYS is deleted. Released images live
+# in the public package and are never touched here.
+on:
+  schedule:
+    - cron: "0 3 * * 1" # Mondays 03:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  prune:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Delete staging versions older than the retention window
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RETENTION_DAYS: "45"
+        run: |
+          set -euo pipefail
+          cutoff=$(date -u -d "$RETENTION_DAYS days ago" +%s)
+          deleted=0
+          page=1
+          while [ "$page" -le 20 ]; do
+            rows=$(gh api "/user/packages/container/agent-base-staging/versions?per_page=100&page=$page" \
+              --jq '.[] | "\(.id) \(.created_at)"')
+            [ -n "$rows" ] || break
+            while IFS= read -r row; do
+              [ -n "$row" ] || continue
+              id=${row%% *}
+              created=${row#* }
+              ts=$(date -u -d "$created" +%s)
+              if [ "$ts" -lt "$cutoff" ]; then
+                gh api -X DELETE "/user/packages/container/agent-base-staging/versions/$id"
+                echo "deleted version $id (created $created)"
+                deleted=$((deleted + 1))
+              fi
+            done <<<"$rows"
+            page=$((page + 1))
+          done
+          echo "prune complete: $deleted version(s) deleted"

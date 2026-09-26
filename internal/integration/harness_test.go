@@ -112,13 +112,19 @@ func isStandaloneCompose(name string) bool {
 	return name == "podman-compose" || name == "docker-compose"
 }
 
-// ensureBaseImage pulls the pinned base image once per run; compose
-// build would pull lazily anyway, but an explicit contained pull turns
-// a network problem into a clean skip instead of a build failure.
+// ensureBaseImage resolves the base image for the tier-A fixtures:
+// AGENT_E2E_IMAGE when set (CI passes the branch-built candidate, which
+// may be digest-pinned), else the pinned public DefaultBaseTag. The
+// explicit input is a required identity — unavailable must fail, never
+// silently test different bytes; the ambient default stays best-effort
+// so a network problem is still a clean skip for fresh checkouts.
 func ensureBaseImage(t *testing.T, engine string) string {
 	t.Helper()
-	tag := scaffold.DefaultBaseTag
-	ref := "ghcr.io/tankdonut/agent-base:" + tag
+	override := os.Getenv("AGENT_E2E_IMAGE")
+	ref := override
+	if ref == "" {
+		ref = "ghcr.io/tankdonut/agent-base:" + scaffold.DefaultBaseTag
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	if err := engineInspect(ctx, engine, ref); err == nil {
@@ -128,6 +134,9 @@ func ensureBaseImage(t *testing.T, engine string) string {
 		Name: "pull-base", Argv: []string{engine, "pull", ref}, Budget: 5 * time.Minute,
 	})
 	if err != nil {
+		if override != "" {
+			t.Fatalf("required base image %s unavailable: %v", ref, err)
+		}
 		t.Skipf("base image %s unavailable: %v", ref, err)
 	}
 	return ref
@@ -139,13 +148,20 @@ func engineInspect(ctx context.Context, engine, ref string) error {
 	return exec.CommandContext(ctx2, engine, "inspect", ref).Run()
 }
 
-// fixtureAgent writes one contract-complete agent (spec, Dockerfile
-// pinned to the base, env pair) and a fleet manifest allocating ports
-// from `base`. Returns the manifest and the agent's dir.
-func fixtureAgent(t *testing.T, engine, name string, portBase int) (*fleet.Manifest, string, string) {
+// fixtureAgent writes one contract-complete agent (minimal spec, env
+// pair) and a fleet manifest allocating ports from `base`. The
+// manifest pins overrides.image to imageRef (the ensureBaseImage
+// result — candidate or public default): converge asserts envelope
+// mechanics (render with an override, deploy, ports, stop/start), not
+// boot health — the fixture spec is intentionally not boot-valid;
+// boot truth lives in Tier B, the front-door, and smoke. Returns the
+// manifest and the agent's dir.
+func fixtureAgent(t *testing.T, engine, name string, portBase int, imageRef string) (*fleet.Manifest, string, string) {
 	t.Helper()
 	root := t.TempDir()
-	manifest := fmt.Sprintf("defaults:\n  compose:\n    engine: %s\nagents:\n  %s:\n    gateway_port: %d\n", engine, name, portBase)
+	manifest := fmt.Sprintf(
+		"defaults:\n  compose:\n    engine: %s\nagents:\n  %s:\n    gateway_port: %d\n    overrides:\n      image: %s\n",
+		engine, name, portBase, imageRef)
 	if err := os.WriteFile(filepath.Join(root, "fleet.yaml"), []byte(manifest), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +195,8 @@ func fixtureAgent(t *testing.T, engine, name string, portBase int) (*fleet.Manif
 	return m, dir, filepath.Join(dir, "Dockerfile")
 }
 
-// writeDockerfile pins the fixture's FROM at the pulled base tag.
+// writeDockerfile pins the fixture's FROM at the pulled base ref —
+// the candidate (staging repo, digest ok) or the public default.
 func writeDockerfile(t *testing.T, path, ref string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte("FROM "+ref+"\n"), 0o644); err != nil {

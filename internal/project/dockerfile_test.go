@@ -16,12 +16,15 @@ func TestBaseTagFromDockerfile(t *testing.T) {
 	}{
 		{"plain date tag", "FROM ghcr.io/tankdonut/agent-base:2026.08.28\n", "2026.08.28", ""},
 		{"same-day run suffix", "FROM ghcr.io/tankdonut/agent-base:2026.08.24.3\n", "2026.08.24.3", ""},
+		{"staging repo tag", "FROM ghcr.io/tankdonut/agent-base-staging:2026.09.22\n", "2026.09.22", ""},
+		{"staging repo digest only", "FROM ghcr.io/tankdonut/agent-base-staging@sha256:abc123\n", "sha256:abc123", ""},
 		{"digest suffix carried", "FROM ghcr.io/tankdonut/agent-base:2026.08.28@sha256:abc123\n", "2026.08.28@sha256:abc123", ""},
 		{"multi-stage alias dropped", "FROM ghcr.io/tankdonut/agent-base:2026.08.28 AS base\n", "2026.08.28", ""},
 		{"digest and alias", "FROM ghcr.io/tankdonut/agent-base:2026.08.28@sha256:abc AS base\n", "2026.08.28@sha256:abc", ""},
 		{"indented line", "  FROM ghcr.io/tankdonut/agent-base:2026.08.27\n", "2026.08.27", ""},
-		{"no base line", "FROM debian:bookworm\n", "", "no `FROM ghcr.io/tankdonut/agent-base:<tag>` line"},
-		{"empty tag", "FROM ghcr.io/tankdonut/agent-base:\n", "", "empty base image tag"},
+		{"foreign repo rejected", "FROM ghcr.io/other/agent-base:2026.08.28\n", "", "no `FROM ghcr.io/tankdonut/agent-base[-staging]:<tag>` line"},
+		{"no base line", "FROM debian:bookworm\n", "", "no `FROM ghcr.io/tankdonut/agent-base[-staging]:<tag>` line"},
+		{"empty tag", "FROM ghcr.io/tankdonut/agent-base:\n", "", "empty base image ref"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -82,7 +85,7 @@ func TestRewriteBaseTag(t *testing.T) {
 			docker:  "FROM debian:bookworm\n",
 			from:    "2026.08.28",
 			to:      "2026.09.12",
-			wantErr: "no `FROM ghcr.io/tankdonut/agent-base:<tag>` line",
+			wantErr: "no `FROM ghcr.io/tankdonut/agent-base[-staging]:<tag>` line",
 		},
 		{
 			name:    "ambiguous base lines",

@@ -58,6 +58,17 @@ func runUpgrade(cmd *cobra.Command, target string, dryRun, yes bool) error {
 	if err != nil {
 		return err
 	}
+	// An image-pinned agent deploys exactly the bytes its manifest
+	// override names; the FROM-rewrite runbook below would silently
+	// change nothing it deploys.
+	if rp, rperr := resolveProject(); rperr == nil {
+		if entry, ok := rp.Manifest.Agents[rp.Agent]; ok && entry.Overrides != nil && entry.Overrides.Image != "" {
+			return fmt.Errorf(
+				"agent pins overrides.image (%s) in fleet.yaml — tag upgrades do not apply; update or remove the override to change the deployed image",
+				entry.Overrides.Image,
+			)
+		}
+	}
 	if old == target {
 		return fmt.Errorf("the pinned tag is already %s — nothing to upgrade", target)
 	}

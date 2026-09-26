@@ -6,6 +6,14 @@ asserts only the journey a real user walks with the built binary:
     agentctl init → secrets init → fleet deploy --all → healthy →
     fleet serve API answers → destroy removes everything
 
+Inputs:
+  * E2E_AGENTCTL — path to a prepared agentctl binary; skips the local
+    build (release-qualification runs feed the shipped artifact here).
+  * AGENT_E2E_IMAGE — candidate base image ref (digest-pinned ok);
+    rewrites the init'ed agent's Dockerfile FROM, so the journey builds
+    and runs against those exact bytes. Unset = the pinned public
+    sentinel.
+
 Mechanics (drift parsing, gateway protocol scopes, plane boot,
 upgrades) are owned by `go test -tags=integration` — failures here are
 binary/UX regressions, not mechanics regressions.
@@ -16,6 +24,7 @@ from __future__ import annotations
 import json
 import os
 import random
+import re
 import shutil
 import subprocess
 import sys
@@ -24,12 +33,10 @@ import urllib.request
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO / "tests"))
-
-import agentctl_e2e as full  # noqa: E402 — helper reuse from the full suite
 
 ENGINE = os.environ.get("E2E_ENGINE") or (shutil.which("podman") and "podman") or "docker"
-BASE_IMAGE = os.environ.get("AGENT_E2E_IMAGE", full.BASE_IMAGE)
+CANDIDATE_IMAGE = os.environ.get("AGENT_E2E_IMAGE")
+PREPARED_BIN = os.environ.get("E2E_AGENTCTL")
 
 FAILURES = 0
 T0 = time.monotonic()
@@ -74,13 +81,34 @@ def main() -> int:
         print("go is required to build the agentctl binary", file=sys.stderr)
         return 2
     stage("building agentctl")
-    bin_dir = Path(tempfile_bin()) / "e2e-frontdoor-bin"
-    bin_dir.mkdir(parents=True, exist_ok=True)
-    agentctl = bin_dir / "agentctl"
-    build = run(["go", "build", "-o", str(agentctl), "./cmd/agentctl"], cwd=REPO)
-    if build.returncode != 0:
-        print(build.stderr, file=sys.stderr)
-        return 2
+    if PREPARED_BIN:
+        agentctl = Path(PREPARED_BIN)
+        if not agentctl.is_file():
+            print(f"prepared binary missing: {agentctl}", file=sys.stderr)
+            return 2
+        stage(f"using prepared binary {agentctl}")
+    else:
+        bin_dir = Path(tempfile_bin()) / "e2e-frontdoor-bin"
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        agentctl = bin_dir / "agentctl"
+        # Release flags: the journey must exercise the binary as it
+        # ships, not a fat debug build.
+        build = run(
+            [
+                "go",
+                "build",
+                "-trimpath",
+                "-ldflags",
+                "-s -w",
+                "-o",
+                str(agentctl),
+                "./cmd/agentctl",
+            ],
+            cwd=REPO,
+        )
+        if build.returncode != 0:
+            print(build.stderr, file=sys.stderr)
+            return 2
 
     port = random.randint(20000, 24999)
     project = Path(tempfile_bin()) / f"frontdoor-{random.randint(100000, 999999)}"
@@ -111,6 +139,21 @@ def main() -> int:
             return finish()
         agent_dir = agent_dirs[0]
         key = agent_dir.name
+        # Candidate image input: rewrite the scaffold Dockerfile's FROM
+        # to the candidate ref (digest-pinned ok — the project contract
+        # accepts both agent-base repos), then deploy: the compose build
+        # bakes the journey's spec/content FROM those exact bytes. The
+        # build is the contract under test (base layout <-> five COPY
+        # lines); agentctl stays the authority.
+        if CANDIDATE_IMAGE:
+            df = agent_dir / "Dockerfile"
+            text = df.read_text(encoding="utf-8")
+            rewritten, count = re.subn(r"(?m)^FROM .*$", f"FROM {CANDIDATE_IMAGE}", text, count=1)
+            if count != 1:
+                fail(f"could not rewrite Dockerfile FROM (candidate {CANDIDATE_IMAGE})")
+                return finish()
+            df.write_text(rewritten, encoding="utf-8")
+            stage(f"pinned agent FROM {CANDIDATE_IMAGE}")
         # Pin the compose engine to the harness engine — the mixed-engine
         # split makes every state check lie (same as the full suite).
         with (project / "fleet.yaml").open("a", encoding="utf-8") as f:
