@@ -209,12 +209,12 @@ jobs:
   image-amd64:
     # Tag pushes run promotion only — these gates ran as candidate gates on main.
     if: github.ref_type != 'tag'
-    # Parallelism note: this job builds + self-tests; contract/smoke are
-    # independent gates and no longer serialize it. The tag-time release
-    # still requires them via the release job's needs.
+    # Build once, test in parallel: the image is exported as an artifact
+    # and loaded by the integration/front-door jobs, so a flaky front-door
+    # retry never rebuilds, and the two suites don't serialize.
     needs: [agentctl, lint, test]
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 30
     permissions:
       contents: read
       packages: write
@@ -238,23 +238,43 @@ jobs:
             -t "$IMAGE:${TAG}-amd64" \
             -t "$IMAGE:2099.12.31" .
           if [ "${GITHUB_REF_TYPE}" = "tag" ]; then docker push "$IMAGE:${TAG}-amd64"; fi
+      - name: Export image artifact
+        run: docker save --output /tmp/image-amd64.tar "$IMAGE:2099.12.31"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: image-amd64-${{ github.sha }}
+          path: /tmp/image-amd64.tar
+          retention-days: 3
+          compression-level: 6
 
+  gates-pr-integration:
+    # Tier A + B against the PR-built image — the same suites the
+    # candidate gates run on main, consuming the exported artifact.
+    needs: [image-amd64]
+    if: github.ref_type != 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: image-amd64-${{ github.sha }}
+          path: /tmp
+      - name: Load the PR image
+        run: docker load --input /tmp/image-amd64.tar
       - name: Integration (Tier A + B, against THIS branch's image)
         env:
           AGENT_E2E_ENGINE: docker
           AGENT_E2E_IMAGE: ghcr.io/tankdonut/agent-base:2099.12.31
           AGENT_E2E_TMPDIR: ${{ github.workspace }}/tierb
         run: go test -tags=integration -count=1 -timeout 30m -v ./internal/integration/
-
-      - name: Front-door (shipped-binary user journey)
-        env:
-          E2E_ENGINE: docker
-        run: ./make.sh agentctl-frontdoor
-
       - name: Upload integration forensics
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -263,6 +283,35 @@ jobs:
           path: |
             tierb/
             logs/
+
+  gates-pr-frontdoor:
+    # Shipped-binary user journey against the PR-built image.
+    needs: [image-amd64]
+    if: github.ref_type != 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: image-amd64-${{ github.sha }}
+          path: /tmp
+      - name: Load the PR image
+        run: docker load --input /tmp/image-amd64.tar
+      - name: Front-door (shipped-binary user journey)
+        env:
+          E2E_ENGINE: docker
+        run: ./make.sh agentctl-frontdoor
+      - name: Upload front-door forensics
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: frontdoor-forensics
+          path: logs/
 
   image-arm64:
     # Tag pushes run promotion only — these gates ran as candidate gates on main.
