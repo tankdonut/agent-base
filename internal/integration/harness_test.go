@@ -149,12 +149,17 @@ func engineInspect(ctx context.Context, engine, ref string) error {
 }
 
 // fixtureAgent writes one contract-complete agent (spec, Dockerfile
-// pinned to the base, env pair) and a fleet manifest allocating ports
-// from `base`. Returns the manifest and the agent's dir.
-func fixtureAgent(t *testing.T, engine, name string, portBase int) (*fleet.Manifest, string, string) {
+// pinned to the public sentinel, env pair) and a fleet manifest
+// allocating ports from `base`. The agent's deployed bytes are pinned
+// by overrides.image (imageRef — the ensureBaseImage result), keeping
+// the Dockerfile a valid public pin for Derive while compose deploys
+// exactly the candidate. Returns the manifest and the agent's dir.
+func fixtureAgent(t *testing.T, engine, name string, portBase int, imageRef string) (*fleet.Manifest, string, string) {
 	t.Helper()
 	root := t.TempDir()
-	manifest := fmt.Sprintf("defaults:\n  compose:\n    engine: %s\nagents:\n  %s:\n    gateway_port: %d\n", engine, name, portBase)
+	manifest := fmt.Sprintf(
+		"defaults:\n  compose:\n    engine: %s\nagents:\n  %s:\n    gateway_port: %d\n    overrides:\n      image: %s\n",
+		engine, name, portBase, imageRef)
 	if err := os.WriteFile(filepath.Join(root, "fleet.yaml"), []byte(manifest), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -188,9 +193,15 @@ func fixtureAgent(t *testing.T, engine, name string, portBase int) (*fleet.Manif
 	return m, dir, filepath.Join(dir, "Dockerfile")
 }
 
-// writeDockerfile pins the fixture's FROM at the pulled base tag.
+// writeDockerfile writes the fixture Dockerfile: the five COPY lines
+// over a public sentinel FROM — never built (the manifest's
+// overrides.image owns the deployed ref), but Derive validates it, so
+// it must stay a contract-valid public pin.
 func writeDockerfile(t *testing.T, path, ref string) {
 	t.Helper()
+	if ref == "" {
+		ref = "ghcr.io/tankdonut/agent-base:" + scaffold.DefaultBaseTag
+	}
 	if err := os.WriteFile(path, []byte("FROM "+ref+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}

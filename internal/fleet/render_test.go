@@ -75,6 +75,16 @@ func TestRenderOverridesGolden(t *testing.T) {
 	checkGolden(t, "overrides.yml", string(renderOrDie(t, overridesManifest, "grow")))
 }
 
+const imageOverrideManifest = `agents:
+  grow:
+    overrides:
+      image: ghcr.io/tankdonut/agent-base-staging@sha256:abc123
+`
+
+func TestRenderImageOverrideGolden(t *testing.T) {
+	checkGolden(t, "overrides-image.yml", string(renderOrDie(t, imageOverrideManifest, "grow")))
+}
+
 func TestRenderDeterministic(t *testing.T) {
 	first := renderOrDie(t, sharedManifest, "grow")
 	second := renderOrDie(t, sharedManifest, "grow")

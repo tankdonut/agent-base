@@ -84,7 +84,9 @@ func bootLiveAgent() (*liveAgent, error) {
 		return nil, err
 	}
 	port := freePortNoSkip()
-	manifest := fmt.Sprintf("defaults:\n  compose:\n    engine: %s\nagents:\n  grow:\n    gateway_port: %d\n", engine, port)
+	manifest := fmt.Sprintf(
+		"defaults:\n  compose:\n    engine: %s\nagents:\n  grow:\n    gateway_port: %d\n    overrides:\n      image: %s\n",
+		engine, port, image)
 	if err := os.WriteFile(filepath.Join(root, "fleet.yaml"), []byte(manifest), 0o644); err != nil {
 		return nil, err
 	}
@@ -135,8 +137,11 @@ func bootLiveAgent() (*liveAgent, error) {
 	files := map[string]string{
 		// The five COPY lines mirror the scaffold Dockerfile contract:
 		// the entrypoint fail-closes without a baked spec, and the
-		// seed dirs must exist for the content phases.
-		"Dockerfile": "FROM " + image + "\n" +
+		// seed dirs must exist for the content phases. The FROM is the
+		// public sentinel — never built: overrides.image in the
+		// manifest deploys the candidate ref, while Derive needs a
+		// contract-valid public pin.
+		"Dockerfile": "FROM ghcr.io/tankdonut/agent-base:" + scaffold.DefaultBaseTag + "\n" +
 			"COPY --chown=node:node spec.json /opt/agent/spec.json\n" +
 			"COPY --chown=node:node automations/ /opt/agent/automations/\n" +
 			"COPY --chown=node:node workspace/ /opt/seed/workspace/\n" +
