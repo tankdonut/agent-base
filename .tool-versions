@@ -12,4 +12,4 @@ python 3.14.7
 golang 1.27.1
 pre-commit 4.6.2
 hadolint 2.15.1
-markdownlint-cli2 0.23.2
+markdownlint-cli2 0.23.3
