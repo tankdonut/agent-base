@@ -91,6 +91,9 @@ jobs:
         id: latest
         env:
           GH_TOKEN: ${{ github.token }}
+          # No checkout in this job — gh resolves the repo from this
+          # var, not from a git remote.
+          GH_REPO: ${{ github.repository }}
         run: |
           tag=$(gh release list -L 100 --json tagName,isDraft,isPrerelease \
             --jq '[.[] | select(.isDraft | not) | select(.isPrerelease | not) | .tagName] | map(select(test("^[0-9]{4}\\.[0-9]{2}\\.[0-9]{2}"))) | .[0]')
