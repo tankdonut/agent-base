@@ -114,6 +114,32 @@ agents:
 	}
 }
 
+func TestLoadManifestOverridesImage(t *testing.T) {
+	root := writeManifest(t, `agents:
+  grow:
+    overrides:
+      image: ghcr.io/tankdonut/agent-base-staging@sha256:abc123
+`)
+	m, err := LoadManifest(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := m.Agents["grow"].Overrides
+	if got == nil || got.Image != "ghcr.io/tankdonut/agent-base-staging@sha256:abc123" {
+		t.Fatalf("overrides.image = %+v, want the pinned ref", got)
+	}
+
+	for name, body := range map[string]string{
+		"empty":  `agents: {grow: {overrides: {image: ""}}}`,
+		"spaced": "agents: {grow: {overrides: {image: \"repo/app --platform linux/amd64\"}}}",
+	} {
+		root := writeManifest(t, body)
+		if _, err := LoadManifest(root); err == nil {
+			t.Fatalf("%s: overrides.image accepted a invalid value", name)
+		}
+	}
+}
+
 func TestLoadManifestSidecarOptOutWithPlane(t *testing.T) {
 	root := writeManifest(t, `plane:
   enabled: true

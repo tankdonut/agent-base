@@ -114,11 +114,15 @@ type AgentEntry struct {
 
 // Overrides is the bounded per-agent render delta: extra volume
 // mounts and port publishes append; limits replace the resource
-// ceiling wholesale.
+// ceiling wholesale; image swaps the build: block for a pinned
+// image: ref (digest-pinned candidates in CI qualification runs —
+// the Dockerfile keeps its valid public pin and stays the upgrade
+// surface, while the deployed bytes are exactly the override).
 type Overrides struct {
 	Volumes []string
 	Ports   []string
 	Limits  *ResourceLimits
+	Image   string
 }
 
 // ResourceLimits replaces deploy.resources.limits when overridden.
@@ -558,6 +562,15 @@ func applyAgents(m *Manifest, val any, path string) error {
 				ov := &Overrides{}
 				for ok, ovv := range on {
 					switch ok {
+					case "image":
+						s, err := expectString(ovv, base+".overrides.image", path)
+						if err != nil {
+							return err
+						}
+						if strings.ContainsAny(s, " \t\n\"'") {
+							return fmt.Errorf("%s: %s.overrides.image: want a bare image ref (repo[:tag][@digest])", path, base)
+						}
+						ov.Image = s
 					case "volumes", "ports":
 						list, err := expectList(ovv, base+".overrides."+ok, path)
 						if err != nil {
@@ -606,7 +619,7 @@ func applyAgents(m *Manifest, val any, path string) error {
 						}
 						ov.Limits = limits
 					default:
-						return fmt.Errorf("%s: %s.overrides: unknown key %q (known: limits, ports, volumes)", path, base, ok)
+						return fmt.Errorf("%s: %s.overrides: unknown key %q (known: image, limits, ports, volumes)", path, base, ok)
 					}
 				}
 				entry.Overrides = ov

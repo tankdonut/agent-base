@@ -40,13 +40,81 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 LOGDIR = REPO_ROOT / "logs"
-BASE_IMAGE = "ghcr.io/tankdonut/agent-base:2099.12.31"
+# Synthetic dual-bake cycle (defaults): two bakes of one context under
+# the implausible sentinel tags — mechanics-drift evidence only, never
+# release qualification. E2E_BASE_IMAGE / E2E_UPGRADE_IMAGE point the
+# suite at real candidate refs (tag form, agentctl's repo contract
+# applies): overridden refs are never baked locally — present or
+# pullable or fail — so the run stays true to the demanded bytes.
+SYNTH_BASE = "ghcr.io/tankdonut/agent-base:2099.12.31"
+SYNTH_UPGRADE = "ghcr.io/tankdonut/agent-base:2099.12.31.1"
+BASE_IMAGE = os.environ.get("E2E_BASE_IMAGE", SYNTH_BASE)
 # The upgrade target: a second bake of the same context. The running
 # image reports its BAKED AGENT_BASE_VERSION, not the registry tag, so
 # the dual-tag cycle needs two bakes (cached layers make the second
 # cheap) rather than two tags of one image.
-UPGRADE_IMAGE = "ghcr.io/tankdonut/agent-base:2099.12.31.1"
+UPGRADE_IMAGE = os.environ.get("E2E_UPGRADE_IMAGE", SYNTH_UPGRADE)
 ENGINE = os.environ.get("E2E_ENGINE") or (shutil.which("podman") and "podman") or "docker"
+
+
+def tag_of(ref: str) -> str:
+    # agentctl's upgrade verb and init --base-tag speak tags; digest
+    # refs have no tag to rewrite to.
+    if "@" in ref:
+        raise SystemExit(f"E2E base/upgrade image overrides must be tag refs, got: {ref}")
+    return ref.rsplit(":", 1)[-1]
+
+
+BASE_TAG = tag_of(BASE_IMAGE)
+UPGRADE_TAG = tag_of(UPGRADE_IMAGE)
+
+
+def image_env_version(ref: str) -> str | None:
+    """The AGENT_BASE_VERSION the image actually bakes (ENV), or None."""
+    proc = engine(
+        [
+            "image",
+            "inspect",
+            "--format",
+            "{{range .Config.Env}}{{println .}}{{end}}",
+            ref,
+        ]
+    )
+    for line in proc.stdout.splitlines():
+        if line.startswith("AGENT_BASE_VERSION="):
+            return line.split("=", 1)[1].strip()
+    return None
+
+
+def ensure_image(ref: str, synth_version: str | None) -> None:
+    """Present-or-pullable, with a local bake ONLY for the synthetic
+    sentinels — overridden candidate refs get no build fallback."""
+    if subprocess.run([ENGINE, "image", "inspect", ref], capture_output=True).returncode == 0:
+        print(f"[e2e] reusing local {ref}")
+        return
+    if synth_version is not None:
+        print(f"[e2e] building {ref}")
+        fmt = ["--format", "docker"] if ENGINE == "podman" else []
+        subprocess.run(
+            [
+                ENGINE,
+                "build",
+                *fmt,
+                "--build-arg",
+                f"AGENT_BASE_VERSION={synth_version}",
+                "-f",
+                str(REPO_ROOT / "container" / "Dockerfile"),
+                "-t",
+                ref,
+                str(REPO_ROOT),
+            ],
+            check=True,
+        )
+        return
+    pull = subprocess.run([ENGINE, "pull", ref], capture_output=True, text=True)
+    if pull.returncode != 0:
+        raise SystemExit(f"image {ref} unavailable and override refs are never built locally")
+
 
 # Stage selection: the full front door by default; a comma list
 # runs a subset for iteration (plane pulls in fleet — it needs
@@ -279,26 +347,7 @@ def main() -> int:
         print("[e2e] building agentctl binary")
         run(["go", "build", "-o", agentctl, "./cmd/agentctl"], cwd=REPO_ROOT, check=True)
 
-        have_image = engine(["image", "inspect", BASE_IMAGE]).returncode == 0
-        if not have_image:
-            print(f"[e2e] building {BASE_IMAGE}")
-            fmt = ["--format", "docker"] if ENGINE == "podman" else []
-            engine(
-                [
-                    "build",
-                    *fmt,
-                    "--build-arg",
-                    "AGENT_BASE_VERSION=2099.12.31",
-                    "-f",
-                    "container/Dockerfile",
-                    "-t",
-                    BASE_IMAGE,
-                    REPO_ROOT,
-                ],
-                check=True,
-            )
-        else:
-            print(f"[e2e] reusing local {BASE_IMAGE}")
+        ensure_image(BASE_IMAGE, "2099.12.31" if BASE_IMAGE == SYNTH_BASE else None)
 
         def agentctl_cmd(*args: str, check: bool = False) -> subprocess.CompletedProcess:
             return run([agentctl, *args], cwd=project, check=check)
@@ -310,7 +359,7 @@ def main() -> int:
                 "init",
                 str(project),
                 "--base-tag",
-                "2099.12.31",
+                BASE_TAG,
                 "--gateway-port",
                 str(port),
                 "--telegram=false",
@@ -484,25 +533,13 @@ def main() -> int:
             # eras), the image-side backup-before-mutation fires on the
             # version delta, and the pin ends up on the new bake.
             print("[e2e] upgrade")
-            if engine(["image", "inspect", UPGRADE_IMAGE]).returncode != 0:
-                fmt = ["--format", "docker"] if ENGINE == "podman" else []
-                engine(
-                    [
-                        "build",
-                        *fmt,
-                        "--build-arg",
-                        "AGENT_BASE_VERSION=2099.12.31.1",
-                        "-f",
-                        "container/Dockerfile",
-                        "-t",
-                        UPGRADE_IMAGE,
-                        REPO_ROOT,
-                    ],
-                    check=True,
-                )
-            proc = agentctl_cmd("upgrade", "2099.12.31.1", "--yes")
+            ensure_image(UPGRADE_IMAGE, "2099.12.31.1" if UPGRADE_IMAGE == SYNTH_UPGRADE else None)
+            upgrade_version = image_env_version(UPGRADE_IMAGE)
+            if upgrade_version is None:
+                fail(f"upgrade image {UPGRADE_IMAGE} bakes no AGENT_BASE_VERSION")
+            proc = agentctl_cmd("upgrade", UPGRADE_TAG, "--yes")
             if proc.returncode == 0 and "post-upgrade verification green" in proc.stdout:
-                pass_("upgrade 2099.12.31 → 2099.12.31.1 (gate, backup, rewrite, deploy, verify)")
+                pass_(f"upgrade {BASE_TAG} → {UPGRADE_TAG} (gate, backup, rewrite, deploy, verify)")
             else:
                 fail(f"upgrade failed:\n{indent(proc.stdout + proc.stderr)}")
             from_lines = [
@@ -510,17 +547,20 @@ def main() -> int:
                 for line in (agent / "Dockerfile").read_text(encoding="utf-8").splitlines()
                 if line.startswith("FROM ")
             ]
-            if from_lines and from_lines[0].endswith(":2099.12.31.1"):
+            if from_lines and from_lines[0].endswith(f":{UPGRADE_TAG}"):
                 pass_("Dockerfile FROM rewritten to the upgrade target")
             else:
                 fail(f"FROM line not rewritten: {from_lines}")
             marker = engine(
                 ["exec", agent_container_name(), "cat", "/home/node/.openclaw/last-image-version"]
             )
-            if marker.stdout.strip() == "2099.12.31.1":
+            if upgrade_version is not None and marker.stdout.strip() == upgrade_version:
                 pass_("running instance marker reports the new image")
             else:
-                fail(f"last-image-version = {marker.stdout.strip()!r}, want 2099.12.31.1")
+                fail(
+                    f"last-image-version = {marker.stdout.strip()!r}, "
+                    f"want baked {UPGRADE_TAG} version {upgrade_version!r}"
+                )
 
             proc = agentctl_cmd("deploy")
             if proc.returncode == 0:
@@ -612,7 +652,7 @@ def main() -> int:
                     "--port",
                     str(second_port),
                     "--base-tag",
-                    "2099.12.31",
+                    BASE_TAG,
                     "--telegram=false",
                 ],
                 cwd=project,
@@ -680,7 +720,7 @@ def main() -> int:
                         "--port",
                         str(second_port),
                         "--base-tag",
-                        "2099.12.31",
+                        BASE_TAG,
                         "--telegram=false",
                     ],
                     cwd=project,

@@ -74,9 +74,13 @@ the next `.N` suffix, same as any release failure.
 observable boot behavior (config seeds, marker files, gated features,
 loader or breaking changes, one-time migrations), the same PR must also
 append a dated era entry to `internal/cli/eras.go`, the image-era table
-behind `agentctl doctor --target` upgrade previews. A rot-guard unit
-test in `internal/cli` fails CI whenever `DefaultBaseTag` moves past
-the newest era entry, so skipping the step blocks the release.
+behind `agentctl doctor --target` upgrade previews. One guard is
+CI-enforced, one is not: `TestEraTableNotRotted` fails when an era entry
+outpaces `DefaultBaseTag` (the table may not run ahead of the release
+constant), but nothing forces an entry to exist for a bump — a
+no-delta release legitimately needs none. Recording eras for
+behavior-carrying releases is checklist discipline enforced by review
+on this PR, not by CI.
 
 ### 3. Tag and push (this triggers the release)
 

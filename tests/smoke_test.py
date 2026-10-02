@@ -3,6 +3,15 @@
 trade-agent-like, litellm-like) against the fake openclaw CLI (tests/shim/openclaw),
 and assert the boot's phase order from the shim's invocation log.
 
+Two input modes:
+  * build mode (default): build container/Dockerfile locally with
+    AGENT_BASE_VERSION=smoke and test that image — PR-tree evidence.
+  * candidate mode (SMOKE_IMAGE=<ref>[@sha256:...]): pull the exact
+    candidate and test it AS-IS — no rebuild, no local overlay. With a
+    digest-pinned ref the engine-side image identity is asserted
+    (RepoDigests membership) so the report can only be true of those
+    bytes. Candidate evidence class: the artifact, not the tree.
+
 Three scenarios:
   1. per fixture: entrypoint --validate-spec — spec + automations parse,
      no mutation
@@ -27,7 +36,13 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 LOGDIR = REPO_ROOT / "logs"
-IMAGE = os.environ.get("AGENT_BASE_IMAGE", sys.argv[1] if len(sys.argv) > 1 else "agent-base:smoke")
+# SMOKE_IMAGE switches to candidate mode: the ref is pulled and tested
+# as-is (never rebuilt locally). AGENT_BASE_IMAGE / argv[1] only choose
+# the tag the local build lands on.
+CANDIDATE = os.environ.get("SMOKE_IMAGE")
+ARG_REF = sys.argv[1] if len(sys.argv) > 1 else "agent-base:smoke"
+FALLBACK_REF = os.environ.get("AGENT_BASE_IMAGE", ARG_REF)
+IMAGE = CANDIDATE or FALLBACK_REF
 # SMOKE_ENGINE pins the engine (CI sets docker: GH runners preinstall
 # podman, the auto-detect would pick it and build into podman's store —
 # same reason CONTRACT_ENGINE exists in tests/contract_test.py).
@@ -173,7 +188,9 @@ def build_common(fixture: str) -> list[str]:
     return args
 
 
-def smoke_fixture(fixture: str, mcp_name: str | None, triggers: str = "") -> None:
+def smoke_fixture(
+    fixture: str, mcp_name: str | None, triggers: str = "", expect_version: str = "smoke"
+) -> None:
     print(f"[smoke] fixture: {fixture}")
     validate_log = LOGDIR / f"smoke-{fixture}.validate.log"
     boot_log = LOGDIR / f"smoke-{fixture}.boot.log"
@@ -203,8 +220,8 @@ def smoke_fixture(fixture: str, mcp_name: str | None, triggers: str = "") -> Non
     shim_log.write_text(log, encoding="utf-8")
 
     # --- X1 phase markers (printed by the runner from {data}) ---
-    if "=== MARKER: last-image-version=smoke ===" in boot:
-        pass_("upgrade-backup phase recorded image version (fresh volume, no backup)")
+    if f"=== MARKER: last-image-version={expect_version} ===" in boot:
+        pass_(f"upgrade-backup phase recorded image version ({expect_version})")
     else:
         fail("upgrade-backup phase did not record the image version")
     if "=== MARKER: agent-managed-mcp=[" in boot:
@@ -331,8 +348,51 @@ def indent(text: str) -> str:
     return "".join(f"    {line}\n" for line in text.splitlines())
 
 
-def main() -> int:
-    LOGDIR.mkdir(parents=True, exist_ok=True)
+def image_env_version() -> str | None:
+    """The AGENT_BASE_VERSION the image actually bakes (ENV), or None."""
+    proc = run(
+        [
+            ENGINE,
+            "inspect",
+            "--type",
+            "image",
+            "--format",
+            "{{range .Config.Env}}{{println .}}{{end}}",
+            IMAGE,
+        ]
+    )
+    for line in proc.stdout.splitlines():
+        if line.startswith("AGENT_BASE_VERSION="):
+            return line.split("=", 1)[1]
+    return None
+
+
+def acquire_image() -> str | None:
+    """Build (tree mode) or pull+verify (candidate mode); returns the
+    AGENT_BASE_VERSION the assertions must expect, or None on failure."""
+    if CANDIDATE:
+        print(f"[smoke] candidate mode: pulling {IMAGE} as-is (no rebuild)")
+        proc = run([ENGINE, "pull", IMAGE])
+        if proc.returncode != 0:
+            print(proc.stdout + proc.stderr, file=sys.stderr)
+            return None
+        if "@sha256:" in IMAGE:
+            digest = IMAGE.split("@", 1)[1]
+            # RepoDigests (not .Id): engines report the config digest as
+            # Id, which never equals the manifest digest being pinned.
+            digests = run(
+                [ENGINE, "inspect", "--type", "image", "--format", "{{json .RepoDigests}}", IMAGE]
+            ).stdout
+            if digest not in digests:
+                fail(f"candidate identity: {digest} not among engine RepoDigests {digests.strip()}")
+                return None
+            pass_(f"candidate identity asserted: engine image is {digest}")
+        version = image_env_version()
+        if version is None:
+            fail("candidate image does not bake AGENT_BASE_VERSION (ENV)")
+            return None
+        return version
+
     print(f"[smoke] building {IMAGE} ({ENGINE} build -f container/Dockerfile .)")
     # OCI format drops the HEALTHCHECK under podman; keep it in the smoke
     # artifact so the inspect assertion below is meaningful.
@@ -354,6 +414,14 @@ def main() -> int:
     )
     if proc.returncode != 0:
         print(proc.stdout + proc.stderr, file=sys.stderr)
+        return None
+    return image_env_version() or "smoke"
+
+
+def main() -> int:
+    LOGDIR.mkdir(parents=True, exist_ok=True)
+    expect_version = acquire_image()
+    if expect_version is None:
         return 1
 
     # --- image contract: gh CLI present for the gh-auth phase ---
@@ -374,9 +442,9 @@ def main() -> int:
     else:
         fail("image HEALTHCHECK missing (was the build OCI-format?)")
 
-    smoke_fixture("grow-agent-like", "ac-infinity", triggers="yes")
-    smoke_fixture("trade-agent-like", "trade-agent")
-    smoke_fixture("litellm-like", None)
+    smoke_fixture("grow-agent-like", "ac-infinity", triggers="yes", expect_version=expect_version)
+    smoke_fixture("trade-agent-like", "trade-agent", expect_version=expect_version)
+    smoke_fixture("litellm-like", None, expect_version=expect_version)
     smoke_drain()
 
     if FAILURES == 0:

@@ -446,10 +446,16 @@ def stage_d(
     if not marker1:
         fail("stage D: baseline boot recorded no last-image-version marker")
     if marker1 == cand_version:
-        print(
-            f"  SKIP stage D (candidate AGENT_BASE_VERSION equals baseline marker "
-            f"'{marker1}' — no upgrade delta)"
+        detail = (
+            f"candidate AGENT_BASE_VERSION equals baseline marker '{marker1}' — "
+            "no upgrade delta to verify"
         )
+        if mode == "required":
+            fail(
+                f"stage D: {detail}; the 'upgrade tested' claim cannot hold — "
+                "supply CONTRACT_BASELINE_IMAGE pointing at an older release"
+            )
+        print(f"  SKIP stage D ({detail})")
         return False
 
     boot2 = engine_run(
@@ -566,7 +572,9 @@ def main() -> int:
             upgrade_ran = False
         else:
             upgrade_ran = stage_d(engine, image, upgrade_volume, backup_volume, work, mode)
-        tail = "upgrade path verified" if upgrade_ran else "upgrade path skipped"
+        # required mode can never reach a skip: stage D fails loudly on
+        # any unmet precondition, including the no-upgrade-delta case.
+        tail = "upgrade path verified" if upgrade_ran else f"upgrade path skipped (mode: {mode})"
         print(f"[contract] PASS (argv matches real CLI; real boot clean; {tail})")
         return 0
     finally:

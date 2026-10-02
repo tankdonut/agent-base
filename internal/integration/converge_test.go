@@ -27,7 +27,7 @@ func convergeFixture(t *testing.T) (*fleet.Manifest, platform.Platform, string, 
 	engine := composeEngine(t)
 	ref := ensureBaseImage(t, engine)
 	port := freePort(t)
-	m, dir, dockerfile := fixtureAgent(t, engine, "grow", port)
+	m, dir, dockerfile := fixtureAgent(t, engine, "grow", port, ref)
 	writeDockerfile(t, dockerfile, ref)
 	if _, err := fleet.MaterializeAgentCompose(m, "grow"); err != nil {
 		t.Fatal(err)
@@ -120,7 +120,7 @@ func TestRunningPortDriftFlagsAfterManifestEdit(t *testing.T) {
 	engine := composeEngine(t)
 	ref := ensureBaseImage(t, engine)
 	port := freePort(t)
-	m, dir, dockerfile := fixtureAgent(t, engine, "grow", port)
+	m, dir, dockerfile := fixtureAgent(t, engine, "grow", port, ref)
 	writeDockerfile(t, dockerfile, ref)
 	if _, err := fleet.MaterializeAgentCompose(m, "grow"); err != nil {
 		t.Fatal(err)

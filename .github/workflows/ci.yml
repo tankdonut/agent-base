@@ -11,23 +11,51 @@ on:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  # Superseded PR runs cancel themselves; main/tag runs only queue —
+  # main qualifies candidates and tags promote, neither may be killed
+  # mid-flight. Group-per-ref keeps unrelated PRs independent.
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   lint:
+    # Tag pushes run promotion only — these gates ran as candidate gates on main.
+    if: github.ref_type != 'tag'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Workflow lint (actionlint)
+        # Static checker for the workflow files themselves — catches
+        # shadowed env/inputs, unknown expressions, and schema drift
+        # before they reach a live run. Checksummed download, pinned.
+        run: |
+          bash <(curl -sf https://raw.githubusercontent.com/rhysd/actionlint/v1.7.12/scripts/download-actionlint.bash) 1.7.12
+          ./actionlint -color
 
       - name: Run pre-commit checks
         uses: tankdonut/github-actions/actions/pre-commit@246ecbe1d54fe84165f0b9f7d8aae44a0e5fa373 # v1
 
   test:
+    # Tag pushes run promotion only — these gates ran as candidate gates on main.
+    if: github.ref_type != 'tag'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       matrix:
         # 3.11 = image floor (bookworm); 3.14 = host-current syntax-drift guard.
         python-version: ["3.11", "3.14"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Python + uv
         uses: tankdonut/github-actions/actions/setup-python-uv@246ecbe1d54fe84165f0b9f7d8aae44a0e5fa373 # v1
@@ -38,16 +66,35 @@ jobs:
         run: python3 -m unittest discover -s container -v
 
   agentctl:
+    # Tag pushes run promotion only — these gates ran as candidate gates on main.
+    if: github.ref_type != 'tag'
     # Go operator-CLI quality gate (module at repo root); mirrors the
     # local pre-commit go-fmt/go-vet hooks and gates the release chain
     # via the image-* jobs' needs.
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+
+      - name: Version constants consistency
+        # Release-time version==tag gating arrives too late to be cheap;
+        # both constants must parse as date tags and agree on every PR,
+        # so drift surfaces in review, not as a fix-forward .N release.
+        run: |
+          v=$(sed -n 's/^const Version = "\(.*\)"$/\1/p' internal/cli/root.go)
+          b=$(sed -n 's/.*DefaultBaseTag[[:space:]]*=[[:space:]]*"\(.*\)".*/\1/p' internal/scaffold/config.go)
+          for x in "$v" "$b"; do
+            echo "$x" | grep -Eq '^[0-9]{4}\.[0-9]{2}\.[0-9]{2}(\.[0-9]+)?$' \
+              || { echo "::error::version constant '$x' is not a date tag (YYYY.MM.DD[.N])"; exit 1; }
+          done
+          [ "$v" = "$b" ] \
+            || { echo "::error::internal/cli Version ($v) != scaffold DefaultBaseTag ($b)"; exit 1; }
 
       - name: Check formatting (gofmt)
         run: test -z "$(gofmt -l cmd internal)"
@@ -62,7 +109,9 @@ jobs:
         run: go test ./...
 
   contract:
-    needs: [lint, test]
+    # Tag pushes run promotion only — these gates ran as candidate gates on main.
+    if: github.ref_type != 'tag'
+    needs: [test]
     # Real-image CLI drift gate (roadmap N4): unit tests and the shim-based
     # smoke both validate agent-base's argv against itself — this job boots
     # the built image against the REAL openclaw CLI. Stage B cross-checks
@@ -74,8 +123,11 @@ jobs:
     # a warm volume (verified backup + zero-warn reconcile) — the scenario
     # automerged base-image bumps ride on.
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Build image (build-only; the image job owns publishing)
         run: docker build --build-arg AGENT_BASE_VERSION=contract
@@ -92,7 +144,30 @@ jobs:
           CONTRACT_UPGRADE: required
         run: python3 tests/contract_test.py ghcr.io/tankdonut/agent-base:contract
 
+      - name: Dump engine forensics
+        # The contract suite leaves its evidence inside engine state;
+        # capture container logs before the runner recycles.
+        if: failure()
+        run: |
+          mkdir -p logs/contract
+          {
+            echo "# docker ps -a"
+            docker ps -a
+          } > logs/contract/engine-state.txt 2>&1 || true
+          for c in $(docker ps -aq); do
+            docker logs "$c" > "logs/contract/container-$c.log" 2>&1 || true
+          done
+
+      - name: Upload contract forensics
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: contract-forensics
+          path: logs/
+
   smoke:
+    # Tag pushes run promotion only — these gates ran as candidate gates on main.
+    if: github.ref_type != 'tag'
     needs: [lint, test]
     # Image smoke gate (formerly local-only): the contract job proves
     # emitted argv against the real CLI, but only this job proves the
@@ -104,13 +179,25 @@ jobs:
     # and the script's podman-first auto-detect would build into a
     # different image store.
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Image smoke (fixtures + graceful-shutdown drain)
         env:
           SMOKE_ENGINE: docker
         run: ./make.sh smoke
+
+      - name: Upload smoke forensics
+        # make.sh smoke keeps logs/smoke-*.log on failure (deleted on
+        # success) — surface them as run artifacts.
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: smoke-forensics
+          path: logs/
 
   # Multi-arch image (L1): native per-arch builds keep the docker media
   # type (a single buildx multi-platform push exports OCI and silently
@@ -120,8 +207,14 @@ jobs:
   # and cannot express per-arch runners; the ghcr-login composite action
   # is still composed below.
   image-amd64:
-    needs: [agentctl, lint, test, contract, smoke]
+    # Tag pushes run promotion only — these gates ran as candidate gates on main.
+    if: github.ref_type != 'tag'
+    # Build once, test in parallel: the image is exported as an artifact
+    # and loaded by the integration/front-door jobs, so a flaky front-door
+    # retry never rebuilds, and the two suites don't serialize.
+    needs: [agentctl, lint, test]
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
       packages: write
@@ -129,6 +222,8 @@ jobs:
       IMAGE: ghcr.io/tankdonut/agent-base
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: tankdonut/github-actions/actions/ghcr-login@246ecbe1d54fe84165f0b9f7d8aae44a0e5fa373 # v1
         with:
           runtime: docker
@@ -143,36 +238,88 @@ jobs:
             -t "$IMAGE:${TAG}-amd64" \
             -t "$IMAGE:2099.12.31" .
           if [ "${GITHUB_REF_TYPE}" = "tag" ]; then docker push "$IMAGE:${TAG}-amd64"; fi
+      - name: Export image artifact
+        run: docker save --output /tmp/image-amd64.tar "$IMAGE:2099.12.31"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: image-amd64-${{ github.sha }}
+          path: /tmp/image-amd64.tar
+          retention-days: 3
+          compression-level: 6
 
+  gates-pr-integration:
+    # Tier A + B against the PR-built image — the same suites the
+    # candidate gates run on main, consuming the exported artifact.
+    needs: [image-amd64]
+    if: github.ref_type != 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: image-amd64-${{ github.sha }}
+          path: /tmp
+      - name: Load the PR image
+        run: docker load --input /tmp/image-amd64.tar
       - name: Integration (Tier A + B, against THIS branch's image)
         env:
           AGENT_E2E_ENGINE: docker
           AGENT_E2E_IMAGE: ghcr.io/tankdonut/agent-base:2099.12.31
           AGENT_E2E_TMPDIR: ${{ github.workspace }}/tierb
         run: go test -tags=integration -count=1 -timeout 30m -v ./internal/integration/
-
-      - name: Front-door (shipped-binary user journey)
-        env:
-          E2E_ENGINE: docker
-        run: ./make.sh agentctl-frontdoor
-
       - name: Upload integration forensics
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: integration-forensics
           path: |
             tierb/
             logs/
 
+  gates-pr-frontdoor:
+    # Shipped-binary user journey against the PR-built image.
+    needs: [image-amd64]
+    if: github.ref_type != 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: image-amd64-${{ github.sha }}
+          path: /tmp
+      - name: Load the PR image
+        run: docker load --input /tmp/image-amd64.tar
+      - name: Front-door (shipped-binary user journey)
+        env:
+          E2E_ENGINE: docker
+        run: ./make.sh agentctl-frontdoor
+      - name: Upload front-door forensics
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: frontdoor-forensics
+          path: logs/
+
   image-arm64:
-    needs: [agentctl, lint, test, contract, smoke]
+    # Tag pushes run promotion only — these gates ran as candidate gates on main.
+    if: github.ref_type != 'tag'
+    needs: [agentctl, lint, test]
     # Free native arm64 runners are available to public repos.
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
     permissions:
       contents: read
       packages: write
@@ -180,6 +327,8 @@ jobs:
       IMAGE: ghcr.io/tankdonut/agent-base
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: tankdonut/github-actions/actions/ghcr-login@246ecbe1d54fe84165f0b9f7d8aae44a0e5fa373 # v1
         with:
           runtime: docker
@@ -194,126 +343,618 @@ jobs:
             -t "$IMAGE:${TAG}-arm64" .
           if [ "${GITHUB_REF_TYPE}" = "tag" ]; then docker push "$IMAGE:${TAG}-arm64"; fi
 
-  image:
-    # Manifest merge: assembles the multi-arch index from the per-arch
-    # tags. Digest-level result is what attest signs and consumers pull.
-    needs: [image-amd64, image-arm64]
-    if: startsWith(github.ref, 'refs/tags/')
+  # --- Phase 2: candidate architecture --------------------------------
+  # A main push whose constants name an unused date version V bakes V
+  # into per-arch images in the PRIVATE staging package, qualifies the
+  # exact index digest I, and issues an eligibility receipt. A later
+  # tag push PROMOTES those bytes (release job) — it never rebuilds.
+  # Non-version main pushes skip this flow entirely (normal CI).
+  candidate-version:
+    needs: [agentctl]
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      push: ${{ steps.version.outputs.push }}
+      idx: ${{ steps.version.outputs.idx }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Resolve release intent
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v=$(sed -n 's/^const Version = "\(.*\)"$/\1/p' internal/cli/root.go)
+          b=$(sed -n 's/.*DefaultBaseTag[[:space:]]*=[[:space:]]*"\(.*\)".*/\1/p' internal/scaffold/config.go)
+          if [ "$v" != "$b" ] || ! echo "$v" | grep -Eq '^[0-9]{4}\.[0-9]{2}\.[0-9]{2}(\.[0-9]+)?$'; then
+            echo "no release intent (constants not both = date tag V) — skipping candidate flow"
+            echo "push=false" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ -n "$(git ls-remote --tags origin "refs/tags/$v")" ] || gh release view "$v" >/dev/null 2>&1; then
+            echo "version $v already released — skipping candidate flow"
+            echo "push=false" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          idx="sha-${GITHUB_SHA::12}-run-${{ github.run_id }}-attempt-${{ github.run_attempt }}"
+          echo "release intent: V=$v idx=$idx"
+          {
+            echo "push=true"
+            echo "version=$v"
+            echo "idx=$idx"
+          } >>"$GITHUB_OUTPUT"
+
+  candidate-amd64:
+    needs: [candidate-version]
+    if: needs.candidate-version.outputs.push == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
       packages: write
+    outputs:
+      digest: ${{ steps.digest.outputs.digest }}
+    env:
+      STAGING: ghcr.io/tankdonut/agent-base-staging
+      IDX: ${{ needs.candidate-version.outputs.idx }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: tankdonut/github-actions/actions/ghcr-login@246ecbe1d54fe84165f0b9f7d8aae44a0e5fa373 # v1
+        with:
+          runtime: docker
+          registry: ghcr.io
+      - name: Build + push amd64 candidate
+        # Native docker builder: docker media types + HEALTHCHECK (the
+        # OCI exporter drops it — see the plan's rejected alternatives).
+        run: |
+          docker build -f container/Dockerfile \
+            --build-arg AGENT_BASE_VERSION="${{ needs.candidate-version.outputs.version }}" \
+            -t "$STAGING:$IDX-amd64" .
+          docker push "$STAGING:$IDX-amd64"
+      - name: Resolve arch digest
+        id: digest
+        run: |
+          RAW=$(docker buildx imagetools inspect --raw "$STAGING:$IDX-amd64")
+          echo "digest=sha256:$(printf '%s' "$RAW" | sha256sum | cut -d' ' -f1)" >>"$GITHUB_OUTPUT"
+
+  candidate-arm64:
+    needs: [candidate-version]
+    if: needs.candidate-version.outputs.push == 'true'
+    # Free native arm64 runners are available to public repos.
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.digest.outputs.digest }}
+    env:
+      STAGING: ghcr.io/tankdonut/agent-base-staging
+      IDX: ${{ needs.candidate-version.outputs.idx }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: tankdonut/github-actions/actions/ghcr-login@246ecbe1d54fe84165f0b9f7d8aae44a0e5fa373 # v1
+        with:
+          runtime: docker
+          registry: ghcr.io
+      - name: Build + push arm64 candidate
+        run: |
+          docker build -f container/Dockerfile \
+            --build-arg AGENT_BASE_VERSION="${{ needs.candidate-version.outputs.version }}" \
+            -t "$STAGING:$IDX-arm64" .
+          docker push "$STAGING:$IDX-arm64"
+      - name: Resolve arch digest
+        id: digest
+        run: |
+          RAW=$(docker buildx imagetools inspect --raw "$STAGING:$IDX-arm64")
+          echo "digest=sha256:$(printf '%s' "$RAW" | sha256sum | cut -d' ' -f1)" >>"$GITHUB_OUTPUT"
+
+  candidate-index:
+    # One merge point: the multi-arch index I is assembled exactly once
+    # from this run's arch digests and verified (platforms, media
+    # types, HEALTHCHECK on both arches, version ENV == V).
+    needs: [candidate-version, candidate-amd64, candidate-arm64]
+    if: needs.candidate-version.outputs.push == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.digest.outputs.digest }}
+    env:
+      STAGING: ghcr.io/tankdonut/agent-base-staging
+      IDX: ${{ needs.candidate-version.outputs.idx }}
+      VERSION: ${{ needs.candidate-version.outputs.version }}
     steps:
       - uses: tankdonut/github-actions/actions/ghcr-login@246ecbe1d54fe84165f0b9f7d8aae44a0e5fa373 # v1
         with:
           runtime: docker
           registry: ghcr.io
-      - name: Assemble multi-arch manifest
+      - name: Assemble multi-arch index
         run: |
-          docker buildx imagetools create -t ghcr.io/tankdonut/agent-base:"$GITHUB_REF_NAME" \
-            ghcr.io/tankdonut/agent-base:"$GITHUB_REF_NAME-amd64" \
-            ghcr.io/tankdonut/agent-base:"$GITHUB_REF_NAME-arm64"
-      - name: Verify merged manifest carries the HEALTHCHECK
+          docker buildx imagetools create -t "$STAGING:$IDX" \
+            "$STAGING:$IDX-amd64" "$STAGING:$IDX-arm64"
+      - name: Verify index (media, platforms, HEALTHCHECK, baked version)
+        # Authed pulls (ghcr-login above) + config inspection — no
+        # anonymous registry calls against a private package.
         run: |
-          token=$(curl -sf "https://ghcr.io/token?scope=repository:tankdonut/agent-base:pull&service=ghcr.io" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
-          index=$(curl -sf -H "Authorization: Bearer $token" \
-            -H "Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json" \
-            "https://ghcr.io/v2/tankdonut/agent-base/manifests/$GITHUB_REF_NAME")
-          echo "$index" | jq -e '.manifests | length == 2' >/dev/null
+          index=$(docker buildx imagetools inspect --raw "$STAGING:$IDX")
+          echo "$index" | jq -e '.mediaType == "application/vnd.docker.distribution.manifest.list.v2+json" or .mediaType == "application/vnd.oci.image.index.v1+json"' >/dev/null
+          n=$(echo "$index" | jq '.manifests | length')
+          [ "$n" = "2" ] || { echo "::error::want 2 manifests, got $n"; exit 1; }
           for arch in amd64 arm64; do
-            digest=$(echo "$index" | jq -r ".manifests[] | select(.platform.architecture == \"$arch\") | .digest")
-            config=$(curl -sf -H "Authorization: Bearer $token" \
-              -H "Accept: application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json" \
-              "https://ghcr.io/v2/tankdonut/agent-base/manifests/$digest" | jq -r .config.digest)
-            curl -sfL -H "Authorization: Bearer $token" \
-              "https://ghcr.io/v2/tankdonut/agent-base/blobs/$config" \
-              | jq -e '.config.Healthcheck.Test[0] == "CMD"' >/dev/null \
-              || { echo "::error::$arch manifest lost the HEALTHCHECK"; exit 1; }
-            echo "$arch: HEALTHCHECK present"
+            echo "$index" | jq -e ".manifests[] | select(.platform.architecture == \"$arch\")" >/dev/null \
+              || { echo "::error::$arch missing from index"; exit 1; }
+            docker pull -q --platform "linux/$arch" "$STAGING@$IDX" >/dev/null
+            hc=$(docker inspect --format '{{json .Config.Healthcheck.Test}}' "$STAGING@$IDX")
+            echo "$hc" | grep -q healthz || { echo "::error::$arch HEALTHCHECK missing"; exit 1; }
+            got=$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$STAGING@$IDX" | sed -n 's/^AGENT_BASE_VERSION=//p' | tr -d '\r')
+            [ "$got" = "$VERSION" ] || { echo "::error::$arch baked version '$got' != $VERSION"; exit 1; }
+            echo "$arch: HEALTHCHECK present, version ENV == $VERSION"
           done
-
-  attest:
-    # Supply chain (X5): SLSA build-provenance attestation pushed to the
-    # registry + SPDX SBOM handed to the release as an asset. The caller
-    # attests (not the reusable workflow) so the signer is this repo —
-    # verification needs no --signer-repo. Tag pushes only.
-    needs: [image]
-    if: startsWith(github.ref, 'refs/tags/')
-    runs-on: ubuntu-latest
-    permissions:
-      id-token: write
-      attestations: write
-      packages: write
-      contents: read
-    steps:
-      - name: Resolve published digest
+      - name: Resolve index digest
         id: digest
         run: |
-          TOKEN=$(curl -sf "https://ghcr.io/token?scope=repository:tankdonut/agent-base:pull&service=ghcr.io" \
-            | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
-          DIGEST=$(curl -sI \
-            -H "Authorization: Bearer $TOKEN" \
-            -H "Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json, application/vnd.docker.distribution.manifest.list.v2+json" \
-            "https://ghcr.io/v2/tankdonut/agent-base/manifests/$GITHUB_REF_NAME" \
-            | tr -d '\r' | sed -n 's/^docker-content-digest:[[:space:]]*//Ip' | head -1)
-          if [ -z "$DIGEST" ]; then
-            echo "::error::no digest for $GITHUB_REF_NAME in ghcr.io (image job failed?)"
-            exit 1
-          fi
+          RAW=$(docker buildx imagetools inspect --raw "$STAGING:$IDX")
+          DIGEST="sha256:$(printf '%s' "$RAW" | sha256sum | cut -d' ' -f1)"
           echo "digest=$DIGEST" >>"$GITHUB_OUTPUT"
+          echo "index digest: $DIGEST"
 
-      - name: Login to ghcr.io
-        # actions/attest reads registry credentials from the docker config
-        # — without an in-job login it cannot push the attestation
-        # manifest (first live run failed exactly there).
-        uses: tankdonut/github-actions/actions/ghcr-login@246ecbe1d54fe84165f0b9f7d8aae44a0e5fa373 # v1
+  gates-smoke:
+    # Candidate evidence class: the smoke suite consumes the exact
+    # staging index (digest-pinned, identity-asserted by the harness)
+    # on BOTH architectures.
+    needs: [candidate-version, candidate-index]
+    if: needs.candidate-version.outputs.push == 'true'
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    env:
+      SMOKE_ENGINE: docker
+      SMOKE_IMAGE: ghcr.io/tankdonut/agent-base-staging@${{ needs.candidate-index.outputs.digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: tankdonut/github-actions/actions/ghcr-login@246ecbe1d54fe84165f0b9f7d8aae44a0e5fa373 # v1
+        with:
+          runtime: docker
+          registry: ghcr.io
+      - run: ./make.sh smoke
+
+  gates-contract:
+    needs: [candidate-version, candidate-index]
+    if: needs.candidate-version.outputs.push == 'true'
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    env:
+      CONTRACT_ENGINE: docker
+      CONTRACT_UPGRADE: required
+      CONTRACT_BASELINE_IMAGE: ghcr.io/tankdonut/agent-base-staging@${{ needs.candidate-index.outputs.digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: tankdonut/github-actions/actions/ghcr-login@246ecbe1d54fe84165f0b9f7d8aae44a0e5fa373 # v1
+        with:
+          runtime: docker
+          registry: ghcr.io
+      - name: CLI contract test against the candidate index
+        run: |
+          baseline=$(sed -n 's/.*DefaultBaseTag[[:space:]]*=[[:space:]]*"\(.*\)".*/\1/p' internal/scaffold/config.go)
+          CONTRACT_BASELINE_IMAGE="ghcr.io/tankdonut/agent-base:$baseline" \
+            python3 tests/contract_test.py \
+            "ghcr.io/tankdonut/agent-base-staging@${{ needs.candidate-index.outputs.digest }}"
+      - name: Upload contract forensics
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: contract-candidate-forensics-${{ matrix.arch }}
+          path: logs/
+
+  gates-integration:
+    needs: [candidate-version, candidate-index]
+    if: needs.candidate-version.outputs.push == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: read
+    env:
+      AGENT_E2E_IMAGE: ghcr.io/tankdonut/agent-base-staging@${{ needs.candidate-index.outputs.digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - uses: tankdonut/github-actions/actions/ghcr-login@246ecbe1d54fe84165f0b9f7d8aae44a0e5fa373 # v1
+        with:
+          runtime: docker
+          registry: ghcr.io
+      - name: Integration tiers A + B against the candidate index
+        run: go test -tags=integration -count=1 -timeout 30m -v ./internal/integration/
+      - name: Upload integration forensics
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: integration-candidate-forensics
+          path: |
+            tierb/
+            logs/
+
+  gates-frontdoor:
+    # Shipped-binary journey against the candidate bytes: prepared
+    # binary (release flags) + overrides.image pin.
+    needs: [candidate-version, candidate-index, candidate-binaries]
+    if: needs.candidate-version.outputs.push == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      packages: read
+    env:
+      AGENT_E2E_IMAGE: ghcr.io/tankdonut/agent-base-staging@${{ needs.candidate-index.outputs.digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: tankdonut/github-actions/actions/ghcr-login@246ecbe1d54fe84165f0b9f7d8aae44a0e5fa373 # v1
+        with:
+          runtime: docker
+          registry: ghcr.io
+      - name: Download prepared binaries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: agentctl-bin-${{ github.sha }}
+          path: dist-bin
+      - name: Front-door journey against the candidate
+        env:
+          E2E_AGENTCTL: ${{ github.workspace }}/dist-bin/agentctl-linux-amd64
+        run: |
+          chmod +x "$E2E_AGENTCTL"
+          python3 tests/e2e_frontdoor.py
+
+  gates-arm64-sanity:
+    # arm64 boots the real bytes: version ENV + gh CLI present (the
+    # smoke suite covers the full phase order on amd64; this proves the
+    # arm64 manifest is a bootable agent image).
+    needs: [candidate-version, candidate-index]
+    if: needs.candidate-version.outputs.push == 'true'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: read
+    env:
+      VERSION: ${{ needs.candidate-version.outputs.version }}
+    steps:
+      - uses: tankdonut/github-actions/actions/ghcr-login@246ecbe1d54fe84165f0b9f7d8aae44a0e5fa373 # v1
+        with:
+          runtime: docker
+          registry: ghcr.io
+      - name: Boot + identity assert
+        run: |
+          REF="ghcr.io/tankdonut/agent-base-staging@${{ needs.candidate-index.outputs.digest }}"
+          docker pull -q --platform linux/arm64 "$REF" >/dev/null
+          got=$(docker run --rm --entrypoint /bin/sh "$REF" -c 'echo $AGENT_BASE_VERSION')
+          [ "$got" = "$VERSION" ] || { echo "::error::arm64 baked '$got' != $VERSION"; exit 1; }
+          docker run --rm --entrypoint gh "$REF" --version >/dev/null
+          echo "arm64: boots, version ENV == $VERSION, gh present"
+
+  candidate-binaries:
+    # Binaries built on main with release flags and attested HERE — the
+    # release passes the same artifacts through (no tag-time build).
+    needs: [candidate-version]
+    if: needs.candidate-version.outputs.push == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Build + checksum
+        run: |
+          for arch in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath -ldflags "-s -w" \
+              -o "dist/agentctl-linux-$arch" ./cmd/agentctl
+          done
+          (cd dist && sha256sum agentctl-linux-* > agentctl-SHA256SUMS)
+          cat dist/agentctl-SHA256SUMS
+      - name: Attest binaries
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/agentctl-linux-amd64
+            dist/agentctl-linux-arm64
+      - name: Upload binaries
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: agentctl-bin-${{ github.sha }}
+          path: dist/
+
+  receipt:
+    # The promotion ticket: binds the source sha, the version, the
+    # exact index/arch digests, the binary hashes, and every suite
+    # result. The release job refuses to promote without a green one.
+    needs:
+      [candidate-version, candidate-amd64, candidate-arm64, candidate-index,
+       gates-smoke, gates-contract, gates-integration, gates-frontdoor,
+       gates-arm64-sanity, candidate-attest, candidate-binaries]
+    if: needs.candidate-version.outputs.push == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: agentctl-bin-${{ github.sha }}
+          path: dist-bin
+      - name: Assemble receipt
+        env:
+          VERSION: ${{ needs.candidate-version.outputs.version }}
+          IDX: ${{ needs.candidate-version.outputs.idx }}
+          INDEX: ${{ needs.candidate-index.outputs.digest }}
+          AMD64: ${{ needs.candidate-amd64.outputs.digest }}
+          ARM64: ${{ needs.candidate-arm64.outputs.digest }}
+        run: |
+          # Statically enumerated: GH expressions expand before the
+          # script runs, so a shell loop cannot index the needs context.
+          fail=0
+          for pair in \
+            "gates-smoke:${{ needs.gates-smoke.result }}" \
+            "gates-contract:${{ needs.gates-contract.result }}" \
+            "gates-integration:${{ needs.gates-integration.result }}" \
+            "gates-frontdoor:${{ needs.gates-frontdoor.result }}" \
+            "gates-arm64-sanity:${{ needs.gates-arm64-sanity.result }}" \
+            "candidate-attest:${{ needs.candidate-attest.result }}" \
+            "candidate-binaries:${{ needs.candidate-binaries.result }}"; do
+            name=${pair%%:*}; r=${pair#*:}
+            [ "$r" = "success" ] || { echo "::error::$name concluded $r"; fail=1; }
+          done
+          [ "$fail" = "0" ] || exit 1
+          cd dist-bin
+          sha256sum agentctl-linux-amd64 agentctl-linux-arm64 > /tmp/bin-hashes
+          cd -
+          jq -n \
+            --arg sha "$GITHUB_SHA" \
+            --arg run_id "$GITHUB_RUN_ID" \
+            --arg run_url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            --arg version "$VERSION" \
+            --arg idx_tag "$IDX" \
+            --arg index "$INDEX" \
+            --arg amd64 "$AMD64" \
+            --arg arm64 "$ARM64" \
+            --arg baseline "$(curl -sf "https://raw.githubusercontent.com/$GITHUB_REPOSITORY/$GITHUB_SHA/internal/scaffold/config.go" | sed -n 's/.*DefaultBaseTag[[:space:]]*=[[:space:]]*"\(.*\)".*/\1/p')" \
+            --rawfile bins /tmp/bin-hashes \
+            '{sha: $sha, run_id: $run_id, run_url: $run_url, version: $version,
+              idx_tag: $idx_tag, index: $index, amd64: $amd64, arm64: $arm64,
+              baseline: $baseline,
+              binaries: {sha256sums: ($bins | rtrimstr("\n"))},
+              suites: {smoke: "success", contract: "success", integration: "success",
+                       frontdoor: "success", arm64_sanity: "success",
+                       attest: "success", binaries: "success"},
+              issued_at: (now | todate)}' > receipt.json
+          cat receipt.json
+      - name: Upload receipt
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: receipt
+          path: receipt.json
+      - name: Receipt summary
+        run: |
+          {
+            echo "## Candidate receipt"
+            echo '```json'
+            cat receipt.json
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"
+
+  candidate-attest:
+    needs: [candidate-version, candidate-amd64, candidate-arm64, candidate-index]
+    if: needs.candidate-version.outputs.push == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      packages: read
+    env:
+      STAGING: ghcr.io/tankdonut/agent-base-staging
+      IDX: ${{ needs.candidate-version.outputs.idx }}
+    steps:
+      - uses: tankdonut/github-actions/actions/ghcr-login@246ecbe1d54fe84165f0b9f7d8aae44a0e5fa373 # v1
+        with:
+          runtime: docker
+          registry: ghcr.io
+      - name: Attest amd64 manifest
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.STAGING }}:${{ env.IDX }}-amd64
+          subject-digest: ${{ needs.candidate-amd64.outputs.digest }}
+          push-to-registry: true
+      - name: Attest arm64 manifest
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.STAGING }}:${{ env.IDX }}-arm64
+          subject-digest: ${{ needs.candidate-arm64.outputs.digest }}
+          push-to-registry: true
+      - name: Attest index
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.STAGING }}:${{ env.IDX }}
+          subject-digest: ${{ needs.candidate-index.outputs.digest }}
+          push-to-registry: true
+
+  release:
+    # Phase 3 — tag push = validation + copy. The candidate run on main
+    # qualified the exact index digest I and issued the receipt; this
+    # job refuses to promote without a green receipt for the tagged
+    # commit, copies the bytes with oras (provenance referrers travel),
+    # asserts digest identity, and publishes. No rebuild exists in this
+    # chain: a failed promotion is fixed forward with a .N release.
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+      attestations: write
+    env:
+      TAG: ${{ github.ref_name }}
+      STAGING: ghcr.io/tankdonut/agent-base-staging
+      PUBLIC: ghcr.io/tankdonut/agent-base
+    steps:
+      # Full history: the release notes diff the two most recent
+      # releases, and the tag→commit resolution needs the tag objects.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: oras-project/setup-oras@1d808f7d7f6995cc68b7bf507bfe5c5446e1dc9d # v2.0.1
+
+      - uses: tankdonut/github-actions/actions/ghcr-login@246ecbe1d54fe84165f0b9f7d8aae44a0e5fa373 # v1
         with:
           runtime: docker
           registry: ghcr.io
 
-      - name: Attest build provenance
-        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
-        with:
-          subject-name: ghcr.io/tankdonut/agent-base
-          subject-digest: ${{ steps.digest.outputs.digest }}
-          push-to-registry: true
+      - name: Resolve the candidate run for the tagged commit
+        id: candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          S=$(git rev-parse "$TAG^{commit}")
+          run_id=$(gh run list --workflow ci.yml --branch main --status success \
+            --json databaseId,headSha --jq "[.[] | select(.headSha == \"$S\")][0].databaseId")
+          if [ -z "$run_id" ] || [ "$run_id" = "null" ]; then
+            echo "::error::no successful candidate run for $S — the main push either skipped the candidate flow (constants not a new version) or has not finished"
+            exit 1
+          fi
+          echo "candidate run: $run_id (sha $S)"
+          {
+            echo "sha=$S"
+            echo "run_id=$run_id"
+          } >>"$GITHUB_OUTPUT"
 
-  release:
-    # Chained after the image job — a release can no longer exist while the
-    # image 404s (the standalone release.yml raced the image publish on tag
-    # pushes; both fired with no ordering). Tag pushes only.
-    needs: [image, attest]
-    if: startsWith(github.ref, 'refs/tags/')
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      # Full history: the release notes diff the two most recent version
-      # tags, and the digest query needs the published manifest.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
+      - name: Download receipt + prepared binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run download "${{ steps.candidate.outputs.run_id }}" -n receipt -D receipt
+          gh run download "${{ steps.candidate.outputs.run_id }}" \
+            -n "agentctl-bin-${{ steps.candidate.outputs.sha }}" -D dist-bin
+          ls receipt dist-bin
+
+      - name: Validate receipt against the tag
+        id: validate
+        run: |
+          jq -e \
+            --arg s "${{ steps.candidate.outputs.sha }}" \
+            --arg v "$TAG" \
+            '.sha == $s and .version == $v
+             and (.index | startswith("sha256:"))
+             and ([.suites[]] | all(. == "success"))' receipt/receipt.json \
+            || { echo "::error::receipt does not greenlight $TAG (sha ${{ steps.candidate.outputs.sha }})"; exit 1; }
+          echo "receipt greenlights $TAG @ $(jq -r .index receipt/receipt.json)"
+          echo "index=$(jq -r .index receipt/receipt.json)" >>"$GITHUB_OUTPUT"
+
+      - name: Promote the qualified index
+        run: |
+          I=$(jq -r .index receipt/receipt.json)
+          oras login ghcr.io -u "$GITHUB_ACTOR" --password-stdin < <(printf '%s' "$GH_TOKEN")
+          oras cp --recursive "$STAGING@$I" "$PUBLIC:$TAG"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Assert promoted digest identity
+        run: |
+          I=$(jq -r .index receipt/receipt.json)
+          for i in 1 2 3; do
+            RAW=$(docker buildx imagetools inspect --raw "$PUBLIC:$TAG" 2>/dev/null) && [ -n "$RAW" ] && break
+            echo "promoted tag not readable yet (attempt $i/3)"; sleep 5
+          done
+          [ -n "$RAW" ] || { echo "::error::cannot inspect $PUBLIC:$TAG"; exit 1; }
+          got="sha256:$(printf '%s' "$RAW" | sha256sum | cut -d' ' -f1)"
+          [ "$got" = "$I" ] || { echo "::error::promoted digest $got != qualified $I — refusing to publish"; exit 1; }
+          echo "identity asserted: $PUBLIC:$TAG == $I"
 
       - name: Verify tracked image refs exist in GHCR
+        # PENDING_TAG: the tag being promoted right now is validly
+        # absent (promotion IS this run) — the gate still catches every
+        # other tracked-but-unpublished ref.
+        env:
+          PENDING_TAG: ${{ github.ref_name }}
         run: scripts/check-image-refs.sh
 
-      - name: Build release notes (changes + digest)
+      - name: Generate SBOM (SPDX)
+        # Digest-pinned to the promoted index, not the mutable tag.
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        with:
+          image: ghcr.io/tankdonut/agent-base@${{ steps.validate.outputs.index }}
+          format: spdx-json
+          output-file: sbom.spdx.json
+
+      - name: Build release notes (receipt + pins + changes)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           TAG="$GITHUB_REF_NAME"
           BASE_URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
-          PREV=$(git tag -l '20*' | sort -V | awk -v t="$TAG" '$0==t{print p} {p=$0}')
-          TOKEN=$(curl -sf "https://ghcr.io/token?scope=repository:tankdonut/agent-base:pull&service=ghcr.io" |
-            sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
-          DIGEST=$(curl -sI -H "Authorization: Bearer $TOKEN" \
-            -H "Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json" \
-            "https://ghcr.io/v2/tankdonut/agent-base/manifests/$TAG" |
-            tr -d '\r' | sed -n 's/^docker-content-digest:[[:space:]]*//Ip')
+          I=$(jq -r .index receipt/receipt.json)
+          RUN_URL=$(jq -r .run_url receipt/receipt.json)
+          PREV=$(gh release list --limit 100 --json tagName \
+            --jq 'map(.tagName) | .[]' | grep -vx "$TAG" | head -1 || true)
           {
             echo "Image: \`ghcr.io/tankdonut/agent-base:$TAG\`"
-            if [ -n "$DIGEST" ]; then
-              echo
-              echo "Digest \`$DIGEST\` — pin: \`ghcr.io/tankdonut/agent-base:$TAG@$DIGEST\`"
-            fi
+            echo
+            echo "Digest \`$I\` — pin: \`ghcr.io/tankdonut/agent-base:$TAG@$I\`"
+            echo
+            echo "### Qualification"
+            echo
+            echo "Promoted from the qualified candidate — no rebuild: [candidate run]($RUN_URL). Receipt: \`receipt.json\` (release asset)."
+            echo
+            echo "Verify provenance: \`gh attestation verify oci://ghcr.io/tankdonut/agent-base:$TAG@$I -R $GITHUB_REPOSITORY\`"
+            echo "Verify SBOM subject: \`sha256sum sbom.spdx.json\` against the attestation-free asset digest"
+            echo
+            echo "### agentctl"
+            echo
+            echo "Operator CLI for downstream agent projects — binaries: \`agentctl-linux-amd64\`, \`agentctl-linux-arm64\` (checksums: \`agentctl-SHA256SUMS\`), built and attested at qualification time."
+            echo
+            echo "Verify binary provenance: \`gh attestation verify dist/agentctl-linux-amd64 -R $GITHUB_REPOSITORY\`"
             echo
             echo "### Changes"
             echo
@@ -322,65 +963,20 @@ jobs:
             else
               git log --format="- %s ([%h]($BASE_URL/commit/%H))" "$TAG"
             fi
-            if [ -n "$DIGEST" ]; then
-              echo
-              echo "Verify provenance: \`gh attestation verify oci://ghcr.io/tankdonut/agent-base:$TAG@$DIGEST -R $GITHUB_REPOSITORY\`"
-            fi
-            echo
-            echo "### agentctl"
-            echo
-            echo "Operator CLI for downstream agent projects — binaries: \`agentctl-linux-amd64\`, \`agentctl-linux-arm64\` (checksums: \`agentctl-SHA256SUMS\`)."
           } > release-notes.md
           cat release-notes.md
 
-      - name: Generate SBOM (SPDX)
-        # In the release job (not attest): no artifact handoff —
-        # sbom-action's artifact-name/output-file semantics conflict, so
-        # the file is written straight into this workspace and uploaded
-        # as a release asset below. Scans the published tag from the
-        # registry.
-        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
-        with:
-          image: ghcr.io/tankdonut/agent-base:${{ github.ref_name }}
-          format: spdx-json
-          output-file: sbom.spdx.json
-
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: go.mod
-
-      - name: Build agentctl release binaries
-        # Pure Go — cross-compiles from one runner for both image
-        # architectures. The version check enforces the pre-tag bump
-        # convention: agentctl's date-versioned constant must equal the
-        # tag being released, or the constants drifted and the release
-        # must fix-forward with a .N suffix.
-        run: |
-          for arch in amd64 arm64; do
-            CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath -ldflags "-s -w" \
-              -o "dist/agentctl-linux-$arch" ./cmd/agentctl
-          done
-          (cd dist && sha256sum agentctl-linux-* > agentctl-SHA256SUMS)
-          v=$(./dist/agentctl-linux-amd64 version | awk '{print $2}')
-          if [ "$v" != "$GITHUB_REF_NAME" ]; then
-            echo "::error::agentctl version $v != tag $GITHUB_REF_NAME — bump internal/cli Version and scaffold DefaultBaseTag on main, then cut the next .N"
-            exit 1
-          fi
-          grep -Eq "DefaultBaseTag[[:space:]]+=[[:space:]]+\"$GITHUB_REF_NAME\"" internal/scaffold/config.go \
-            || { echo "::error::scaffold DefaultBaseTag != $GITHUB_REF_NAME — bump it with the internal/cli Version on main, then cut the next .N"; exit 1; }
-
-      - name: Create GitHub release
+      - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
-          # No clone needed for gh; the repo comes from GH_REPO (gh would
-          # otherwise shell out to git and fail without a remote).
-          GH_REPO: ${{ github.repository }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
-            --title "$GITHUB_REF_NAME" \
+          gh release create "$TAG" \
+            --verify-tag \
+            --title "agent-base $TAG" \
             --notes-file release-notes.md \
-            --generate-notes
-          gh release upload "$GITHUB_REF_NAME" \
+            dist-bin/agentctl-linux-amd64 \
+            dist-bin/agentctl-linux-arm64 \
+            dist-bin/agentctl-SHA256SUMS \
             sbom.spdx.json \
-            dist/agentctl-linux-amd64 dist/agentctl-linux-arm64 \
-            dist/agentctl-SHA256SUMS
+            receipt/receipt.json
+          echo "released $TAG (promoted $(jq -r .index receipt/receipt.json))"

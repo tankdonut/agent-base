@@ -50,6 +50,7 @@ type renderModel struct {
 	Memory       string
 	Pids         string
 	LitellmImage string
+	AgentImage   string
 }
 
 var sidecarTemplate = template.Must(template.New("sidecar").Parse(`# RENDERED by agentctl from fleet.yaml — DO NOT EDIT.
@@ -65,9 +66,13 @@ name: {{.Project}}
 
 services:
   agent:
+    {{- if .AgentImage }}
+    image: {{.AgentImage}}
+    {{- else }}
     build:
       context: .
       dockerfile: Dockerfile
+    {{- end }}
     restart: unless-stopped
     # Keep the engine stop timeout above AGENT_SHUTDOWN_GRACE (600s
     # default) or the engine SIGKILLs the gateway process group
@@ -183,9 +188,13 @@ name: {{.Project}}
 
 services:
   agent:
+    {{- if .AgentImage }}
+    image: {{.AgentImage}}
+    {{- else }}
     build:
       context: .
       dockerfile: Dockerfile
+    {{- end }}
     restart: unless-stopped
     # Keep the engine stop timeout above AGENT_SHUTDOWN_GRACE (600s
     # default) or the engine SIGKILLs the gateway process group
@@ -289,6 +298,7 @@ func RenderAgentCompose(m *Manifest, name string) ([]byte, error) {
 	if entry.Overrides != nil {
 		model.Volumes = entry.Overrides.Volumes
 		model.Ports = entry.Overrides.Ports
+		model.AgentImage = entry.Overrides.Image
 		if entry.Overrides.Limits != nil {
 			model.Cpus = entry.Overrides.Limits.Cpus
 			model.Memory = entry.Overrides.Limits.Memory

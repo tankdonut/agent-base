@@ -36,8 +36,16 @@ if [ -z "$token" ]; then
 fi
 
 echo "[check-image-refs] verifying ${#refs[@]} tag(s): ${refs[*]}"
+# PENDING_TAG: the tag being promoted right now (promotion job) is
+# validly absent — this run creates it. Every other tracked-but-
+# unpublished ref still gates.
+pending="${PENDING_TAG:-}"
 missing=0
 for tag in "${refs[@]}"; do
+  if [ -n "$pending" ] && [ "$tag" = "$pending" ]; then
+    echo "  SKIP $IMAGE:$tag (pending promotion)"
+    continue
+  fi
   if curl -sf \
     -H "Authorization: Bearer $token" \
     -H "Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json, application/vnd.docker.distribution.manifest.list.v2+json" \
