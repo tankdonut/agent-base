@@ -671,7 +671,20 @@ def main() -> int:
             helper_dir = project / "agents" / "helper"
             run([agentctl, "secrets", "init"], cwd=helper_dir, check=True)
             proc = run([agentctl, "fleet", "deploy", "--all"], cwd=project)
-            if proc.returncode == 0 and (host_probe(second_url, "") and host_probe(first_url, "")):
+            # Post-recreate gateways boot at their own pace: host_probe's
+            # internal 60s budget alone is not enough for a recreated
+            # agent on slow runners (CI-observed: deploy exit 0, gateways
+            # healthy in-container, host probes still premature) — poll
+            # both within the shared health budget before failing.
+            both_up = False
+            if proc.returncode == 0:
+                deadline = time.monotonic() + HEALTH_TIMEOUT
+                while time.monotonic() < deadline:
+                    if host_probe(first_url, "") and host_probe(second_url, ""):
+                        both_up = True
+                        break
+                    time.sleep(5)
+            if proc.returncode == 0 and both_up:
                 pass_("fleet deploy --all brought both agents healthy on distinct ports")
             else:
                 fail(f"fleet deploy --all failed:\n{indent(proc.stdout + proc.stderr)}")
