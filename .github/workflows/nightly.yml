@@ -57,6 +57,11 @@ jobs:
       - uses: tankdonut/github-actions/actions/setup-python-uv@246ecbe1d54fe84165f0b9f7d8aae44a0e5fa373 # v1
         with:
           python-version: "3.11"
+      - name: Install podman + compose provider
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman podman-compose
+          podman-compose version
       - name: Rootless id ranges (pre-req for port publishing)
         run: |
           sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 "$(id -un)"
@@ -73,10 +78,15 @@ jobs:
           export XDG_RUNTIME_DIR
           curl -sf --unix-socket "$XDG_RUNTIME_DIR/podman/podman.sock" http://localhost/_ping
           podman info --format "{{.Host.Arch}}" >/dev/null
-          echo "socket reachable"
       - name: agentctl full front-door e2e (all stages, podman)
         env:
           E2E_ENGINE: podman
+          # podman-compose, not the docker-compose plugin over the
+          # socket: the socket path executes (install action above) but
+          # the litellm sidecar's healthcheck never passes under
+          # docker-compose -> podman (CI finding, 2026-10-03) — pin the
+          # known-good provider until that gap is understood.
+          PODMAN_COMPOSE_PROVIDER: podman-compose
         run: ./make.sh agentctl-e2e
       - name: Upload e2e forensics (podman)
         if: failure()
