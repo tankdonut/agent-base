@@ -60,7 +60,14 @@ jobs:
       - name: Install podman + compose provider
         run: |
           sudo apt-get update
-          sudo apt-get install -y podman podman-compose
+          sudo apt-get install -y podman
+          # podman-compose 1.0.6 (Ubuntu apt) drops compose healthcheck
+          # blocks — the suite's service_healthy waits never see
+          # "healthy" under it (CI finding 2026-10-03: litellm serving
+          # on 4000 while inspect reported no health state). Current
+          # releases register healthchecks; uv gives a pinned, isolated
+          # venv instead of PEP-668-fighting system pip.
+          uv tool install podman-compose
           podman-compose version
       - name: Rootless id ranges (pre-req for port publishing)
         run: |
