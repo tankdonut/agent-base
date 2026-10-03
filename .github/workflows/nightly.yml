@@ -43,8 +43,8 @@ jobs:
 
   full-e2e-podman:
     # Same matrix on the local-first engine: the plane's service_healthy
-    # gating and podman-compose's provider quirks are exactly what the
-    # suite exists to catch.
+    # gating and the docker-compose-over-podman-socket provider path are
+    # exactly what the suite exists to catch.
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -57,15 +57,23 @@ jobs:
       - uses: tankdonut/github-actions/actions/setup-python-uv@246ecbe1d54fe84165f0b9f7d8aae44a0e5fa373 # v1
         with:
           python-version: "3.11"
-      - name: Install podman + compose provider
+      - name: Rootless id ranges (pre-req for port publishing)
         run: |
-          sudo apt-get update
-          sudo apt-get install -y podman podman-compose
-          # Rootless port publishing needs subordinate id ranges for the
-          # runner user.
           sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 "$(id -un)"
+          # Guaranteed user manager for the action's systemctl --user.
+          sudo loginctl enable-linger "$(id -un)"
+      - name: Install podman (socket service enabled)
+        uses: redhat-actions/podman-install@4a134a65f7324b2d03498c672cd4c6bce93e94b5 # v1.1.1
+        with:
+          start-service: true
+          github-token: ${{ github.token }}
+      - name: Socket + engine reachability
+        run: |
+          XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          export XDG_RUNTIME_DIR
+          curl -sf --unix-socket "$XDG_RUNTIME_DIR/podman/podman.sock" http://localhost/_ping
           podman info --format "{{.Host.Arch}}" >/dev/null
-          podman-compose version
+          echo "socket reachable"
       - name: agentctl full front-door e2e (all stages, podman)
         env:
           E2E_ENGINE: podman

@@ -471,6 +471,14 @@ def main() -> int:
             print("[e2e] deploy → healthy")
             proc = agentctl_cmd("deploy")
             if proc.returncode != 0:
+                # A cold first boot can outrun deploy's health wait on
+                # slow runners while convergence completes minutes later
+                # (CI-observed: containers Started, healthy by the next
+                # stage). Deploy is idempotent converge — one retry
+                # before calling it a failure.
+                print("[e2e] deploy failed once — retrying (idempotent converge)")
+                proc = agentctl_cmd("deploy")
+            if proc.returncode != 0:
                 fail(f"deploy failed:\n{indent(proc.stdout + proc.stderr)}")
             elif wait_healthy(port, token):
                 pass_("deployed agent reached healthy (/healthz 200)")
