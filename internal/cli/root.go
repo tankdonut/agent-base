@@ -42,7 +42,6 @@ Exit codes: 0 success, 1 any error — usage and flag errors included.`,
 		newValidateCmd(),
 		newDoctorCmd(),
 		newPlatformCmd(),
-		newDevCmd(),
 		newFleetCmd(),
 		newMigrateCmd(),
 	)

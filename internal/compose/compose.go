@@ -49,29 +49,6 @@ func Up(r process.Runner, engine, root string) error {
 	return process.RunArgvIn(r, root, nil, composeArgv(engine, "up", "-d")...)
 }
 
-// Dev gates on agent/.env, then starts the stack from the single
-// rendered envelope with --build: the dev loop is rebuild-first (edit,
-// dev up, edits bake via cached COPY layers). No overlay, no bind
-// mounts — dev runs exactly what prod runs.
-func Dev(r process.Runner, engine, root string) error {
-	if r == nil {
-		return process.ErrNilRunner
-	}
-	if err := RequireEnvFile(root); err != nil {
-		return err
-	}
-	return process.RunArgvIn(r, root, nil, composeArgv(engine, "up", "-d", "--build")...)
-}
-
-// Down removes the stack's containers and networks; named volumes
-// (agent-data, agent-backups) survive.
-func Down(r process.Runner, engine, root string) error {
-	if r == nil {
-		return process.ErrNilRunner
-	}
-	return process.RunArgvIn(r, root, nil, composeArgv(engine, "down")...)
-}
-
 // Stop pauses the running containers in place (no removal); Start
 // resumes them. The pair exists for capability-gated platform verbs.
 func Stop(r process.Runner, engine, root string) error {
@@ -176,15 +153,6 @@ func BuildImages(r process.Runner, engine, root string) error {
 		return process.ErrNilRunner
 	}
 	return process.RunArgvIn(r, root, nil, composeArgv(engine, "build")...)
-}
-
-// Restart restarts the named services (all when none given).
-func Restart(r process.Runner, engine, root string, services []string) error {
-	if r == nil {
-		return process.ErrNilRunner
-	}
-	verb := append([]string{"restart"}, services...)
-	return process.RunArgvIn(r, root, nil, composeArgv(engine, verb...)...)
 }
 
 // Rebuild rebuilds the named services' images and force-recreates them

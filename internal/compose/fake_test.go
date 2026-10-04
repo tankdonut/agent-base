@@ -119,7 +119,6 @@ func TestSecretsCanary(t *testing.T) {
 	r := newFakeRunner("podman", "git")
 	for _, fn := range []func() error{
 		func() error { return Up(r, "podman", root) },
-		func() error { return Dev(r, "podman", root) },
 		func() error { return Destroy(r, "podman", root, false) },
 		func() error { return Validate(r, "podman", root) },
 	} {

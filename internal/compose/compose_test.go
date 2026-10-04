@@ -24,12 +24,6 @@ func TestLifecycleArgv(t *testing.T) {
 		{"up", func(r process.Runner) error { return Up(r, "podman", root) }, [][]string{
 			{"podman", "compose", "-f", "compose.yml", "up", "-d"},
 		}},
-		{"dev", func(r process.Runner) error { return Dev(r, "podman", root) }, [][]string{
-			{"podman", "compose", "-f", "compose.yml", "up", "-d", "--build"},
-		}},
-		{"down", func(r process.Runner) error { return Down(r, "docker", ".") }, [][]string{
-			{"docker", "compose", "-f", "compose.yml", "down"},
-		}},
 		{"stop", func(r process.Runner) error { return Stop(r, "podman", ".") }, [][]string{
 			{"podman", "compose", "-f", "compose.yml", "stop"},
 		}},
@@ -62,12 +56,6 @@ func TestLifecycleArgv(t *testing.T) {
 		{"build-images", func(r process.Runner) error { return BuildImages(r, "podman", ".") }, [][]string{
 			{"podman", "compose", "-f", "compose.yml", "build"},
 		}},
-		{"restart one service", func(r process.Runner) error { return Restart(r, "podman", ".", []string{"agent"}) }, [][]string{
-			{"podman", "compose", "-f", "compose.yml", "restart", "agent"},
-		}},
-		{"restart all", func(r process.Runner) error { return Restart(r, "podman", ".", nil) }, [][]string{
-			{"podman", "compose", "-f", "compose.yml", "restart"},
-		}},
 		{"rebuild services", func(r process.Runner) error { return Rebuild(r, "podman", ".", []string{"agent"}) }, [][]string{
 			{"podman", "compose", "-f", "compose.yml", "build", "agent"},
 			{"podman", "compose", "-f", "compose.yml", "up", "-d", "--force-recreate", "agent"},
@@ -93,9 +81,6 @@ func TestUpGatesOnEnvFile(t *testing.T) {
 	r := newFakeRunner("podman")
 	if err := Up(r, "podman", root); err == nil || !strings.Contains(err.Error(), "secrets init") {
 		t.Fatalf("Up without agent/.env: err = %v, want gate error mentioning secrets init", err)
-	}
-	if err := Dev(r, "podman", root); err == nil || !strings.Contains(err.Error(), "secrets init") {
-		t.Fatalf("Dev without agent/.env: err = %v, want gate error mentioning secrets init", err)
 	}
 	if len(r.calls) != 0 {
 		t.Errorf("gate failure must not exec anything, got %v", r.calls)
@@ -137,7 +122,6 @@ func TestNilRunnerNeverPanics(t *testing.T) {
 	root := writeProject(t, map[string]string{"agent/spec.json": fixtureSpec, "agent/.env": "X=1\n"})
 	funcs := map[string]func() error{
 		"up":       func() error { return Up(nil, "podman", root) },
-		"down":     func() error { return Down(nil, "podman", ".") },
 		"logs":     func() error { return Logs(nil, "podman", ".", nil) },
 		"validate": func() error { return Validate(nil, "podman", root) },
 		"mcp":      func() error { return Mcp(nil, "podman", ".", nil) },

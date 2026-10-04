@@ -488,7 +488,7 @@ entrypoint (see below), before `seed_content` runs.
 
 `AGENT_SKIP_SEED=1` skips content seeding only. Reconciliation still runs.
 Content is image-baked in every mode — there is no dev overlay and no
-content bind mounts: the dev loop is rebuild-first (`agentctl dev up`
+content bind mounts: the dev loop is rebuild-first (`agentctl deploy`
 rebuilds via cached COPY layers), which also keeps automations unmountable
 in any mode; writable cron prompt files would be a self-modification
 surface for the agent.

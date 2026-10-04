@@ -16,8 +16,8 @@ func TestCommandTree(t *testing.T) {
 		"init": false, "version": false, "validate": false,
 		"secrets": false, "env": false, "worktree": false,
 		"check": false, "hooks": false, "doctor": false,
-		"platform": false, "dev": false,
-		"deploy": false, "status": false, "logs": false, "mcp": false,
+		"platform": false,
+		"deploy":   false, "status": false, "logs": false, "mcp": false,
 		"backup": false, "stop": false, "start": false, "destroy": false,
 	}
 	for _, cmd := range root.Commands() {
@@ -49,12 +49,6 @@ func TestCommandTree(t *testing.T) {
 	for _, name := range []string{"ls", "set", "check"} {
 		if child(t, platform, name) == nil {
 			t.Errorf("missing platform subcommand %q", name)
-		}
-	}
-	dev := child(t, root, "dev")
-	for _, name := range []string{"up", "down", "logs", "restart", "mcp", "open"} {
-		if child(t, dev, name) == nil {
-			t.Errorf("missing dev subcommand %q", name)
 		}
 	}
 }

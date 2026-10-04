@@ -15,15 +15,11 @@ Operate this repo with agentctl; `./make.sh` is a thin shim over it.
 | Instance logs | `agentctl logs` (`-f` to follow) |
 | Pause / resume | `agentctl stop` / `agentctl start` |
 | Tear down (volumes kept) | `agentctl destroy` (add `--volumes` to drop data) |
-| Start the dev stack (rebuild-first) | `agentctl dev up` |
-| Stop the dev stack | `agentctl dev down` |
-| Dev logs / restart | `agentctl dev logs -f` / `agentctl dev restart` |
 | Update to the latest tree | `git pull --ff-only && agentctl deploy` |
 | Validate spec + automations | `agentctl validate` |
 | Secrets | `agentctl secrets {init\|check\|edit}` |
 | Secrets alias | `agentctl env` |
 | Worktree sharing agent/.env | `agentctl worktree {create\|remove} <branch>` |
-| Open the gateway in a browser | `agentctl dev open` |
 | Deployment platform | `agentctl platform {ls\|set\|check}` |
 | Pre-flight report | `agentctl doctor` |
 | Lint (pre-commit) | `agentctl check` |
