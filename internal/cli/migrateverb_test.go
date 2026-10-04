@@ -31,7 +31,6 @@ services:
     ports:
       - "127.0.0.1:${AGENT_GATEWAY_PORT:-18795}:18789"
 `,
-		"compose.dev.yml": "services:\n  agent:\n    environment:\n      - AGENT_SKIP_SEED=1\n",
 		"README.md":       "# grow\n",
 	}
 	for rel, content := range files {
@@ -84,7 +83,6 @@ func TestMigrateRestructuresAndSynthesizes(t *testing.T) {
 		filepath.Join(fleet.AgentsDir, key, "automations", "jobs.md"),
 		filepath.Join(fleet.AgentsDir, key, "knowledge", "content", "index.md"),
 		filepath.Join(fleet.AgentsDir, key, "litellm", "config.yaml"),
-		filepath.Join(fleet.AgentsDir, key, "compose.dev.yml"),
 		"README.md",
 	} {
 		if _, err := os.Stat(filepath.Join(root, rel)); err != nil {

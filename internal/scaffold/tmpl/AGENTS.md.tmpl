@@ -15,7 +15,7 @@ Operate this repo with agentctl; `./make.sh` is a thin shim over it.
 | Instance logs | `agentctl logs` (`-f` to follow) |
 | Pause / resume | `agentctl stop` / `agentctl start` |
 | Tear down (volumes kept) | `agentctl destroy` (add `--volumes` to drop data) |
-| Start the dev stack (overlay) | `agentctl dev up` |
+| Start the dev stack (rebuild-first) | `agentctl dev up` |
 | Stop the dev stack | `agentctl dev down` |
 | Dev logs / restart | `agentctl dev logs -f` / `agentctl dev restart` |
 | Update to the latest tree | `git pull --ff-only && agentctl deploy` |
@@ -45,7 +45,6 @@ Operate this repo with agentctl; `./make.sh` is a thin shim over it.
 | `agents/{{.AgentKey}}/workspace/` | Persona and memory seed content |
 | `agents/{{.AgentKey}}/skills/`, `knowledge/content/` | Skill and doc seed content |
 | `agents/{{.AgentKey}}/compose.yml` | RENDERED from fleet.yaml on every verb (gitignored) |
-| `agents/{{.AgentKey}}/compose.dev.yml` | Dev overlay (authored) |
 | `make.sh` | Thin shim delegating to agentctl |
 
 ## Key conventions

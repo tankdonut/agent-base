@@ -81,9 +81,8 @@ has no gh package, so the Dockerfile installs it from the cli.github.com
 apt repo; projects enabling `gh_auth` need no extra install step.
 Failure is non-fatal and the token is never logged.
 
-Wire the runtime up with `examples/compose.agent.yml` (service snippet)
-and `examples/compose.dev.agent.yml` (hot-reload overlay), then fill
-`.env` from `examples/env.example`.
+Wire the runtime up with `examples/compose.agent.yml` (service snippet),
+then fill `.env` from `examples/env.example`.
 
 ## Environment contract
 
@@ -97,7 +96,7 @@ split with copy-paste entries.
 | --- | --- | --- |
 | `AGENT_SPEC_PATH` | `/opt/agent/spec.json` | Override the spec location (tests, fixtures, wrapper entrypoints). |
 | `AGENT_MANAGE_CONFIG` | `1` | `0` skips config/MCP/plugin reconciliation for operators who manage `openclaw.json` manually. |
-| `AGENT_SKIP_SEED` | `0` | `1` skips content seeding only. Reconciliation still runs; dev overlays bind-mount the content instead. |
+| `AGENT_SKIP_SEED` | `0` | `1` skips content seeding only. Reconciliation still runs. (The former dev-overlay consumer is retired — seeding is image-baked.) |
 | `AGENT_SYNC` | `0` | `1` for one boot forces a workspace re-seed on an existing volume: seeded persona files are overwritten with image content while agent-written files outside the seed set (journal, memories) survive — the named alternative to deleting the volume. |
 | `AGENT_MEMORY_REINDEX` | `1` | `0` skips the post-startup memory reindex. |
 | `AGENT_GIT_TOKEN` | unset | gh token, used only when `features.gh_auth` is true. Never logged. |
@@ -488,11 +487,11 @@ migrating from a legacy `{data}/docs` layout move once, in their wrapper
 entrypoint (see below), before `seed_content` runs.
 
 `AGENT_SKIP_SEED=1` skips content seeding only. Reconciliation still runs.
-The dev overlay relies on exactly this: it bind-mounts `workspace/`,
-`skills/`, and `docs/` over `/opt/seed/*` and sets `AGENT_SKIP_SEED=1`, so
-the bind mounts are the seed and edits reach the next session without a
-rebuild. Automations are never bind-mounted in any mode; writable cron
-prompt files would be a self-modification surface for the agent.
+Content is image-baked in every mode — there is no dev overlay and no
+content bind mounts: the dev loop is rebuild-first (`agentctl dev up`
+rebuilds via cached COPY layers), which also keeps automations unmountable
+in any mode; writable cron prompt files would be a self-modification
+surface for the agent.
 
 ## Boot sequence
 
@@ -956,8 +955,7 @@ the actions repo; projects reference them instead of copying YAML.
 6. Ship trigger scripts (if any) as `scripts/` — image-baked or mounted
    read-only at `/opt/agent/scripts`.
 7. Write the thin Dockerfile per Quick start, pinning the current date tag.
-8. Add the `agent` service from `examples/compose.agent.yml` and, for
-   development, the overlay from `examples/compose.dev.agent.yml`.
+8. Add the `agent` service from `examples/compose.agent.yml`.
 9. Stand up CI per the pattern above, including the `--validate-spec` gate.
 
 Validate early: `docker run --rm --env-file .env <image> --validate-spec`
@@ -987,7 +985,8 @@ cd my-agent && agentctl migrate
 
 `migrate` flattens `agent/`'s children into `agents/<basename>/`
 (rewriting the Dockerfile's COPY lines), moves `litellm/`,
-`knowledge/`, `compose.dev.yml`, and `deploy/` alongside, deletes the authored
+`knowledge/`, and `deploy/` alongside (a legacy `compose.dev.yml` is
+deleted — the dev overlay is retired), deletes the authored
 `compose.yml` (the renderer replaces it), folds `.agentctl.yaml` into
 the synthesized `fleet.yaml` (platform, gateway port — recovered from
 the compose interpolation default when no config recorded it, fly app),
@@ -1099,7 +1098,6 @@ data.
 | `agent/skills/persist-state/SKILL.md`, `agent/skills/persist-state/scripts/persist-state.sh` | edit | Rename the legacy git-token env name to `AGENT_GIT_TOKEN` (env read + error text). |
 | `agent/.env.example` | edit | Renames per the table below. |
 | `compose.yml` | edit | Port interpolation rename only. |
-| `compose.dev.yml` | edit | `AGENT_SKIP_SEED=1` plus `/opt/seed/*` mounts. |
 | `make.sh` | edit | New `REQUIRED_VARS` (below). |
 
 #### 2. Thin Dockerfile
@@ -1234,7 +1232,7 @@ The legacy per-project env names rename onto the standard vocabulary:
 
 | Standard name | Read by |
 | --- | --- |
-| `AGENT_SKIP_SEED` (was the legacy skip-seed flag) | Base, dev overlay. |
+| `AGENT_SKIP_SEED` (was the legacy skip-seed flag) | Base. |
 | `AGENT_MANAGE_CONFIG` (was the legacy manage-config flag) | Base, optional. |
 | `AGENT_MEMORY_REINDEX` (was the legacy reindex flag) | Base, optional. |
 | `AGENT_GIT_TOKEN` (was the legacy git-token name) | Base `gh auth` (features.gh_auth) and the persist-state skill (edited). |
@@ -1269,7 +1267,7 @@ REQUIRED_VARS=(
 
 #### 5. Compose changes
 
-Only the `ports` line and the dev overlay change in the `agent` service;
+Only the `ports` line changes in the `agent` service;
 `build.dockerfile: agent/Dockerfile`, `env_file: agent/.env`,
 `security_opt`, the healthcheck, and the `agent-data` volume (it persists)
 all stay:
@@ -1279,9 +1277,8 @@ all stay:
       - "127.0.0.1:${AGENT_GATEWAY_PORT:-18789}:18789"
 ```
 
-`compose.dev.yml` adopts the base dev contract (mounts shadow the seed, not
-the live data dir; the old journal bind mount is dropped, journal files stay
-volume-side):
+A legacy `compose.dev.yml` is deleted — the dev overlay is retired
+(single-envelope rebuild-first dev loop):
 
 ```yaml
 services:
@@ -1406,7 +1403,7 @@ written by the standard image is layout-compatible with the old entrypoint.
 | `agent/scripts/test_entrypoint.py`, `agent/scripts/test_seed_automations.py` | delete | Suites live in this repo. |
 | `agent/.env.example` | edit | `AGENT_*` optional entries, load-time-required var notes. |
 | `compose.yml` | no change | Same build path, volume, env wiring. |
-| `compose.dev.yml` | edit | Legacy skip-seed env rename. |
+| `compose.dev.yml` | delete | Dev overlay retired. |
 | `make.sh` | edit | `secrets_check` additions (below); `write_agent_env` vars unchanged. |
 | `.pre-commit-config.yaml` | edit | Drop the `python-test` hook. |
 
@@ -1481,7 +1478,7 @@ the index. `automations.model` is `zai/glm-5.2` per project decision.
 
 | Standard name | Where |
 | --- | --- |
-| `AGENT_SKIP_SEED` (was the legacy skip-seed flag) | `compose.dev.yml`. |
+| `AGENT_SKIP_SEED` (was the legacy skip-seed flag) | Retired with the dev overlay. |
 | `AGENT_MANAGE_CONFIG` (was the legacy manage-config flag) | Optional, `secrets/agent.env`. |
 | `AGENT_MEMORY_REINDEX` (was the legacy reindex flag) | Optional, `secrets/agent.env`. |
 
@@ -1500,13 +1497,9 @@ on empty), `TELEGRAM_CHAT_ID`, `ALPHAVANTAGE_API_KEY`, `LUNARCRUSH_API_KEY`,
 points at the thin file, `env_file: ./secrets/agent.env`, the
 `trade-agent_agent-data` volume (pinned compose project name), `x-db-env`,
 the `127.0.0.1:18789` publish, the healthcheck, and `depends_on: mcp` all
-persist. The dev overlay renames one variable; its mounts already target
-`/opt/seed/*`:
-
-```yaml
-    environment:
-      - AGENT_SKIP_SEED=1
-```
+persist. The dev overlay is retired (single-envelope rebuild-first dev
+loop) — delete it and move `AGENT_SKIP_SEED=1` into the `agent` service's
+`environment` if the image still needs it.
 
 #### 6. One-time manual ops
 

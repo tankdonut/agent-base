@@ -25,7 +25,7 @@ func TestLifecycleArgv(t *testing.T) {
 			{"podman", "compose", "-f", "compose.yml", "up", "-d"},
 		}},
 		{"dev", func(r process.Runner) error { return Dev(r, "podman", root) }, [][]string{
-			{"podman", "compose", "-f", "compose.yml", "-f", "compose.dev.yml", "up", "-d"},
+			{"podman", "compose", "-f", "compose.yml", "up", "-d", "--build"},
 		}},
 		{"down", func(r process.Runner) error { return Down(r, "docker", ".") }, [][]string{
 			{"docker", "compose", "-f", "compose.yml", "down"},

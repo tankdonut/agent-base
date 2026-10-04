@@ -138,11 +138,10 @@ func runMigrateTo(w interface{ Write([]byte) (int, error) }) error {
 		}
 		moves = append(moves, fleet.AgentsDir+"/"+key+"/"+name+"/")
 	}
-	if _, err := os.Stat(filepath.Join(abs, "compose.dev.yml")); err == nil {
-		if err := os.Rename(filepath.Join(abs, "compose.dev.yml"), filepath.Join(agentDir, "compose.dev.yml")); err != nil {
-			return fmt.Errorf("moving compose.dev.yml: %w", err)
-		}
-		moves = append(moves, fleet.AgentsDir+"/"+key+"/compose.dev.yml")
+	// The dev overlay is retired (single-envelope rebuild-first dev
+	// loop): a legacy compose.dev.yml is deleted, not carried.
+	if err := os.Remove(filepath.Join(abs, "compose.dev.yml")); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("deleting compose.dev.yml: %w", err)
 	}
 	// The moved Dockerfile's COPY sources drop the agent/ prefix.
 	if err := rewriteDockerfileCopies(filepath.Join(agentDir, "Dockerfile")); err != nil {

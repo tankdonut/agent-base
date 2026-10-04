@@ -25,7 +25,7 @@ agentctl secrets init   # agent/.env + litellm/.env (gateway token, LiteLLM mast
 agentctl secrets edit   # fill in real values (provider keys go in litellm/.env ONLY)
 agentctl secrets check  # verify every required var is set (+ master/client key match)
 agentctl deploy         # build + start the stack (podman or docker, auto-detected)
-agentctl dev up         # dev overlay: bind-mounted seed content, no rebuild
+agentctl dev up         # rebuild-first dev loop (single envelope)
 ```
 
 `./make.sh <command>` works as a shim for the same commands.
@@ -51,7 +51,6 @@ token-authenticated when OPENCLAW_GATEWAY_TOKEN is set.
 | `agents/{{.AgentKey}}/automations/` | Cron jobs, image-baked (never bind-mounted) |
 | `agents/{{.AgentKey}}/workspace/`, `agent/skills/`, `knowledge/content/` | Seed content for the data volume |
 | `agents/{{.AgentKey}}/compose.yml` | RENDERED from fleet.yaml on every agentctl verb (gitignored) — never hand-edit |
-| `agents/{{.AgentKey}}/compose.dev.yml` | Dev overlay (authored; applied on top of the rendered envelope) |
 | `make.sh` | Thin shim over agentctl (`exec agentctl "$@"`) |
 
 A single-agent repo is a fleet of one: add `agents/<name>/` directories

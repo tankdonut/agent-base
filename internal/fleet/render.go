@@ -51,6 +51,7 @@ type renderModel struct {
 	Pids         string
 	LitellmImage string
 	AgentImage   string
+	EnginePodman bool
 }
 
 var sidecarTemplate = template.Must(template.New("sidecar").Parse(`# RENDERED by agentctl from fleet.yaml — DO NOT EDIT.
@@ -99,10 +100,10 @@ services:
     depends_on:
       - litellm
     volumes:
-      - agent-data:/home/node/.openclaw
+      - agent-data:/home/node/.openclaw{{if .EnginePodman}}:U{{end}}
       # Verified upgrade backups land here before any image-version
       # delta mutates a warm volume.
-      - agent-backups:/backups
+      - agent-backups:/backups{{if .EnginePodman}}:U{{end}}
 {{- range .Volumes }}
       - {{ . }}
 {{- end }}
@@ -223,10 +224,10 @@ services:
         aliases:
           - {{.Project}}
     volumes:
-      - agent-data:/home/node/.openclaw
+      - agent-data:/home/node/.openclaw{{if .EnginePodman}}:U{{end}}
       # Verified upgrade backups land here before any image-version
       # delta mutates a warm volume.
-      - agent-backups:/backups
+      - agent-backups:/backups{{if .EnginePodman}}:U{{end}}
 {{- range .Volumes }}
       - {{ . }}
 {{- end }}
@@ -291,6 +292,7 @@ func RenderAgentCompose(m *Manifest, name string) ([]byte, error) {
 		Memory:       "2g",
 		Pids:         "512",
 		LitellmImage: litellmSidecarImage,
+		EnginePodman: m.Defaults.ComposeEngine == "podman",
 	}
 	if model.Shared {
 		model.PlaneNetwork = PlaneNetworkName(m.Plane.Name)

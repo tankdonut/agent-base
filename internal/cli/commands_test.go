@@ -111,7 +111,7 @@ func writeProject(t *testing.T, files map[string]string) string {
 				}
 			}
 			continue
-		case rel == "compose.dev.yml" || strings.HasPrefix(rel, "agent/") || strings.HasPrefix(rel, "litellm/") || strings.HasPrefix(rel, "knowledge/") || strings.HasPrefix(rel, "deploy/"):
+		case strings.HasPrefix(rel, "agent/") || strings.HasPrefix(rel, "litellm/") || strings.HasPrefix(rel, "knowledge/") || strings.HasPrefix(rel, "deploy/"):
 			// Legacy-form keys: the agent/ wrapper flattens away.
 			out[prefix+strings.TrimPrefix(rel, "agent/")] = content
 		default:

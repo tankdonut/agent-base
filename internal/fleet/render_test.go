@@ -85,6 +85,36 @@ func TestRenderImageOverrideGolden(t *testing.T) {
 	checkGolden(t, "overrides-image.yml", string(renderOrDie(t, imageOverrideManifest, "grow")))
 }
 
+// TestRenderPodmanVolumesRecurated pins the rootless-volume contract:
+// the podman engine renders the named data volumes with the :U
+// recuration flag (podman 4.x named-volume copy-up lands content owned
+// by the mapped root, which EACCES-crashes the node user at boot);
+// the docker engine never sees :U (unsupported there).
+func TestRenderPodmanVolumesRecurated(t *testing.T) {
+	podman := string(renderOrDie(t, "defaults:\n  compose:\n    engine: podman\nagents:\n  grow: {}\n", "grow"))
+	if !strings.Contains(podman, "agent-data:/home/node/.openclaw:U") {
+		t.Error("podman envelope lacks the :U recuration flag on agent-data")
+	}
+	if strings.Count(podman, ":U") != 2 {
+		t.Errorf("podman envelope :U count = %d, want 2 (agent-data + agent-backups)", strings.Count(podman, ":U"))
+	}
+	docker := string(renderOrDie(t, sidecarManifest, "grow"))
+	if strings.Contains(docker, ":U") {
+		t.Error("docker envelope must not render the podman-only :U flag")
+	}
+	// label=disable is mandatory on BOTH engines for podman hosts: the
+	// rootless LSM relabeling of warm-volume content is the PermissionError
+	// class this suite exists to keep out of boot. Pin it per-engine.
+	for name, env := range map[string]string{"podman": podman, "docker": docker} {
+		if !strings.Contains(env, "label=disable") {
+			t.Errorf("%s envelope lost security_opt label=disable", name)
+		}
+		if !strings.Contains(env, "no-new-privileges") {
+			t.Errorf("%s envelope lost no-new-privileges", name)
+		}
+	}
+}
+
 func TestRenderDeterministic(t *testing.T) {
 	first := renderOrDie(t, sharedManifest, "grow")
 	second := renderOrDie(t, sharedManifest, "grow")

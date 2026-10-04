@@ -43,10 +43,13 @@ jobs:
 
   full-e2e-podman:
     # Same matrix on the local-first engine: the plane's service_healthy
-    # gating and podman-compose's provider quirks are exactly what the
-    # suite exists to catch.
+    # gating and the docker-compose-over-podman-socket provider path are
+    # exactly what the suite exists to catch. Cold boots on this path
+    # run long (openclaw first boot + plugin install under the
+    # docker-compose API) — the health budgets are widened below to
+    # match observed boot times.
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -60,15 +63,51 @@ jobs:
       - name: Install podman + compose provider
         run: |
           sudo apt-get update
-          sudo apt-get install -y podman podman-compose
-          # Rootless port publishing needs subordinate id ranges for the
-          # runner user.
-          sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 "$(id -un)"
-          podman info --format "{{.Host.Arch}}" >/dev/null
+          sudo apt-get install -y podman
+          # podman-compose 1.0.6 (Ubuntu apt) drops compose healthcheck
+          # blocks — the suite's service_healthy waits never see
+          # "healthy" under it (CI finding 2026-10-03: litellm serving
+          # on 4000 while inspect reported no health state). Current
+          # releases register healthchecks; uv gives a pinned, isolated
+          # venv instead of PEP-668-fighting system pip.
+          uv tool install podman-compose
           podman-compose version
+      - name: Rootless id ranges (pre-req for port publishing)
+        run: |
+          # Rootless port publishing needs subordinate id ranges. The
+          # runner image may already ship them — appending a second
+          # range can shadow the first and flip the volume-ownership
+          # mapping between boots (CI finding: EACCES on the data
+          # volume, agent crash-looping in backup_before_upgrade). Add
+          # only when missing; print the effective mapping for the run.
+          if ! grep -q "^$(id -un):" /etc/subuid; then
+            sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 "$(id -un)"
+          fi
+          grep -H "$(id -un)" /etc/subuid /etc/subgid || true
+          sudo loginctl enable-linger "$(id -un)"
+      - name: Install podman (socket service enabled)
+        uses: redhat-actions/podman-install@4a134a65f7324b2d03498c672cd4c6bce93e94b5 # v1.1.1
+        with:
+          start-service: true
+          github-token: ${{ github.token }}
+      - name: Socket + engine reachability
+        run: |
+          XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          export XDG_RUNTIME_DIR
+          curl -sf --unix-socket "$XDG_RUNTIME_DIR/podman/podman.sock" http://localhost/_ping
+          podman info --format "{{.Host.Arch}}" >/dev/null
       - name: agentctl full front-door e2e (all stages, podman)
         env:
           E2E_ENGINE: podman
+          # Observed cold/warm boots on this path exceed the default
+          # 360s health budget (gateway healthy at probe ~110, ~6 min);
+          # every recreate resets the boot clock, so later stages keep
+          # missing their windows at the default.
+          E2E_HEALTH_TIMEOUT: "600"
+          # Socket + docker-compose path (podman-compose pinned variant
+          # was tried and stripped the :U recuration — CI 2026-10-03);
+          # the suite's health waits are probe-based, so the
+          # docker-compose health-state reporting gap does not bite.
         run: ./make.sh agentctl-e2e
       - name: Upload e2e forensics (podman)
         if: failure()
@@ -91,6 +130,9 @@ jobs:
         id: latest
         env:
           GH_TOKEN: ${{ github.token }}
+          # No checkout in this job — gh resolves the repo from this
+          # var, not from a git remote.
+          GH_REPO: ${{ github.repository }}
         run: |
           tag=$(gh release list -L 100 --json tagName,isDraft,isPrerelease \
             --jq '[.[] | select(.isDraft | not) | select(.isPrerelease | not) | .tagName] | map(select(test("^[0-9]{4}\\.[0-9]{2}\\.[0-9]{2}"))) | .[0]')

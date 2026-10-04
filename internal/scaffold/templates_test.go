@@ -49,7 +49,6 @@ var manifest = []string{
 	"Dockerfile",
 	"README.md",
 	"automations/daily-briefing.md",
-	"compose.dev.yml",
 	"fleet.yaml",
 	"knowledge/content/index.md",
 	"litellm/.env.example",

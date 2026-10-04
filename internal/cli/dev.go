@@ -14,16 +14,17 @@ import (
 func newDevCmd() *cobra.Command {
 	dev := &cobra.Command{
 		Use:   "dev",
-		Short: "Local dev loop (compose + hot-reload overlay)",
-		Long: `Local iterative lifecycle: the project's compose stack with
-compose.dev.yml applied — workspace/skills/knowledge bind-mounted,
-seeding skipped, edits live without a rebuild.
+		Short: "Local dev loop (single envelope, rebuild-first)",
+		Long: `Local iterative lifecycle: the project's compose stack from
+the single rendered envelope, rebuilt on up (rebuild-first — edits bake
+via cached COPY layers; no overlay, no bind mounts, dev runs exactly
+what prod runs).
 
 Subcommands: up, down, logs, restart, mcp, open.`,
 	}
 	var up = &cobra.Command{
 		Use:   "up",
-		Short: "Start the dev stack (overlay applied)",
+		Short: "Start the dev stack (rebuild-first)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			rp, engine, err := devEngine()

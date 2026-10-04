@@ -16,12 +16,8 @@ import (
 // podman-compose (compose-file-dir-relative) resolve context,
 // dockerfile, env_file, and mounts identically only when the file
 // lives at the build-context root.
-func composeArgv(engine string, dev bool, verb ...string) []string {
-	argv := []string{engine, "compose", "-f", "compose.yml"}
-	if dev {
-		argv = append(argv, "-f", "compose.dev.yml")
-	}
-	return append(argv, verb...)
+func composeArgv(engine string, verb ...string) []string {
+	return append([]string{engine, "compose", "-f", "compose.yml"}, verb...)
 }
 
 // RequireEnvFile is the secrets gate for start commands: compose mounts
@@ -50,11 +46,13 @@ func Up(r process.Runner, engine, root string) error {
 	if err := RequireEnvFile(root); err != nil {
 		return err
 	}
-	return process.RunArgvIn(r, root, nil, composeArgv(engine, false, "up", "-d")...)
+	return process.RunArgvIn(r, root, nil, composeArgv(engine, "up", "-d")...)
 }
 
-// Dev gates on agent/.env, then starts the stack with the hot-reload
-// overlay (compose.dev.yml) applied on top of compose.yml.
+// Dev gates on agent/.env, then starts the stack from the single
+// rendered envelope with --build: the dev loop is rebuild-first (edit,
+// dev up, edits bake via cached COPY layers). No overlay, no bind
+// mounts — dev runs exactly what prod runs.
 func Dev(r process.Runner, engine, root string) error {
 	if r == nil {
 		return process.ErrNilRunner
@@ -62,7 +60,7 @@ func Dev(r process.Runner, engine, root string) error {
 	if err := RequireEnvFile(root); err != nil {
 		return err
 	}
-	return process.RunArgvIn(r, root, nil, composeArgv(engine, true, "up", "-d")...)
+	return process.RunArgvIn(r, root, nil, composeArgv(engine, "up", "-d", "--build")...)
 }
 
 // Down removes the stack's containers and networks; named volumes
@@ -71,7 +69,7 @@ func Down(r process.Runner, engine, root string) error {
 	if r == nil {
 		return process.ErrNilRunner
 	}
-	return process.RunArgvIn(r, root, nil, composeArgv(engine, false, "down")...)
+	return process.RunArgvIn(r, root, nil, composeArgv(engine, "down")...)
 }
 
 // Stop pauses the running containers in place (no removal); Start
@@ -80,7 +78,7 @@ func Stop(r process.Runner, engine, root string) error {
 	if r == nil {
 		return process.ErrNilRunner
 	}
-	return process.RunArgvIn(r, root, nil, composeArgv(engine, false, "stop")...)
+	return process.RunArgvIn(r, root, nil, composeArgv(engine, "stop")...)
 }
 
 // Start resumes containers stopped with Stop.
@@ -88,7 +86,7 @@ func Start(r process.Runner, engine, root string) error {
 	if r == nil {
 		return process.ErrNilRunner
 	}
-	return process.RunArgvIn(r, root, nil, composeArgv(engine, false, "start")...)
+	return process.RunArgvIn(r, root, nil, composeArgv(engine, "start")...)
 }
 
 // Ps lists the stack's containers and their state.
@@ -96,7 +94,7 @@ func Ps(r process.Runner, engine, root string) error {
 	if r == nil {
 		return process.ErrNilRunner
 	}
-	return process.RunArgvIn(r, root, nil, composeArgv(engine, false, "ps")...)
+	return process.RunArgvIn(r, root, nil, composeArgv(engine, "ps")...)
 }
 
 // PsJSON captures `compose ps --format json` — the running-config
@@ -106,7 +104,7 @@ func PsJSON(r process.Runner, engine, root string) ([]byte, error) {
 	if r == nil {
 		return nil, process.ErrNilRunner
 	}
-	argv := composeArgv(engine, false, "ps", "--format", "json")
+	argv := composeArgv(engine, "ps", "--format", "json")
 	return r.RunOutputIn(root, nil, argv[0], argv[1:]...)
 }
 
@@ -121,7 +119,7 @@ func Destroy(r process.Runner, engine, root string, volumes bool) error {
 	if volumes {
 		verb = append(verb, "-v")
 	}
-	return process.RunArgvIn(r, root, nil, composeArgv(engine, false, verb...)...)
+	return process.RunArgvIn(r, root, nil, composeArgv(engine, verb...)...)
 }
 
 // Logs shows compose logs; args pass through untouched (e.g. -f agent).
@@ -130,7 +128,7 @@ func Logs(r process.Runner, engine, root string, args []string) error {
 		return process.ErrNilRunner
 	}
 	verb := append([]string{"logs"}, args...)
-	return process.RunArgvIn(r, root, nil, composeArgv(engine, false, verb...)...)
+	return process.RunArgvIn(r, root, nil, composeArgv(engine, verb...)...)
 }
 
 // Mcp passes args to `openclaw mcp` inside the running agent container
@@ -142,7 +140,7 @@ func Mcp(r process.Runner, engine, root string, args []string) error {
 		return process.ErrNilRunner
 	}
 	verb := append([]string{"exec", "agent", "openclaw", "mcp"}, args...)
-	return process.RunArgvIn(r, root, nil, composeArgv(engine, false, verb...)...)
+	return process.RunArgvIn(r, root, nil, composeArgv(engine, verb...)...)
 }
 
 // Backup drives the image's verified backup primitive inside the
@@ -152,7 +150,7 @@ func Backup(r process.Runner, engine, root string) error {
 	if r == nil {
 		return process.ErrNilRunner
 	}
-	return process.RunArgvIn(r, root, nil, composeArgv(engine, false,
+	return process.RunArgvIn(r, root, nil, composeArgv(engine,
 		"exec", "agent", "openclaw", "backup", "create", "--verify", "--output", "/backups")...)
 }
 
@@ -164,7 +162,7 @@ func Probe(r process.Runner, engine, root, command string) (string, error) {
 	if r == nil {
 		return "", process.ErrNilRunner
 	}
-	argv := composeArgv(engine, false, "exec", "-T", "agent", "sh", "-c", command)
+	argv := composeArgv(engine, "exec", "-T", "agent", "sh", "-c", command)
 	out, err := r.RunOutputIn(root, nil, argv[0], argv[1:]...)
 	if err != nil {
 		return "", err
@@ -177,7 +175,7 @@ func BuildImages(r process.Runner, engine, root string) error {
 	if r == nil {
 		return process.ErrNilRunner
 	}
-	return process.RunArgvIn(r, root, nil, composeArgv(engine, false, "build")...)
+	return process.RunArgvIn(r, root, nil, composeArgv(engine, "build")...)
 }
 
 // Restart restarts the named services (all when none given).
@@ -186,7 +184,7 @@ func Restart(r process.Runner, engine, root string, services []string) error {
 		return process.ErrNilRunner
 	}
 	verb := append([]string{"restart"}, services...)
-	return process.RunArgvIn(r, root, nil, composeArgv(engine, false, verb...)...)
+	return process.RunArgvIn(r, root, nil, composeArgv(engine, verb...)...)
 }
 
 // Rebuild rebuilds the named services' images and force-recreates them
@@ -198,11 +196,11 @@ func Rebuild(r process.Runner, engine, root string, services []string) error {
 		return process.ErrNilRunner
 	}
 	build := append([]string{"build"}, services...)
-	if err := process.RunArgvIn(r, root, nil, composeArgv(engine, false, build...)...); err != nil {
+	if err := process.RunArgvIn(r, root, nil, composeArgv(engine, build...)...); err != nil {
 		return err
 	}
 	recreate := append([]string{"up", "-d", "--force-recreate"}, services...)
-	return process.RunArgvIn(r, root, nil, composeArgv(engine, false, recreate...)...)
+	return process.RunArgvIn(r, root, nil, composeArgv(engine, recreate...)...)
 }
 
 // ApproveOwnDevice resolves the agent's pending WS device pairing:
@@ -210,7 +208,7 @@ func Rebuild(r process.Runner, engine, root string, services []string) error {
 // `openclaw devices approve <requestId>` approves it — the operator
 // already holds the stack, so the host-side exec IS the approval.
 func ApproveOwnDevice(r process.Runner, engine, root string) error {
-	argv := composeArgv(engine, false, "exec", "-T", "agent", "openclaw", "devices", "list", "--json")
+	argv := composeArgv(engine, "exec", "-T", "agent", "openclaw", "devices", "list", "--json")
 	list, err := r.RunOutputIn(root, nil, argv[0], argv[1:]...)
 	if err != nil {
 		return fmt.Errorf("devices list: %w", err)
@@ -235,7 +233,7 @@ func ApproveOwnDevice(r process.Runner, engine, root string) error {
 	if requestID == "" {
 		return fmt.Errorf("no pending device request (list: %.200s)", list)
 	}
-	approve := composeArgv(engine, false, "exec", "-T", "agent", "openclaw", "devices", "approve", requestID)
+	approve := composeArgv(engine, "exec", "-T", "agent", "openclaw", "devices", "approve", requestID)
 	if err := process.RunArgvIn(r, root, nil, approve...); err != nil {
 		return fmt.Errorf("devices approve %s: %w", requestID, err)
 	}
