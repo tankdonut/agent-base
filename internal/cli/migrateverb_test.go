@@ -31,7 +31,7 @@ services:
     ports:
       - "127.0.0.1:${AGENT_GATEWAY_PORT:-18795}:18789"
 `,
-		"README.md":       "# grow\n",
+		"README.md": "# grow\n",
 	}
 	for rel, content := range files {
 		p := filepath.Join(root, filepath.FromSlash(rel))

@@ -491,7 +491,7 @@ def main() -> int:
                 # value redacted — a bare count gives nothing to fix.
                 for k, v in leaked:
                     i = body.find(v)
-                    ctx = body[max(0, i - 220):i + len(v) + 60].replace(v, f"<{k} redacted>")
+                    ctx = body[max(0, i - 220) : i + len(v) + 60].replace(v, f"<{k} redacted>")
                     print(f"::error::leaked env value for {k}; report context: {ctx}", flush=True)
                 fail(f"doctor --report leaked {len(leaked)} env value(s)")
             pass_("doctor --report carries keys, never values")
