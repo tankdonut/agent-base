@@ -8,7 +8,7 @@
 # only inside pre-commit's managed env (rev v0.15.21).
 # golang: agentctl toolchain (go.mod at repo root); the go directive in
 # go.mod sets the minimum, this pin tracks the local toolchain.
-python 3.14.7
+python 3.14.8
 golang 1.27.1
 pre-commit 4.6.2
 hadolint 2.15.1
