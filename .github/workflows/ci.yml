@@ -429,7 +429,6 @@ jobs:
     env:
       CONTRACT_ENGINE: docker
       CONTRACT_UPGRADE: required
-      CONTRACT_BASELINE_IMAGE: ghcr.io/tankdonut/agent-base-staging@${{ needs.candidate-index.outputs.digest }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -439,10 +438,12 @@ jobs:
           runtime: docker
           registry: ghcr.io
       - name: CLI contract test against the candidate index
+        # No CONTRACT_BASELINE_IMAGE override: stage D discovers the newest
+        # PUBLISHED tag (tests/contract_test.py discover_baseline). Pinning it
+        # to VERSION is circular on every first cut — the tag being released
+        # does not exist publicly until promotion.
         run: |
-          baseline=$(tr -d '[:space:]' < VERSION)
-          CONTRACT_BASELINE_IMAGE="ghcr.io/tankdonut/agent-base:$baseline" \
-            python3 tests/contract_test.py \
+          python3 tests/contract_test.py \
             "ghcr.io/tankdonut/agent-base-staging@${{ needs.candidate-index.outputs.digest }}"
       - name: Upload contract forensics
         if: failure()
@@ -554,7 +555,7 @@ jobs:
       contents: read
       id-token: write
       attestations: write
-      packages: read
+      packages: write
     env:
       STAGING: ghcr.io/tankdonut/agent-base-staging
       IDX: ${{ needs.candidate-version.outputs.idx }}
