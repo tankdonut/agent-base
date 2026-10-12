@@ -23,6 +23,18 @@ repos:
         pass_filenames: false
         files: ^(examples/(env\.example|spec\.example\.json)|container/(spec|test_spec)\.py)$
 
+  # Docs link/anchor gate: relative links must resolve and intra-doc anchors
+  # must match headings (GitHub slug rules, offline; scripts/check-doc-links.py).
+  # Full doc set on every trigger: anchors live across files.
+  - repo: local
+    hooks:
+      - id: doc-links
+        name: doc links/anchors (repo docs)
+        entry: python3 scripts/check-doc-links.py
+        language: system
+        pass_filenames: false
+        files: ^(README\.md|AGENTS\.md|container/AGENTS\.md|docs/.*\.md)$
+
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.16.10
     hooks:
