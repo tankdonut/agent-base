@@ -2507,7 +2507,7 @@ class ToolsDenyDefault(EntrypointTestCase):
         calls = self.calls_with("openclaw", "config", "set", "tools.deny")
         self.assertEqual(1, len(calls))
         self.assertEqual(
-            ["cron", "subagents", "sessions_spawn", "nodes"],
+            ["cron", "automations", "subagents", "sessions_spawn", "nodes"],
             json.loads(calls[0][calls[0].index("tools.deny") + 1]),
         )
 

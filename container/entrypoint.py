@@ -380,13 +380,15 @@ def _snapshot_base_plugins() -> None:
 
 
 # Default tool denials for the agent's own turns: the recursion/spawn
-# surfaces (OWASP ASI06 class — a scheduled turn reaching the cron tool
-# can self-replicate jobs; spawn chains multiply blast radius).
-# heartbeat_respond stays allowed so heartbeat delivery keeps working.
-# Any env-active spec config entry under tools.* disables the base
+# surfaces (OWASP ASI06 class — a scheduled turn reaching the scheduler
+# tool can self-replicate jobs; spawn chains multiply blast radius).
+# `automations` is the tool's name since openclaw 2026.8 (upstream calls
+# it a sensitive control-plane tool); `cron` is kept for pre-rename
+# volumes. heartbeat_respond stays allowed so heartbeat delivery keeps
+# working. Any env-active spec config entry under tools.* disables the base
 # default (operator owns tool policy from then on; entries whose if_env
 # guard never fires configure nothing).
-TOOLS_DENY_DEFAULT = ("cron", "subagents", "sessions_spawn", "nodes")
+TOOLS_DENY_DEFAULT = ("cron", "automations", "subagents", "sessions_spawn", "nodes")
 
 # LiteLLM sidecar deployments: openclaw's litellm provider defaults its
 # baseUrl to loopback (http://localhost:4000) — unreachable when the proxy
