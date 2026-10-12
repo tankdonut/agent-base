@@ -328,7 +328,18 @@ def first_boot_setup(spec: Spec) -> None:
         args = ["openclaw", "channels", "add", "--channel", channel.type]
         if channel.use_env:
             args.append("--use-env")
-        run(*args)
+        try:
+            run(*args)
+        except subprocess.CalledProcessError as exc:
+            # openclaw 2026.10+ validates env-backed credentials at add
+            # time; the CLI's streamed message above names the missing env
+            # vars, so abort cleanly instead of tracebacking into the loop.
+            warn(
+                f"channel add '{channel.type}' failed (exit {exc.returncode}) — "
+                "aborting boot; missing credential env vars are named in the "
+                "CLI message above"
+            )
+            raise SystemExit(1) from exc
 
     log("Installing local embedding provider (key-free semantic search)")
     run("openclaw", "plugins", "install", "@openclaw/llama-cpp-provider")
@@ -1530,16 +1541,41 @@ def _write_boot_status() -> None:
         pass
 
 
+def _snapshot_state_db(backups: Path) -> None:
+    """Raw pre-migration copy of the state database into the backups dir.
+
+    Best-effort insurance for the schema migrations `doctor --fix` runs on
+    an upgrade: the CLI verifies integrity and keeps its own recovery
+    archives, but this byte-level copy is taken before any mutation, so a
+    failed migration always has a restore point outside {data}. Warn-only:
+    a missing or uncopyable state db never blocks the migration itself.
+    """
+    state = data_dir() / "state"
+    if not (state / "openclaw.sqlite").is_file():
+        return
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    try:
+        for suffix in ("", "-wal", "-shm"):
+            src = state / f"openclaw.sqlite{suffix}"
+            if src.is_file():
+                shutil.copy2(src, backups / f"pre-upgrade-state-{stamp}.sqlite{suffix}")
+    except OSError:
+        warn("could not snapshot the state database before migration (continuing)")
+
+
 def backup_before_upgrade(env: Mapping[str, str]) -> None:
     """Verified backup before an image-version delta touches a warm volume.
 
     The image version comes from AGENT_BASE_VERSION (Dockerfile ENV, baked
     from the build ARG); the last-seen version lives in
     {data}/last-image-version. A warm volume (openclaw.json present) whose
-    marker differs — including volumes from pre-marker images — gets
-    `openclaw backup create --verify --output /backups` (AGENT_BACKUP_DIR
-    overrides) BEFORE any other phase mutates state. Failure aborts the boot
-    (exit 1): data
+    marker differs — including volumes from pre-marker images — is upgraded
+    in three steps BEFORE any other phase mutates state: a raw pre-migration
+    snapshot of the state database, `openclaw doctor --fix
+    --non-interactive` (the pinned CLI, 2026.10+, gates both backup create
+    and gateway startup on state-db schema migrations), then `openclaw
+    backup create --verify --output /backups` (AGENT_BACKUP_DIR overrides).
+    Failure of the migration or the backup aborts the boot (exit 1): data
     safety outranks gateway availability for a migration event, and the
     un-updated marker makes the next boot retry. Fresh volumes record the
     version without a backup. Dev boots without the env var skip entirely."""
@@ -1566,6 +1602,20 @@ def backup_before_upgrade(env: Mapping[str, str]) -> None:
         except OSError:
             warn("upgrade backup failed: cannot create backups directory — aborting boot")
             raise SystemExit(1) from None
+        _snapshot_state_db(backups)
+        migrated = run(
+            "openclaw",
+            "doctor",
+            "--fix",
+            "--non-interactive",
+            check=False,
+            timeout=600,
+        )
+        if migrated is None or migrated.returncode != 0:
+            warn(
+                "state database migration failed — aborting boot (fix the migration, then restart)"
+            )
+            raise SystemExit(1)
         result = run(
             "openclaw",
             "backup",

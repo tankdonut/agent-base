@@ -86,6 +86,10 @@ CANARY_ENV = (
     "-e",
     "CONTRACT_REMOTE_TOKEN=contract-dummy-bearer",
     "-e",
+    # openclaw 2026.10+ validates env-backed channel credentials at add
+    # time, so the canary's telegram channel needs its token present.
+    "TELEGRAM_BOT_TOKEN=contract-dummy-telegram",
+    "-e",
     "AGENT_AUTOMATION_TRIGGERS=1",
     "-e",
     "HOME=/home/node",
@@ -224,8 +228,8 @@ def match_cli_path(tokens: list[str]) -> str | None:
 
 
 def stage_b(engine: str, image: str, shim_log: Path) -> None:
-    help_text = {
-        path: output_of(
+    def fetch_help(words: list[str]) -> str:
+        return output_of(
             engine_run(
                 engine,
                 [
@@ -235,14 +239,14 @@ def stage_b(engine: str, image: str, shim_log: Path) -> None:
                     "openclaw",
                     *CANARY_ENV,
                     image,
-                    *path.split(),
+                    *words,
                     "--help",
                 ],
                 timeout=60,
             )
         )
-        for path in CLI_PATHS
-    }
+
+    help_text = {path: fetch_help(path.split()) for path in CLI_PATHS}
 
     violations: list[str] = []
     for raw in shim_log.read_text(encoding="utf-8").splitlines():
@@ -251,13 +255,24 @@ def stage_b(engine: str, image: str, shim_log: Path) -> None:
         matched = match_cli_path(tokens) if tokens else None
         if matched is None:
             continue
+        # openclaw 2026.10+ contextualizes `channels add` help: credential
+        # flags (--use-env, --token, ...) only enumerate once --channel
+        # selects a channel. Fetch the help with the same context the
+        # entrypoint's own invocation carries, so emitted flags are judged
+        # against what that invocation actually accepts.
+        key = matched
+        if matched == "channels add":
+            for i, token in enumerate(tokens[:-1]):
+                if token == "--channel":
+                    key = f"channels add --channel {tokens[i + 1]}"
+                    break
+        if key not in help_text:
+            help_text[key] = fetch_help(key.split())
         for token in tokens:
             if not token.startswith("--"):
                 continue
-            if not re.search(rf"(^|[\s,]){re.escape(token)}\b", help_text[matched]):
-                violations.append(
-                    f"flag '{token}' (from: {matched}) missing from '{matched} --help'"
-                )
+            if not re.search(rf"(^|[\s,]){re.escape(token)}\b", help_text[key]):
+                violations.append(f"flag '{token}' (from: {matched}) missing from '{key} --help'")
     if violations:
         fail(f"stage B: {len(violations)} flag(s) drifted from the real CLI", "\n".join(violations))
     pass_line("stage B: every emitted flag exists in real CLI help")

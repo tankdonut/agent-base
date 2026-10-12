@@ -135,7 +135,7 @@ class RemoteMcpServer:
 
     Invariants: url and header values are template-resolved at load time
     ({env:...} for API keys is the intended use); headers preserve insertion
-    order; timeout is seconds (CLI contract, verified at 2026.7.1-2).
+    order; timeout is seconds (CLI contract, verified at 2026.10.2).
 
     auth="oauth" arms OpenClaw's MCP OAuth flow (credentials live in
     OpenClaw's own store after a one-time ``mcp login`` — never in the
@@ -143,7 +143,7 @@ class RemoteMcpServer:
     never templated (they are structural, not secrets).
 
     transport pins the remote HTTP transport: "sse" or "streamable-http"
-    (the pinned CLI's exact --transport values, verified at 2026.7.1-2).
+    (the pinned CLI's exact --transport values, verified at 2026.10.2).
     None keeps the CLI default — SSE — which POST-only streamable-HTTP
     endpoints reject (405 on the SSE GET handshake), so spec them
     explicitly.
@@ -604,7 +604,7 @@ def _parse_mcp_transport(
     """Parse the first-class 'transport' key of a remote mcp_servers entry.
 
     transport must be "sse" or "streamable-http" — the pinned CLI's exact
-    --transport values (verified at 2026.7.1-2); the CLI default is SSE,
+    --transport values (verified at 2026.10.2); the CLI default is SSE,
     which POST-only streamable-HTTP endpoints reject (405 on the SSE GET
     handshake). A passthrough config key that would overwrite it
     ('transport') is a load error instead of a silent precedence rule, and

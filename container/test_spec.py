@@ -1246,7 +1246,7 @@ class McpCliArgs(unittest.TestCase):
 
     def test_remote_args_exact_with_header(self) -> None:
         # Verified against the real CLI at the pinned base image tag
-        # (2026.7.1-2): no --type option exists, --header takes KEY=VALUE.
+        # (2026.10.2): no --type option exists, --header takes KEY=VALUE.
         server = RemoteMcpServer(
             name="sentiment",
             url="https://mcp.example.com/s",
@@ -1279,7 +1279,7 @@ class McpCliArgs(unittest.TestCase):
 
     def test_remote_transport_emitted_after_headers(self) -> None:
         # Verified against the real CLI at the pinned base image tag
-        # (2026.7.1-2): --transport takes "streamable-http" or "sse".
+        # (2026.10.2): --transport takes "streamable-http" or "sse".
         server = RemoteMcpServer(
             name="lunarcrush",
             url="https://lunarcrush.ai/mcp",

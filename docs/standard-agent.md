@@ -243,13 +243,19 @@ the base's gates and is not covered by the test surface. Verify with
 Bumping a consumer's base image tag is the upgrade path. The base makes it
 safe in two ways:
 
-1. **Verified backup before migration.** On every boot the entrypoint
+1. **Migrate + verified backup before state changes.** On every boot the entrypoint
    compares `AGENT_BASE_VERSION` (baked `ENV`) against
    `{data}/last-image-version`. When it changes on a warm volume,
    including a volume's first boot on a versioned image, the boot runs
-   `openclaw backup create --verify --output /backups` (the CLI refuses
-   output inside `{data}`; `AGENT_BACKUP_DIR` relocates it) before any
-   other phase mutates state. A failed backup **aborts the boot** (exit
+   three steps before any other phase mutates state: a raw byte-level
+   snapshot of the state database into the backups directory (best-effort
+   restore point taken before any migration touches it), `openclaw
+   doctor --fix --non-interactive` (the pinned CLI, 2026.10+, runs its
+   state-db schema migrations — e.g. `audit-events-v2` — and refuses both
+   backups and gateway startup until they are applied), and `openclaw
+   backup create --verify --output /backups` (the CLI refuses
+   output inside `{data}`; `AGENT_BACKUP_DIR` relocates it). A failed
+   migration or backup **aborts the boot** (exit
    1, named reason): data safety outranks gateway availability during a
    migration. The un-updated marker makes the next boot retry. Backups
    are only as durable as their destination, so mount a named volume at
@@ -315,7 +321,7 @@ and every error message starts with the JSON path of the offending node
 | `automations` | `model`, `default_tools` | `model` required: the model for cron agent turns. No default exists by design (see [Standardization decisions](#standardization-decisions)). `default_tools` optional: the default tool allow-list for seeded jobs without their own `tools:` header; `["*"]` restores unrestricted. |
 | `config` | `path`, `value`, `strict`, `if_env`, `split_csv` | `path` and `value` required; the rest are optional booleans / string lists. Applied in spec order. `path` accepts `{env:...}` tokens (chat IDs stop being baked into git); resolution mirrors `value`, including guard deferral. An item may instead be exactly `{"include": "<preset>"}.` See [config entries](#config-entries). |
 | `presets` | name → list of config entries | Named groups spliced into `config` in place via `{"include": ...}`. Names are `lowercase-identifier-ish`. Fail-closed: unknown names, nesting (include inside a preset), and malformed shapes are load errors. Spliced entries behave identically to inline ones (templating, guard deferral, split_csv). |
-| `channels` | `type`, `use_env` | `type` required. `use_env` (default `true`) feeds the channel credentials from the environment. |
+| `channels` | `type`, `use_env` | `type` required. `use_env` (default `true`) feeds the channel credentials from the environment; the pinned CLI (2026.10+) validates them at add time, so a missing credential aborts first boot with the env var named by the CLI. |
 | `mcp_servers` | `name`, `command` or `url`, `args`, `env`, `headers`, `no_probe`, `timeout`, `if_env`, `config`, `auth`, `oauth`, `transport` | Exactly one of `command` (local stdio) and `url` (remote HTTP); specifying both or neither is an error. See [mcp_servers entries](#mcp_servers-entries). |
 | `plugins` | `name`, `source` | `source` absent means install `name` from the registry; present means a local plugin directory and must be an absolute path. On reconcile the base seeds `plugins.allow` (its first-boot plugin snapshot ∪ the spec's plugin names, e.g. `["llama-cpp"]` for a plugin-less spec) when neither an existing config value nor an env-active spec entry owns the path, so the gateway's empty-allowlist warning ("discovered non-bundled plugins may auto-load") never fires for an unconfigured consumer. An operator-provided list is never clobbered. |
 | `features` | `gh_auth`, `gateway_auth`, `plugin_prune`, `mcp_prune` | All default `false`. See [features](#features). |
@@ -529,11 +535,14 @@ wrapper entrypoint.
 1. **Load spec** (`load_agent_spec`): parse and template-resolve
    `spec.json` against the environment. Any violation aborts the boot
    before a single side effect.
-2. **Upgrade backup** (`backup_before_upgrade`): when `AGENT_BASE_VERSION`
-   changed since the last boot on a warm volume, run
-   `openclaw backup create --verify` into `/backups` before any mutation;
-   failure aborts (see [Upgrades](#upgrades)). Fresh volumes just record
-   the version; dev boots without the env var skip.
+2. **Upgrade prep** (`backup_before_upgrade`): when `AGENT_BASE_VERSION`
+   changed since the last boot on a warm volume, run (in order) a raw
+   pre-migration snapshot of the state database into the backups dir,
+   `openclaw doctor --fix --non-interactive` (the pinned CLI, 2026.10+,
+   gates both backups and gateway startup on state-db schema migrations),
+   and `openclaw backup create --verify` into `/backups`; any failure
+   aborts (see [Upgrades](#upgrades)). Fresh volumes just record the
+   version; dev boots without the env var skip.
 3. **First boot** (`first_boot_setup`, only when `{data}/openclaw.json` is
    absent): `openclaw setup --auth-choice <setup.auth_choice>`, register
    `model.fallback`, add each channel, install

@@ -137,6 +137,8 @@ def build_common(fixture: str) -> list[str]:
         "--security-opt",
         "label=disable",
         "-e",
+        "TELEGRAM_BOT_TOKEN=smoke-bot-token",
+        "-e",
         "TELEGRAM_CHAT_ID=123456",
         "-e",
         "TELEGRAM_ALLOWED_USERS=111111,222222",

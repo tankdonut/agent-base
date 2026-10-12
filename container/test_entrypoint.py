@@ -45,6 +45,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 import entrypoint
+import spec
 from spec import SPEC_VERSION_SUPPORTED
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -511,6 +512,28 @@ class FirstBootEnvGate(EntrypointTestCase):
         self.assertEqual(1, ctx.exception.code)
         self.assertIn("first-boot setup failed (exit 2)", err.getvalue())
         self.assertNotIn("ZAI_API_KEY", err.getvalue())
+
+    def test_channel_add_failure_aborts_cleanly(self) -> None:
+        # openclaw 2026.10+ rejects --use-env adds when the credential env
+        # var is absent; that must abort the boot like a setup failure.
+        def failing_channel(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+            if cmd[:3] == ["openclaw", "channels", "add"]:
+                raise subprocess.CalledProcessError(1, cmd)
+            return self._ok(cmd)
+
+        self.handler = failing_channel
+        boot_spec = entrypoint.Spec(
+            agent_name="t-agent",
+            auth_choice="zai-coding-global",
+            model_fallback="zai/glm-5.3-flash",
+            automations_model="zai/glm-5.3-flash",
+            channels=[spec.Channel(type="telegram")],
+        )
+        err = io.StringIO()
+        with self.assertRaises(SystemExit) as ctx, redirect_stderr(err):
+            entrypoint.first_boot_setup(boot_spec)
+        self.assertEqual(1, ctx.exception.code)
+        self.assertIn("channel add 'telegram' failed (exit 1)", err.getvalue())
 
     def test_boot_without_zai_api_key_aborts_at_load(self) -> None:
         with mock.patch.dict(os.environ):
@@ -1883,6 +1906,60 @@ class BackupBeforeUpgrade(EntrypointTestCase):
         self.write_openclaw_config("{}")
         self._delta_boot("2.0")
         self.assertEqual(1, len(self.calls_with("openclaw", "backup", "create")))
+
+    def test_version_delta_runs_migration_before_backup(self) -> None:
+        self.write_openclaw_config("{}")
+        self._marker().write_text("1.0", encoding="utf-8")
+        self._delta_boot("2.0")
+        doctor_idx = next(
+            i for i, call in enumerate(self.calls) if call[:3] == ["openclaw", "doctor", "--fix"]
+        )
+        self.assertIn("--non-interactive", self.calls[doctor_idx])
+        backup_idx = next(
+            i for i, call in enumerate(self.calls) if call[:3] == ["openclaw", "backup", "create"]
+        )
+        self.assertLess(doctor_idx, backup_idx)
+        self.assertEqual("2.0", self._marker().read_text(encoding="utf-8").strip())
+
+    def test_migration_failure_aborts_and_keeps_marker(self) -> None:
+        self.write_openclaw_config("{}")
+        self._marker().write_text("1.0", encoding="utf-8")
+
+        def failing(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+            if cmd[:3] == ["openclaw", "doctor", "--fix"]:
+                return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="migration")
+            return self._ok(cmd)
+
+        self.handler = failing
+        err = io.StringIO()
+        with self.assertRaises(SystemExit) as ctx, redirect_stderr(err):
+            self._delta_boot("2.0")
+        self.assertEqual(1, ctx.exception.code)
+        self.assertIn("state database migration failed", err.getvalue())
+        self.assertEqual([], self.calls_with("openclaw", "backup", "create"))
+        self.assertEqual("1.0", self._marker().read_text(encoding="utf-8").strip())
+
+    def test_pre_migration_state_snapshot_taken_into_backups_dir(self) -> None:
+        self.write_openclaw_config("{}")
+        self._marker().write_text("1.0", encoding="utf-8")
+        state = self.data / "state"
+        state.mkdir(parents=True)
+        (state / "openclaw.sqlite").write_bytes(b"db")
+        (state / "openclaw.sqlite-wal").write_bytes(b"wal")
+        self._delta_boot("2.0")
+        backups = self.data / "backups"
+        snapshots = sorted(p.name for p in backups.glob("pre-upgrade-state-*"))
+        self.assertEqual(2, len(snapshots))
+        self.assertTrue(snapshots[0].endswith(".sqlite"))
+        self.assertTrue(snapshots[1].endswith(".sqlite-wal"))
+        self.assertEqual(b"db", (backups / snapshots[0]).read_bytes())
+
+    def test_missing_state_db_snapshots_nothing_and_migration_still_runs(self) -> None:
+        self.write_openclaw_config("{}")
+        self._marker().write_text("1.0", encoding="utf-8")
+        self._delta_boot("2.0")
+        self.assertEqual([], list((self.data / "backups").glob("pre-upgrade-state-*")))
+        self.assertEqual(1, len(self.calls_with("openclaw", "doctor", "--fix")))
 
     def test_backup_failure_aborts_and_keeps_marker(self) -> None:
         self.write_openclaw_config("{}")

@@ -124,7 +124,7 @@ HEADER_KEYS = frozenset(
 DELIVER_MODES = frozenset({"announce", "no-deliver"})
 
 # `trigger-script:` surface, source-verified at the pinned base tag
-# 2026.7.1-2 (cron-cli + gateway jobs bundles, plus live round-trip):
+# 2026.10.2 (cron-cli + gateway jobs bundles, plus live round-trip):
 # `cron add|edit --trigger-script <path>` reads the file CLI-side, trims
 # it, refuses empty or oversized content, and embeds it as the job's
 # `trigger.script`; the Gateway evaluates it headlessly when due
