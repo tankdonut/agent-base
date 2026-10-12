@@ -7,6 +7,21 @@ repos:
       - id: end-of-file-fixer
       - id: check-merge-conflict
       - id: check-json
+      # Parses every tracked YAML — the compose examples, the litellm
+      # golden config, and the workflow files themselves.
+      - id: check-yaml
+
+  # env.example ↔ spec.example.json drift gate: the golden pair must stay
+  # in lockstep (container/test_spec.py EnvExampleContract). The spec
+  # loader suite runs, so schema regressions trip the same hook.
+  - repo: local
+    hooks:
+      - id: env-example-contract
+        name: env-example contract (spec loader suite)
+        entry: python3 -m unittest discover -s container -p test_spec.py
+        language: system
+        pass_filenames: false
+        files: ^(examples/(env\.example|spec\.example\.json)|container/(spec|test_spec)\.py)$
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.16.10

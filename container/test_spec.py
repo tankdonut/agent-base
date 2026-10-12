@@ -22,6 +22,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import re
 import tempfile
 import unittest
 from collections.abc import Mapping
@@ -44,6 +45,7 @@ from spec import (
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 EXAMPLE_SPEC = REPO_ROOT / "examples" / "spec.example.json"
+ENV_EXAMPLE = REPO_ROOT / "examples" / "env.example"
 
 MINIMAL: dict[str, object] = {
     "specVersion": 1,
@@ -68,6 +70,16 @@ GOLDEN_ENV: Mapping[str, str] = {
     "SENTIMENT_API_KEY": "sk-sentiment",
     "LITELLM_API_KEY": "sk-golden-litellm",
 }
+
+
+def env_example_keys() -> set[str]:
+    """Documented KEY= lines in env.example.
+
+    Entries live as commented ``#KEY=`` lines by design (operators copy and
+    uncomment what their spec references), so the contract surface is the
+    key names, not live assignments.
+    """
+    return set(re.findall(r"^#\s*([A-Z][A-Z0-9_]*)\s*=", ENV_EXAMPLE.read_text(), re.MULTILINE))
 
 
 def minimal_without(key_path: str) -> dict[str, object]:
@@ -174,6 +186,37 @@ class GoldenExampleSpec(SpecTestCase):
         with self.assertRaises(SpecError) as ctx:
             load_spec(EXAMPLE_SPEC, {})
         self.assertIn("TELEGRAM_BOT_TOKEN", str(ctx.exception))
+
+
+class EnvExampleContract(unittest.TestCase):
+    """env.example is the documented env contract; the golden pair must not drift."""
+
+    def test_documented_keys_parse(self) -> None:
+        keys = env_example_keys()
+        self.assertGreater(len(keys), 15, "env.example key parse collapsed — file format drift?")
+
+    def test_golden_env_values_stay_documented(self) -> None:
+        missing = set(GOLDEN_ENV) - env_example_keys()
+        self.assertEqual(set(), missing, f"env.example does not document: {sorted(missing)}")
+
+    def test_golden_spec_refs_are_documented(self) -> None:
+        raw = json.loads(EXAMPLE_SPEC.read_text())
+        refs = set(re.findall(r"\{env:([A-Z][A-Z0-9_]*)\}", json.dumps(raw)))
+
+        def collect(node: object) -> None:
+            if isinstance(node, dict):
+                for key, value in node.items():
+                    if key == "if_env" and isinstance(value, list):
+                        refs.update(item for item in value if isinstance(item, str))
+                    else:
+                        collect(value)
+            elif isinstance(node, list):
+                for value in node:
+                    collect(value)
+
+        collect(raw)
+        missing = refs - env_example_keys()
+        self.assertEqual(set(), missing, f"env.example does not document: {sorted(missing)}")
 
 
 class ModelThinking(SpecTestCase):

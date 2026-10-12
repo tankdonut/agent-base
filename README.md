@@ -45,7 +45,7 @@ Design invariants:
 
 ```sh
 ./make.sh test           # container unit suites
-./make.sh lint           # pre-commit (ruff, hadolint, markdownlint)
+./make.sh lint           # pre-commit (ruff, hadolint, markdownlint, yaml + env-example checks)
 ./make.sh smoke          # real-image smoke: fixture boots + graceful-shutdown drain
 ```
 

@@ -6,7 +6,7 @@
 | ----- | ------- |
 | All tests | `./make.sh test` |
 | One module | `python3 -m unittest discover -s container -p "test_spec.py"` |
-| Lint (ruff, ruff-format, hadolint, markdownlint) | `./make.sh lint` |
+| Lint (ruff, ruff-format, hadolint, markdownlint, check-yaml + env-example contract) | `./make.sh lint` |
 | Image smoke (CI + local; podman or docker, `SMOKE_ENGINE` override) | `./make.sh smoke` |
 | Build image (date tag default) | `./make.sh build` |
 | Push image | `AGENT_BASE_VERSION=YYYY.MM.DD[.N] ./make.sh push` — refuses implicit tags; same-day follow-up releases use the `.N` run suffix |
@@ -106,6 +106,7 @@ Symbols relative to `container/`.
 - Workflow evidence classes are never conflated: PR gates certify the **tree** (SHA correctness); main-push **candidate** gates certify the **exact artifact** (image digest identity); the nightly run is only the published-image watchdog (boots the newest public date tag, asserts baked-version identity + HEALTHCHECK). Harnesses accept explicit candidate inputs — `SMOKE_IMAGE` (smoke), `CONTRACT_BASELINE_IMAGE` (contract stage D). An explicit override is a required identity: unavailable must fail the run, never silently test different bytes; only the ambient defaults stay best-effort (skip/build-if-absent).
 - Smoke runs in CI (`smoke` job, docker via `SMOKE_ENGINE`) and locally (podman-first); logs are `logs/smoke-*.log` (gitignored) — kept on failure, removed on success.
 - `tests/smoke_test.py` embeds a Python RUNNER mirroring `main()` minus the fork/supervise handoff — update both when phases change.
+- The example pair is gated: pre-commit `check-yaml` parses the compose + litellm examples, and `container/test_spec.py` `EnvExampleContract` pins `examples/env.example` against `examples/spec.example.json` (missing/drifted `{env:}` refs, `if_env` guards, and golden-env keys fail the suite).
 - Project one-offs go in wrapper entrypoints that import the phases — never hooks in the base (docs "Escape hatch: wrapper entrypoints").
 - Local `container/__pycache__` (cpython-313/314) and the `.codegraph` symlink are machine-local, untracked artifacts.
 
