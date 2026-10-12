@@ -14,7 +14,7 @@ REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 IMAGE=ghcr.io/tankdonut/agent-base
 cd "$REPO_ROOT"
 
-# Tracked files only — .omo/ and other ignored artifacts never gate releases.
+# Tracked files only — ignored artifacts never gate releases.
 # Tag shape: YYYY.MM.DD with an optional same-day run suffix (.1, .2, ...).
 mapfile -t refs < <(
   git grep -hoE "${IMAGE//./\\.}:202[0-9]\.[0-9]{2}\.[0-9]{2}(\.[0-9]+)?" -- . |

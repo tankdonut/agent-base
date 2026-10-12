@@ -1276,7 +1276,7 @@ FROM ghcr.io/tankdonut/agent-base:2026.08.24.1
 COPY --chown=node:node agent/spec.json     /opt/agent/spec.json
 COPY --chown=node:node agent/automations/  /opt/agent/automations/
 COPY --chown=node:node agent/workspace/    /opt/seed/workspace/
-COPY --chown=node:node .opencode/skills/   /opt/seed/skills/
+COPY --chown=node:node agent/skills/       /opt/seed/skills/
 COPY --chown=node:node knowledge/content/  /opt/seed/docs/
 ```
 

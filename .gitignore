@@ -5,9 +5,6 @@ __pycache__/
 # smoke-test log artifacts
 logs/
 
-# oh-my-openagent working state
-.omo/
-
 # local tooling
 .venv/
 .worktrees/
