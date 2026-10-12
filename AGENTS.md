@@ -6,14 +6,8 @@
 | ----- | ------- |
 | All tests | `./make.sh test` |
 | One module | `python3 -m unittest discover -s container -p "test_spec.py"` |
-| agentctl (Go) tests | `./make.sh agentctl-test` |
-| agentctl build/install | `./make.sh agentctl-build` / `./make.sh agentctl-install` |
-| Run agentctl without installing | `./make.sh agentctl <command> [flags]` (forwards to `go run`) |
-| Lint (ruff, ruff-format, hadolint, markdownlint, golangci-lint/depguard) | `./make.sh lint` |
+| Lint (ruff, ruff-format, hadolint, markdownlint) | `./make.sh lint` |
 | Image smoke (CI + local; podman or docker, `SMOKE_ENGINE` override) | `./make.sh smoke` |
-| agentctl front-door e2e — the shipped-binary user journey (init → secrets → deploy → serve → destroy; `E2E_ENGINE` override) | `./make.sh agentctl-frontdoor` (PR gate) |
-| agentctl full e2e matrix — upgrade dual-tag, 2-agent fleet, shared-litellm plane | nightly (`nightly.yml`; also `E2E_STAGES` subset via `./make.sh agentctl-e2e`) |
-| agentctl integration tier — real engine + real image: converge, drift, plane boot, gateway protocol + device pairing, serve API, upgrade apply (`AGENT_E2E_ENGINE`/`AGENT_E2E_IMAGE`/`AGENT_E2E_TMPDIR` overrides) | `go test -tags=integration -count=1 ./internal/integration/` (CI: inside `image-amd64`, against the branch-built image) |
 | Build image (date tag default) | `./make.sh build` |
 | Push image | `AGENT_BASE_VERSION=YYYY.MM.DD[.N] ./make.sh push` — refuses implicit tags; same-day follow-up releases use the `.N` run suffix |
 | Validate a spec (CI gate) | `docker run --rm --env-file .env <image> --validate-spec` |
@@ -22,55 +16,25 @@
 ## Structure
 
 ```text
-cmd/         agentctl CLI — operator tool for downstream agent repos (scaffold first)
 container/   Image contract: entrypoint.py (boot), spec.py (loader), seed_automations.py
              (cron reconciler), Dockerfile, colocated test_*.py (never shipped)
-docs/        standard-agent.md — the whole agent contract + grow-agent/trade-agent migration guides
-             (incl. "Model providers via LiteLLM")
+docs/        standard-agent.md — the whole agent contract + grow-agent/trade-agent
+             migration guides (incl. "Model providers via LiteLLM");
+             deployment.md — host prep, proxy, platforms
 tests/       e2e surface (image-side, python stdlib): smoke_test.py (real-image
-             fixture boots + graceful-shutdown drain), agentctl_e2e.py (front
-             door: init → doctor → deploy → health → stop/start → destroy
-             volume semantics), contract_test.py + contract/
+             fixture boots + graceful-shutdown drain), contract_test.py + contract/
              (real-CLI drift gate: emitted-flag cross-check vs --help + clean
              shim-free boot + upgrade-path warm-volume reboot from the last
              published release), fixtures/* (grow-agent-like, trade-agent-like,
              litellm-like — boot-tested spec+automations trees; input for
              smoke; consult, don't copy whole), shim/openclaw (fake CLI;
              asserts via invocation log)
-internal/    agentctl engine, layered by import direction:
-             project + process (foundations: repo contract readers,
-             Runner/engine policy — import nothing internal), fleet
-             (manifest loader + roster + the compose envelope RENDERER:
-             agents' compose.yml is generated from fleet.yaml on every
-             verb, never authored), compose (engine argv vocabulary),
-             platform (deployment port + Deployment IR; adapters under
-             platform/dockercompose and platform/fly — fly ships its
-             own embedded fly.toml.tmpl and scaffolds deploy/fly.toml),
-             cli (cobra composition root incl. the platform registry —
-             the only package allowed to import adapters; doctor owns
-             the era table in eras.go — the release-mined
-             image-behavior history that powers --target upgrade
-             previews — plus --post-upgrade instance verification, the
-             --target migration explainers, the scaffold
-             template-drift advisory, and the --report evidence
-             bundle; fleet.go hosts `fleet ls`/`fleet
-             check`, fleetverbs.go the batch verbs (deploy/status/logs/
-             backup/stop/start with --agent|--all — batches are never
-             implicit), fleetadd.go `fleet add`, fleetplane.go the plane
-             lifecycle + `fleet render` + `fleet key`, gatewaystatus.go the WS operator surface (`fleet status --live`, `approvals`), fleetserve.go `fleet serve`/`fleet serve-init`; migrateverb.go hosts `agentctl migrate` — the legacy
-             single-agent layout → fleet.yaml carry-over),
-             api (loopback fleet API: bearer auth, 202 deploy jobs +
-             jobs table, SSE events, approvals proxy — deps injected
-             from cli, dir-scoped Runner execution, never chdirs;
-             web/ hosts the embedded vanilla-JS console served at /),
-             scaffold (self-contained leaf owning its embedded tmpl/
-             tree — init emits the fleet-of-one shape: fleet.yaml +
-             agents/<key>/)
-scripts/     check-deps.sh (Go license allowlist, agentctl CI job), check-image-refs.sh (release-time GHCR tag gate)
+scripts/     check-image-refs.sh (release-time GHCR tag gate)
 examples/    Image-contract examples: spec.example.json (golden), env.example,
              compose snippets (prod template incl. the LiteLLM sidecar),
              litellm/config.example.yaml (golden proxy config), workspace
              skeletons
+VERSION      Release intent: the date tag the next release publishes
 ```
 
 ## Where To Look
@@ -82,12 +46,9 @@ examples/    Image-contract examples: spec.example.json (golden), env.example,
 | Cron reconcile behavior | `container/seed_automations.py` |
 | Graceful shutdown / drain behavior | `container/entrypoint.py` — `supervise`, `ShutdownSupervisor`, `parse_shutdown_grace` |
 | Env var contract (base vs project) | `examples/env.example`, `docs/standard-agent.md#environment-contract` |
-| LiteLLM sidecar (model/provider config home) | `docs/standard-agent.md#model-providers-via-litellm`, `examples/litellm/config.example.yaml`, scaffold `internal/scaffold/tmpl/litellm/` |
+| LiteLLM sidecar (model/provider config home) | `docs/standard-agent.md#model-providers-via-litellm`, `examples/litellm/config.example.yaml`, `examples/compose.prod.agent.yml` |
 | Smoke failure | `logs/smoke-*.log` (kept on failure, deleted on success) + `tests/smoke_test.py` |
 | Migration guides | `docs/standard-agent.md#migrations` |
-| Scaffold a new downstream agent repo | `cmd/agentctl` — `go run ./cmd/agentctl init <dir>` (emits the fleet-of-one shape: fleet.yaml + `agents/<key>/`) |
-| Fleet manifest + renderer + plane | `internal/fleet/` — manifest.go (loader), render.go (envelope renderer), plane.go (plane stack renderer; goldens in testdata/), cli/fleet.go (ls/check incl. running-port drift), cli/fleetverbs.go (batch verbs), cli/fleetadd.go (`fleet add`), cli/fleetplane.go (plane lifecycle, `fleet render`, `fleet key`), cli/gatewaystatus.go (`fleet status --live`, `approvals`), cli/fleetserve.go (`fleet serve`, `serve-init`), gatewayclient/ (WS client), api/ (loopback fleet API) |
-| Migrate a legacy single-agent repo | `internal/cli/migrateverb.go` — `agentctl migrate` |
 
 ## Code Map
 
@@ -113,7 +74,7 @@ Symbols relative to `container/`.
 ## Key Conventions
 
 - Python 3.11 floor (bookworm image), stdlib only; no 3.12+ syntax; full type annotations (convention — no mypy gate); `unittest` + `mock`, never pytest. Stdlib-only is enforced by construction: the image installs no pip; `.ruff.toml` targets py311, line 100; CI matrix is 3.11 (floor) + 3.14 (drift guard).
-- Go module at the repo root (`agentctl`, spf13/cobra + go.yaml.in/yaml/v3 + BurntSushi/toml — no viper): operator CLI for downstream projects (scaffold + fleet lifecycle + release verbs via the platform port + secrets + validate). Release verbs (`deploy/status/logs/mcp/backup/stop/start/destroy`) dispatch through the `Platform` interface (`internal/platform`); the registry is the explicit map in `internal/cli/registry.go` (composition root — the port package must not import its adapters; adapters live in `internal/platform/<name>`, dockercompose + fly so far). Config is typed and fail-closed: **the repo shape is the fleet shape** — `fleet.yaml` at the root (strict loader: roster `agents:`, `plane:`, `defaults:`, `services:`, rename hints for pasted `.agentctl.yaml` keys), per-agent content directly under `agents/<name>/` (spec.json, Dockerfile, .env, automations/, skills/, workspace/, knowledge/, litellm/), the per-agent compose envelope RENDERED to `agents/<name>/compose.yml` (gitignored; it must sit at the build-context root — docker and podman-compose resolve relative paths against different bases), and `agents/<name>/.agentctl/` reserved as agentctl's host-side state namespace on every verb — never authored; escape hatches: typed `overrides:` (volumes/ports append, limits replace, `image` pins the deployed ref — digest-pinned candidates in CI qualification; the Dockerfile keeps its contract-valid public pin and stays the upgrade surface; `agentctl upgrade` refuses image-pinned agents) and `compose_file:`. `.agentctl.yaml` is retired (fold into fleet.yaml; `agentctl migrate` carries legacy single-agent repos over — the legacy root layout is a hard error everywhere else). Gateway ports are manifest-owned: an `AGENT_GATEWAY_PORT` line in agent/.env is a hard error (stale-.env precedence inversion). Scaffold templates embedded in `internal/scaffold/tmpl` (init tree, fleet-of-one shape) and per-adapter (`fly` embeds its own fly.toml.tmpl). Dependency rule (machine-enforced by depguard via golangci-lint — pre-commit hook + `.golangci.yml`): `project`/`process` import nothing internal; `fleet` imports foundations + the platform port only; `scaffold` is a self-contained leaf; `compose` imports only `process` + `project`; the `platform` port imports no adapter (project + process only); adapters (`internal/platform/<name>`) never import each other; only `internal/cli` imports adapters. Process execution flows through the `Runner` interface (`internal/process` — Run, RunOutput, LookPath); cobra-free logic lives in the foundation and port packages.
+- The repo ships one artifact: the agent-base image. Release intent lives in the root `VERSION` file (date tag `YYYY.MM.DD[.N]`): a main push whose `VERSION` names an unreleased tag qualifies a candidate in the private `ghcr.io/tankdonut/agent-base-staging` package (per-arch builds, index assembly, full gate matrix against the exact index digest, SLSA attestations, eligibility receipt); the tag push PROMOTES — receipt-gated `oras cp --recursive` of the qualified digest to the public tag with an `I_final == I_qualified` identity assert; the release job never rebuilds (see the `releasing-agent-base` skill).
 - Loader modules fail closed: unknown key/token, ambiguous shape → abort loudly; never a silent empty string or skip.
 - Secrets flow only through `{env:VAR}` spec refs and env vars; resolved values must never reach logs — warnings name keys/env vars, never values (locked by SecretsCanary tests).
 - `container/` files are the image contract; renaming/moving any of them changes downstream projects' Dockerfiles — update `docs/standard-agent.md` in the same commit. Modules import each other top-level (no package, no `__init__.py`); the Dockerfile COPYs exactly the three modules flat to `/opt/agent`.
@@ -121,20 +82,16 @@ Symbols relative to `container/`.
 - Seeded automations run with a bounded tool allow-list (`seed_automations.DEFAULT_JOB_TOOLS` — fs/runtime/web/memory + `bundle-mcp`; recursion/spawn/browser excluded, OWASP ASI06). Per-job `tools:` header or spec `automations.default_tools` overrides; `*` = unrestricted. Per-job `model:` header overrides the global `automations.model` for that job (set on add, drift healed via `cron edit --model`). A `trigger-script:` header attaches a Gateway condition script (path inside the read-only `/opt/agent/scripts` sibling, content embedded at seed time; content drift healed via `cron edit --trigger-script`, removal via `--clear-trigger`) — the surface aborts seeding unless `AGENT_AUTOMATION_TRIGGERS=1` (which arms `cron.triggers.enabled`; evaluation runs with the owning agent's FULL tool policy, so the opt-in is deliberate). The base also sets `tools.deny` (cron, subagents, sessions_spawn, nodes) unless any env-active spec `tools.*` config entry exists (an `if_env` guard that never fires configures nothing).
 - Formatter is `ruff-format` (not black) via pre-commit, alongside ruff, hadolint (`container/Dockerfile` only), markdownlint (`tests/fixtures/***` ignored).
 - CI composes reusable actions from `tankdonut/github-actions` (`pre-commit`, `setup-python-uv`, `ghcr-login`); do not hand-roll equivalents. Exception: the multi-arch image jobs in `.github/workflows/ci.yml` use native per-arch runners + `imagetools` merge — the shared `build-and-publish` workflow hardcodes `ubuntu-latest` and cannot express per-arch builds (and a single multi-platform buildx push drops the HEALTHCHECK via the OCI exporter).
-- Releases bump two Go constants on main before tagging: `internal/cli` `Version` and `internal/scaffold` `DefaultBaseTag`, both equal to the tag verbatim. The main push carrying a NEW version constant qualifies a candidate in the private `ghcr.io/tankdonut/agent-base-staging` package (per-arch builds, index assembly, full gate matrix against the exact index digest, SLSA attestations, agentctl binaries built + attested, eligibility receipt). The tag push PROMOTES — receipt-gated `oras cp --recursive` of the qualified digest to the public tag with an `I_final == I_qualified` identity assert; the release job never rebuilds, and binaries/attestations flow through from the candidate run (see the `releasing-agent-base` skill).
 - Images publish under date tags only (`YYYY.MM.DD`); no `latest` exists; push requires explicit `AGENT_BASE_VERSION`.
 
 ## Anti-Patterns
 
-- `.agentctl.yaml` in any repo (retired) or a pasted legacy key in fleet.yaml — fold settings into manifest entries; the loader's rename hints name the homes.
-- Hand-editing or committing `agents/<name>/compose.yml` or anything under `agents/<name>/.agentctl/` — rendered state; changes belong in fleet.yaml (`overrides:`) or the renderer. Emergency standalone run: `cd agents/<name> && docker compose up -d`.
-- `AGENT_GATEWAY_PORT` in agent/.env inside a fleet repo — the manifest owns ports; a stale env line silently beats the allocation.
 - Baked default for `automations.model` — hard error naming `--model` + `AUTOMATION_MODEL`; defaults drift silently between agents sharing the image.
 - Bind-mounting automations in any mode — writable cron prompts are an agent self-modification surface (and there is no overlay: content is image-baked in every mode).
 - Setting `OPENCLAW_HOME` — double-nests `{data}`; the entrypoint pops it at import.
 - Writing docs to `{data}/docs` — the hard standard is `{data}/workspace/docs`.
-- Floating image tags; hand-rolled CI steps.
 - Editing `AGENTS.md` under `examples/workspace/` or `tests/fixtures/**/workspace/` as project docs — those are shipped agent personas (payload), not repo documentation.
+- Floating image tags; hand-rolled CI steps.
 - In tests: `from seed_automations import X` — reload discipline requires module-attribute access (`seed_automations.X`).
 
 ## Unique Styles
@@ -146,16 +103,8 @@ Symbols relative to `container/`.
 
 ## Notes
 
-- Workflow evidence classes are never conflated: PR gates certify the **tree** (SHA correctness);
-  main-push **candidate** gates certify the **exact artifact** (image digest identity); the nightly
-  matrix certifies **mechanics drift only** (synthetic dual-bake `2099.12.31` → `.1`) and never
-  qualifies a release. Harnesses accept explicit candidate inputs — `SMOKE_IMAGE` (smoke),
-  `AGENT_E2E_IMAGE` (integration tier A + B, front-door), `E2E_BASE_IMAGE`/`E2E_UPGRADE_IMAGE`
-  (agentctl e2e), `CONTRACT_BASELINE_IMAGE` (contract stage D). An explicit override is a required
-  identity: unavailable must fail the run, never silently test different bytes; only the ambient
-  defaults stay best-effort (skip/build-if-absent).
+- Workflow evidence classes are never conflated: PR gates certify the **tree** (SHA correctness); main-push **candidate** gates certify the **exact artifact** (image digest identity); the nightly run is only the published-image watchdog (boots the newest public date tag, asserts baked-version identity + HEALTHCHECK). Harnesses accept explicit candidate inputs — `SMOKE_IMAGE` (smoke), `CONTRACT_BASELINE_IMAGE` (contract stage D). An explicit override is a required identity: unavailable must fail the run, never silently test different bytes; only the ambient defaults stay best-effort (skip/build-if-absent).
 - Smoke runs in CI (`smoke` job, docker via `SMOKE_ENGINE`) and locally (podman-first); logs are `logs/smoke-*.log` (gitignored) — kept on failure, removed on success.
-- The e2e tiers: PRs run the slim front-door (`agentctl-frontdoor`) + the integration tier inside `image-amd64` against the branch-built image; the FULL `agentctl-e2e` matrix (upgrade dual-tag, plane) runs nightly (`nightly.yml`). Engine children are contained by `internal/e2e` (process groups, budgets, artifact dumps on breach).
 - `tests/smoke_test.py` embeds a Python RUNNER mirroring `main()` minus the fork/supervise handoff — update both when phases change.
 - Project one-offs go in wrapper entrypoints that import the phases — never hooks in the base (docs "Escape hatch: wrapper entrypoints").
 - Local `container/__pycache__` (cpython-313/314) and the `.codegraph` symlink are machine-local, untracked artifacts.
@@ -163,10 +112,11 @@ Symbols relative to `container/`.
 ## External References
 
 | Need | File |
-| ----- | ----- |
+| ----- | ---- |
 | Agent contract + project extension guide | `docs/standard-agent.md` |
 | Deployment guide (host prep, proxy, platforms) | `docs/deployment.md` |
 | Production compose template | `examples/compose.prod.agent.yml` |
 | Migration guides (grow-agent, trade-agent) | `docs/standard-agent.md#migrations` |
 | Spec schema golden example | `examples/spec.example.json` |
 | Env contract (base vs project vars) | `examples/env.example` |
+| Release procedure | `skills/releasing-agent-base/SKILL.md` |
