@@ -18,9 +18,8 @@
 ```text
 container/   Image contract: entrypoint.py (boot), spec.py (loader), seed_automations.py
              (cron reconciler), Dockerfile, colocated test_*.py (never shipped)
-docs/        standard-agent.md — the whole agent contract + grow-agent/trade-agent
-             migration guides (incl. "Model providers via LiteLLM");
-             deployment.md — host prep, proxy, platforms
+docs/        standard-agent.md — the whole agent contract (incl. "Model providers
+             via LiteLLM"); deployment.md — host prep, proxy, platforms
 tests/       e2e surface (image-side, python stdlib): smoke_test.py (real-image
              fixture boots + graceful-shutdown drain), contract_test.py + contract/
              (real-CLI drift gate: emitted-flag cross-check vs --help + clean
@@ -48,7 +47,6 @@ VERSION      Release intent: the date tag the next release publishes
 | Env var contract (base vs project) | `examples/env.example`, `docs/standard-agent.md#environment-contract` |
 | LiteLLM sidecar (model/provider config home) | `docs/standard-agent.md#model-providers-via-litellm`, `examples/litellm/config.example.yaml`, `examples/compose.prod.agent.yml` |
 | Smoke failure | `logs/smoke-*.log` (kept on failure, deleted on success) + `tests/smoke_test.py` |
-| Migration guides | `docs/standard-agent.md#migrations` |
 
 ## Code Map
 
@@ -117,7 +115,6 @@ Symbols relative to `container/`.
 | Agent contract + project extension guide | `docs/standard-agent.md` |
 | Deployment guide (host prep, proxy, platforms) | `docs/deployment.md` |
 | Production compose template | `examples/compose.prod.agent.yml` |
-| Migration guides (grow-agent, trade-agent) | `docs/standard-agent.md#migrations` |
 | Spec schema golden example | `examples/spec.example.json` |
 | Env contract (base vs project vars) | `examples/env.example` |
 | Release procedure | `skills/releasing-agent-base/SKILL.md` |
