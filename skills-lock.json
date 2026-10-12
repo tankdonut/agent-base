@@ -17,18 +17,18 @@
       "source": "mattpocock/skills",
       "sourceType": "github",
       "skillPath": "skills/engineering/improve-codebase-architecture/SKILL.md",
-      "computedHash": "2449db6ab1ded9581f69fcc56c1f64818112d05e271fd4c5da23c6523f9d3d9d"
+      "computedHash": "ac2c94885f34ff8492dc12aa4543182f661f32ea1722b8d6b6c2c7045af33ae3"
     },
     "managing-worktrees": {
       "source": "tankdonut/skills",
       "sourceType": "github",
-      "skillPath": "skills/managing-worktrees/SKILL.md",
+      "skillPath": "skills/workflow/git-worktrees/SKILL.md",
       "computedHash": "e660048be4321b92551e61604d78304d426f18f4743822e67fb94f45a8da1393"
     },
     "releasing-agent-base": {
       "source": "/var/home/white/Development/github.com/tankdonut/agent-base/skills",
       "sourceType": "local",
-      "computedHash": "6b288d5a44d91d4f53ce6d9a8f2daf38f129b1f7a62f86bfe39d561d0d900721"
+      "computedHash": "51f64747cee51a5bcc5c6cb365617a760c1e7a732eeccc0221baba1292fc49c7"
     },
     "using-git-worktrees": {
       "source": "obra/superpowers",
