@@ -95,8 +95,8 @@ services:
         max-file: "5"
 
   # Model/provider home: EVERY provider API key lives only in the litellm
-  # service env (env_file below — same litellm/.env shape agentctl
-  # scaffolds; golden contents in examples/litellm/config.example.yaml's
+  # service env (env_file below — the litellm/.env.example shape in this
+  # directory; golden contents in examples/litellm/config.example.yaml's
   # sibling env example) — the agent container never sees them and holds
   # only the proxy key (LITELLM_API_KEY, mirrored from LITELLM_MASTER_KEY).
   # DB-less mode: the master key is the whole auth surface (no virtual

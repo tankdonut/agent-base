@@ -14,8 +14,8 @@
 # api_key uses os.environ/ indirection so provider keys live only in the
 # litellm service env — never in this file, never in the agent container.
 #
-# After edits: restart the litellm service (`agentctl restart litellm` or
-# compose restart) — the proxy reads config at boot.
+# After edits: restart the litellm service
+# (`docker/podman compose restart litellm`) — the proxy reads config at boot.
 model_list:
   - model_name: glm-5.3-flash
     litellm_params:

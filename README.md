@@ -30,37 +30,14 @@ Design invariants:
 - Date tags only (`YYYY.MM.DD[.N]`), no `latest`; releases carry SBOM +
   build provenance attestations
 
-## agentctl
-
-Operator CLI for downstream agent projects (`go run ./cmd/agentctl`):
-
-- `init` — scaffold a new downstream agent repo
-- `dev up` — local loop: hot-reload overlay
-- `deploy · status · logs · backup · stop · start · destroy` — release
-  verbs over the platform port (compose is the reference; fly adapter
-  ships too)
-- `upgrade <tag>` — the upgrade runbook as one verb: gate, backup,
-  retag, deploy, verify
-- `platform ls · set · check` — deployment platform management
-- `fleet` — fleet verbs + plane lifecycle + `fleet add` + `fleet key`
-- `fleet serve` / `serve-init` — loopback fleet API: bearer auth, async deploy jobs, SSE events, approvals proxy — with an embedded operator console (overview, deploy, jobs, approvals, upgrades)
-- `fleet status --live` / `approvals` — gateway WS surface: live per-agent status, pending approval list + resolve
-- `doctor` — pre-flight report (litellm shape + real-image spec gate)
-- `secrets init · check · edit` — secrets management
-- `validate` — spec gate via the base image
-
-See `agentctl help` for the full command surface.
-
 ## Repository layout
 
 | Path | Purpose |
 | ----- | ------- |
 | `container/` | Base-image Python modules (entrypoint, spec loader, automations reconciler) + unittest suites |
-| `cmd/` | `agentctl` CLI entrypoint |
-| `internal/` | agentctl engine: scaffold templates, platform adapters, cobra composition |
 | `examples/` | Image-contract examples: spec golden, env contract, compose snippets, workspace skeletons |
 | `docs/` | The standard-agent contract + deployment guide + migrations |
-| `tests/` | E2E surface: real-image smoke + drain, CLI contract gate, agentctl front-door e2e, fixtures, openclaw shim |
+| `tests/` | E2E surface: real-image smoke + drain, CLI contract gate, fixtures, openclaw shim |
 | `scripts/` | `check-image-refs.sh` (release-time GHCR tag gate) |
 | `make.sh` | Task runner |
 
@@ -68,10 +45,8 @@ See `agentctl help` for the full command surface.
 
 ```sh
 ./make.sh test           # container unit suites
-./make.sh lint           # pre-commit (ruff, hadolint, markdownlint, golangci-lint)
+./make.sh lint           # pre-commit (ruff, hadolint, markdownlint)
 ./make.sh smoke          # real-image smoke: fixture boots + graceful-shutdown drain
-./make.sh agentctl-test  # Go tests
-./make.sh agentctl-e2e   # init → deploy → destroy front door
 ```
 
 ## Documentation

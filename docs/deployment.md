@@ -26,27 +26,26 @@ requirements plus one clamp:
 2. **Exec into the running container** — `openclaw mcp login` writes OAuth
    tokens into the live `{data}`, and `mcp doctor/status` debugs it. A
    platform without exec yields an agent you cannot authenticate or enter.
-3. **Drain cap** — every platform force-kills after some window; adapters
-   clamp `AGENT_SHUTDOWN_GRACE` under it and say so.
+3. **Drain cap** — every platform force-kills after some window; clamp
+   `AGENT_SHUTDOWN_GRACE` under it.
 
-| Platform | Block volume | Exec | Drain cap | agentctl adapter |
+| Platform | Block volume | Exec | Drain cap | Notes |
 | --- | --- | --- | --- | --- |
-| compose (any host) | ✓ host disk | ✓ `compose exec` | 600s full | `compose` (default) |
-| Fly.io | ✓ NVMe (1 vol ↔ 1 machine) | ✓ `fly ssh console` | 300s | `fly` |
-| Kubernetes (any) | ✓ block PV | ✓ `kubectl exec` | pod grace (660s) | planned |
+| compose (any host) | ✓ host disk | ✓ `compose exec` | 600s full | reference shape |
+| Fly.io | ✓ NVMe (1 vol ↔ 1 machine) | ✓ `fly ssh console` | 300s | see notes below |
+| Kubernetes (any) | ✓ block PV | ✓ `kubectl exec` | pod grace (660s) | |
 | Render | ✓ disks | ✗ no exec | 300s | blocked — re-evaluate if Render ships exec |
 | ECS Fargate | EFS only (network FS) | ✓ | 120s | blocked at the volume |
 | Azure Container Apps | Azure Files only | ✓ | — | blocked at the volume |
 | Cloud Run / App Runner / Lightsail / DO App Platform | ✗ | ✗ | — | blocked |
 
-Fly-specific notes the adapter encodes: `kill_signal` must be `SIGTERM`
-(fly's default SIGINT skips the drain), `kill_timeout` and
-`AGENT_SHUTDOWN_GRACE` clamp to 300s, one machine mounts one volume —
-it carries `{data}` while `/backups` stays ephemeral (verified pre-upgrade
-backup, then gone with the machine; the data volume is the source of
-truth), and `fly apps destroy` deletes the volume with the app —
-`agentctl destroy` refuses without `--volumes` on this platform.
-Secrets never flow through agentctl argv: run
+Fly-specific notes: `kill_signal` must be `SIGTERM` (fly's default
+SIGINT skips the drain), `kill_timeout` and `AGENT_SHUTDOWN_GRACE`
+clamp to 300s, one machine mounts one volume — it carries `{data}`
+while `/backups` stays ephemeral (verified pre-upgrade backup, then
+gone with the machine; the data volume is the source of truth), and
+`fly apps destroy` deletes the volume along with the app — export
+backups off-host first. Secrets never flow through shell argv: run
 `fly secrets import -a <app> < agent/.env` once — flyctl reads the file
 itself.
 
@@ -143,10 +142,10 @@ the operator surface:
 
 | Task | How |
 | --- | --- |
-| Add or reroute a model | Edit `litellm/config.yaml` (`model_list`), add the provider key to the litellm env file if new, `agentctl restart litellm`. The agent references models as `litellm/<alias>` in spec.json — no rebuild. |
-| Rotate the proxy master key | Edit `LITELLM_MASTER_KEY` (litellm env) **and** `LITELLM_API_KEY` (agent env) to the same new `sk-…` value, then restart the stack. `agentctl secrets check` catches a half-rotation (values compared, never printed). |
-| Upgrade the proxy | Renovate bumps + digest-pins the image tag; `agentctl deploy` rolls it. The proxy is stateless (db-less), so there is no volume to migrate. |
-| Health | `docker/podman compose ps` shows the service healthcheck (`/health/liveliness`); `agentctl logs litellm` (or `compose logs litellm`) for proxy logs. |
+| Add or reroute a model | Edit `litellm/config.yaml` (`model_list`), add the provider key to the litellm env file if new, `docker/podman compose restart litellm`. The agent references models as `litellm/<alias>` in spec.json — no rebuild. |
+| Rotate the proxy master key | Edit `LITELLM_MASTER_KEY` (litellm env) **and** `LITELLM_API_KEY` (agent env) to the same new `sk-…` value, then `docker/podman compose up -d`. A half-rotation fails fast: the agent's model calls 401 against the proxy (`LITELLM_API_KEY` no longer matches the master key). |
+| Upgrade the proxy | Renovate bumps + digest-pins the image tag; `docker/podman compose up -d` rolls it. The proxy is stateless (db-less), so there is no volume to migrate. |
+| Health | `docker/podman compose ps` shows the service healthcheck (`/health/liveliness`); `docker/podman compose logs litellm` for proxy logs. |
 | Capacity | The template caps the sidecar at 1 CPU / 1 GiB; raise alongside the agent's limits if model traffic grows — keep the sum below host RAM. |
 
 The sidecar publishes **no** ports: it is reachable only by the agent over
@@ -369,7 +368,7 @@ WantedBy=multi-user.target
 - [ ] `OPENCLAW_GATEWAY_TOKEN` set via the canonical `gateway.auth.token` spec path, and the boot log confirms auth applied — never rely on the gateway key alone (the upstream gateway fails closed, so misconfiguration surfaces as lockout: test remote access once before depending on it).
 - [ ] Token treated as root-equivalent: header-only transport, no query strings, no copies in proxy logs.
 - [ ] Dedicated compose network; only the proxy shares it or reaches the port.
-- [ ] Provider API keys live only in the litellm service env file — never in the agent env, `litellm/config.yaml`, git, or logs; `agentctl secrets check` passes (includes the master/client key match).
+- [ ] Provider API keys live only in the litellm service env file — never in the agent env, `litellm/config.yaml`, git, or logs; compare by hand that the agent env's `LITELLM_API_KEY` equals the litellm env's `LITELLM_MASTER_KEY` (values never printed).
 - [ ] `read_only`, `cap_drop: [ALL]`, `no-new-privileges` active (template defaults).
 - [ ] Image provenance verified (`gh attestation verify` or digest pinning via Renovate `pinDigests`).
 - [ ] `/backups` volume declared; backup aborts fail loudly (exit 1 + marker retry), so an aborted boot is a *feature* — investigate, don't force past it.
@@ -394,13 +393,12 @@ host-wide; everything else derives from them.
 
 | Resource | How it stays unique |
 | --- | --- |
-| Compose project name | The scaffolded `compose.yml` pins a top-level `name:` (the lowercased project name); it prefixes the containers, volumes, and `agent-net` network, and keeps them stable across directory renames. Hand-rolled stacks get the same by setting `name:` explicitly (or exporting `COMPOSE_PROJECT_NAME`). |
+| Compose project name | Pin a top-level `name:` in the compose file (the lowercased project name); it prefixes the containers, volumes, and `agent-net` network, and keeps them stable across directory renames (or export `COMPOSE_PROJECT_NAME`). |
 | Host gateway bind | A distinct `AGENT_GATEWAY_PORT` per agent, in each project's `.env`. The container-internal port stays 18789; only the host bind moves. |
 
-`agentctl deploy`/`dev up` probe the resolved loopback port before
-starting and warn when it is already bound — either this stack is
-already up (ignore) or another agent owns the port and the new one
-needs its own `AGENT_GATEWAY_PORT`.
+`docker/podman compose up` fails loudly when the host bind is already
+taken — either this stack is already up (ignore) or another agent owns
+the port and the new one needs its own `AGENT_GATEWAY_PORT`.
 
 The rest of the playbook:
 
@@ -426,11 +424,11 @@ The rest of the playbook:
 - **Backups:** volumes are per-project (`<project>_agent-data`,
   `<project>_agent-backups`); the [snapshot
   procedure](#backups-and-restore) runs unchanged, once per project.
-- **Re-scaffolding over an older project:** project-name pinning changed
-  real volume names from `<dir>_<project>-agent-data` to
-  `<project>_agent-data`. After `agentctl init --force` + `up`, either
-  copy the old volume's contents into the new one or keep the previous
-  compose.yml — an empty new volume silently re-runs first boot.
+- **Renaming a project:** pinning `name:` changes real volume names
+  from `<dir>_<project>-agent-data` to `<project>_agent-data`. After a
+  rename + `up`, either copy the old volume's contents into the new one
+  or keep the previous compose.yml — an empty new volume silently
+  re-runs first boot.
 
 ## Alternative platforms
 

@@ -133,17 +133,17 @@ pairing the two acceptable).
   entries; golden: `examples/litellm/config.example.yaml`), provider
   API keys live only in the litellm service env (`litellm/.env`,
   referenced from the yaml as `os.environ/NAME` — never as literals).
-- **The agent holds one key.** `LITELLM_API_KEY` in the agent env is
-  the proxy's master key (mirrored from `LITELLM_MASTER_KEY`;
-  `agentctl secrets init` generates the pair from one value,
-  `secrets check` enforces the match). OpenClaw's setup consumes the
+- **The agent holds one key.**   `LITELLM_API_KEY` in the agent env is
+  the proxy's master key (mirrored from `LITELLM_MASTER_KEY` — generate
+  both env files from one value and keep them equal; a half-rotation
+  fails the proxy healthcheck). OpenClaw's setup consumes the
   var natively and stores it in its agent sqlite store inside `{data}`;
   the loader gates the boot on it exactly like `ZAI_API_KEY` for zai
   choices.
 - **Models are proxy aliases.** `model.fallback`, `automations.model`,
   and per-job `model:` headers reference `litellm/<model_name>` ids
   matching the proxy's `model_list` aliases. Prefer the actual model
-  name as the alias (the scaffold default is `litellm/glm-5.3-flash`) so model
+  name as the alias (the convention is `litellm/glm-5.3-flash`) so model
   identity stays legible end to end; a distinct alias is a deliberate
   indirection (load-balance pools, re-pointing a route without a spec
   edit).
@@ -169,12 +169,12 @@ image ships no curl; its python3 serves the probe), the service
 publishes no ports (agent-reachable only), and the image is
 digest-pinned from day one
 (`ghcr.io/berriai/litellm:v1.100.0@sha256:…`) — Renovate bumps the
-tag+digest pair together, both in this repo (prod example + scaffold
-template) and in scaffolded downstream projects.
+tag+digest pair together in this repo's prod example; downstream
+projects pin the same way.
 
-Scaffolds (`agentctl init`) default to this shape: `secrets init`
-writes both env files, `compose.yml` carries the sidecar, and the
-deploy/stop/start/destroy verbs manage the whole stack. The pinned
+`examples/compose.prod.agent.yml` is this shape: the compose file
+carries the sidecar on `model-net`, and the two env files (agent +
+litellm) hold the key pair. The pinned
 OpenClaw CLI enables its `litellm` plugin and writes the provider +
 auth profile itself during first-boot setup — including a default
 `litellm/claude-opus-4-6` model entry that your `model_list` aliases
@@ -191,27 +191,17 @@ The blessed path is a fresh volume:
 1. Export what matters from the old stack (`openclaw backup create`
    inside the running agent container; persona content re-seeds from
    the image anyway).
-2. Adopt the litellm scaffold shape (`litellm/` tree, the compose service
+2. Adopt the litellm shape (`litellm/` tree, the compose service
    and `model-net`, spec `auth_choice: "litellm-api-key"`, model refs
    `litellm/<alias>`).
-3. `agentctl destroy --volumes`, `secrets init`, `secrets check`,
-   `deploy`.
+3. `docker/podman compose down --volumes`, re-create both env files
+   with the matching key pair, `up`.
 
-`agentctl doctor` reports migration readiness at every step: a `warn`
-line names any provider still off the sidecar (with this section as the
-pointer), litellm specs fail closed on a missing tree or a compose file
-without the sidecar + `model-net`, and — when a compose engine and the
-pinned image are local — the report runs the real-image spec gate
-(the same `--validate-spec` pass `agentctl validate` performs).
-`agentctl doctor --target <tag>` expands the warn into the full
-pre-upgrade preview: era crossings, volume readiness, and — on a warm
-non-litellm volume — the migration checklist above, one line per
-precondition. Doctor also advises when the contract-shaped files
-(compose.yml, the `.env.example` pair, `litellm/*`) drift from the
-scaffolded shape, and `agentctl doctor --report <path>` writes the
-full check document plus evidence (file fingerprints, instance
-markers, env key names — never secret values) for attaching to an
-issue.
+Verify the fresh boot took: gateway healthy, `openclaw models list`
+shows the `litellm/<alias>` entries, and the litellm service healthcheck
+passes. Spec-side errors surface before any boot with the same
+`--validate-spec` pass CI runs:
+`docker run --rm --env-file .env <image> --validate-spec`.
 
 Running the same setup command in-place inside the running container is
 the escape hatch (`openclaw setup --non-interactive --auth-choice
@@ -236,9 +226,8 @@ it safe in two ways:
    Backups are only as durable as their destination — mount a named
    volume at `/backups` so archives survive container replacement.
    Outside migrations, the same primitive is available on demand:
-   `agentctl backup` runs `openclaw backup create --verify` inside the
-   running instance through the platform's exec mechanism (compose exec
-   / fly ssh console) — copy the archive to host storage for
+   `docker/podman compose exec agent openclaw backup create --verify
+   --output /backups` — copy the archive to host storage for
    safekeeping.
 2. **Opt-in MCP removal + orphan report.** Servers the base registered
    are tracked in `{data}/agent-managed-mcp`. With
@@ -262,19 +251,9 @@ ghcr.io/tankdonut/agent-base:<tag>@<digest>   # from the release notes
 gh attestation verify oci://ghcr.io/tankdonut/agent-base:<tag>@<digest> -R tankdonut/agent-base
 ```
 
-The `agentctl` release binaries carry build-provenance attestations
-too: `gh attestation verify <binary> -R tankdonut/agent-base`.
-
 ### Upgrade runbook
 
-`agentctl upgrade <tag>` runs the whole sequence below as one verb —
-the `doctor --target` gate (fail-closed: era crossings, backup
-readiness, the target-image spec gate), a verified backup inside the
-running instance, the Dockerfile FROM rewrite, a forced deploy onto the
-new image, and the `doctor --post-upgrade` verify set (step 5). It
-asks for confirmation on interactive runs (`--yes` skips; `--dry-run`
-prints the plan), prints the rollback runbook (step 6) on any failure
-exit, and never auto-rolls-back. By hand:
+By hand:
 
 1. `docker/podman compose down` (stop the agent; a live SQLite volume
    must not be raw-copied).
@@ -285,11 +264,10 @@ exit, and never auto-rolls-back. By hand:
 4. Expect one log line: `Image changed (<old> → <new>) — creating
    verified backup`, then the normal boot sequence. A de-specified MCP
    server logs `Removed MCP server '<name>' (no longer in spec)`.
-5. Verify: `agentctl doctor --post-upgrade` (image marker, this-boot
-   backup, MCP + cron reconciliation, boot summary — exits non-zero on
-   any FAIL and prints the rollback runbook), or by hand: gateway
-   healthy, `openclaw mcp list --json` shows exactly the spec'd
-   servers, `openclaw cron list --json` shows the seeded jobs.
+5. Verify: gateway healthy, `openclaw mcp list --json` shows exactly
+   the spec'd servers, `openclaw cron list --json` shows the seeded
+   jobs, and the boot summary (`{data}/status.json`) reports this
+   boot's phases.
 6. Rollback if anything is wrong: `down`, restore the backup archive per
    `openclaw backup` docs, revert the tag, `up`. The version marker
    rides the volume, so a rollback re-runs its own backup first.
@@ -446,8 +424,8 @@ spec or in `openclaw.json`: after the first boot, complete the flow once
 from inside the running container —
 
 ```sh
-agentctl mcp login docs   # prints the authorization URL (loopback callback)
-agentctl mcp login docs --code abc123   # headless: paste the code from the redirect URL
+docker compose exec agent openclaw mcp login docs   # prints the authorization URL (loopback callback)
+docker compose exec agent openclaw mcp login docs --code abc123   # headless: paste the code from the redirect URL
 ```
 
 — and OpenClaw stores and refreshes the tokens itself. While
@@ -459,10 +437,10 @@ spec config entry) so the OAuth callback URL is reachable.
 ### Worked examples
 
 - `examples/spec.example.json`: one entry per feature, annotated by shape.
-- `tests/tests/fixtures/*grow-agent-like/spec.json`: local stdio servers with `--env` pairs,
+- `tests/fixtures/*grow-agent-like/spec.json`: local stdio servers with `--env` pairs,
   `split_csv` allowFrom, heartbeat entries behind `if_env`, a local plugin,
   `gh_auth` enabled.
-- `tests/tests/fixtures/*trade-agent-like/spec.json`: six servers mixing remote URLs
+- `tests/fixtures/*trade-agent-like/spec.json`: six servers mixing remote URLs
   (one key-templated query param, one bearer-token header) with local npx
   commands, `gh_auth` disabled, a different automation model.
 
@@ -488,8 +466,8 @@ entrypoint (see below), before `seed_content` runs.
 
 `AGENT_SKIP_SEED=1` skips content seeding only. Reconciliation still runs.
 Content is image-baked in every mode — there is no dev overlay and no
-content bind mounts: the dev loop is rebuild-first (`agentctl deploy`
-rebuilds via cached COPY layers), which also keeps automations unmountable
+content bind mounts: the dev loop is rebuild-first (`docker/podman
+compose up -d --build` reuses the cached COPY layers), which also keeps automations unmountable
 in any mode; writable cron prompt files would be a self-modification
 surface for the agent.
 
@@ -735,7 +713,7 @@ teardown.
 | `TELEGRAM_CHAT_ID` is base-standard | Cron delivery needs one chat target the reconciler can read directly. All other `TELEGRAM_*` names stay project-side in spec refs (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_USERS`, `TELEGRAM_TOPIC_*`). |
 | Docs at `{data}/workspace/docs`, never `{data}/docs` | Docs are workspace-adjacent reference material seeded every boot. Migrating agents (trade-agent layout) move once in a wrapper entrypoint. |
 | `automations.model` is required per project | A baked default would silently drift models between agents sharing one image. No default, no drift. Per-job `model:` headers are overrides, not defaults — the global stays explicit. |
-| Model/provider configuration lives on a LiteLLM sidecar (scaffold default) | The agent process never holds provider keys — one proxy key in, all routing on the proxy (`litellm/config.yaml`). Model changes are a config review + restart, not an image rebuild. Direct provider auth (`zai-coding-*`) remains supported for single-provider deployments. |
+| Model/provider configuration lives on a LiteLLM sidecar (recommended shape) | The agent process never holds provider keys — one proxy key in, all routing on the proxy (`litellm/config.yaml`). Model changes are a config review + restart, not an image rebuild. Direct provider auth (`zai-coding-*`) remains supported for single-provider deployments. |
 | Seeded jobs get a bounded tool allow-list | A scheduled turn reaching the `cron` tool can self-replicate jobs (OWASP ASI06); the base default excludes recursion, spawn, and browser tools. Per-job `tools:` / spec `automations.default_tools` / `["*"]` escape hatches keep this the operator's call. |
 | Cron trigger scripts sit behind `AGENT_AUTOMATION_TRIGGERS=1` | Trigger evaluation runs headless with the owning agent's FULL tool policy (including `exec`) — not the job's `--tools` list. Arming that gateway-wide just because a header appeared in a markdown file would weaken the default posture; the env opt-in keeps unattended exec an explicit deployment decision. |
 | Base sets `tools.deny` (cron, subagents, sessions_spawn, nodes) unless the spec configures `tools.*` | Same recursion/spawn surfaces denied for the agent's own turns; `heartbeat_respond` stays allowed so heartbeats work. Any spec entry under `tools.*` signals operator ownership and the base default stands down. |
@@ -962,126 +940,6 @@ Validate early: `docker run --rm --env-file .env <image> --validate-spec`
 catches schema, templating, and automation errors in seconds.
 
 ## Migrations
-
-### The fleet layout (all projects, agentctl breaking change)
-
-agentctl's repo shape is now the **fleet shape**: `fleet.yaml` at the root,
-per-agent content directly under `agents/<name>/` (spec.json,
-Dockerfile, .env, automations/, skills/, workspace/, knowledge/,
-litellm/), and the deployment envelope RENDERED from the manifest on
-every verb (`agents/<name>/compose.yml`, gitignored — never
-authored; it lives at the build-context root because docker compose
-and podman-compose resolve relative paths against different bases).
-`agents/<name>/.agentctl/` is agentctl's reserved host-side state
-namespace. `.agentctl.yaml` is retired; its settings
-live in the manifest. A single-agent repo is a fleet of one — same
-structure, one roster entry.
-
-One command carries a legacy repo over, in place:
-
-```sh
-cd my-agent && agentctl migrate
-```
-
-`migrate` flattens `agent/`'s children into `agents/<basename>/`
-(rewriting the Dockerfile's COPY lines), moves `litellm/`,
-`knowledge/`, and `deploy/` alongside (a legacy `compose.dev.yml` is
-deleted — the dev overlay is retired), deletes the authored
-`compose.yml` (the renderer replaces it), folds `.agentctl.yaml` into
-the synthesized `fleet.yaml` (platform, gateway port — recovered from
-the compose interpolation default when no config recorded it, fly app),
-and appends the rendered-envelope pattern to `.gitignore`. Review with
-`git status`, commit, then `agentctl fleet check` + `agentctl doctor`.
-
-Rules the new shape enforces (all fail-closed):
-
-- **Ports are manifest-owned.** `AGENT_GATEWAY_PORT` in `agent/.env` is
-  a hard error inside a fleet — a stale env line silently beats the
-  allocation. Per-agent `gateway_port:` or the sorted-from-base
-  allocation owns every port.
-- **The envelope is not editable.** Hand-edits to the rendered
-  `compose.yml` are detected (`fleet check`) and overwritten on the
-  next verb. Bounded deltas belong in the manifest as
-  `overrides:` (volumes, port publishes, resource limits); oddballs can
-  opt out entirely with `compose_file:` (an authored file that replaces
-  the render).
-- **Renames are hard errors.** An `agents/<name>/` directory carrying
-  `agent/spec.json` that is not registered in `fleet.yaml` fails check
-  and every verb — renames go through the manifest, never silently
-  shrinking the fleet.
-
-Adding a second agent: `agentctl fleet add <name>` scaffolds the
-agent-scoped tree, registers the manifest entry with an explicit
-next-free port, and warns when existing implicit allocations would
-shift. Batch verbs (`fleet deploy/status/logs/backup/stop/start`) take
-`--agent <name>` or `--all` — batches are never implicit; per-agent
-failures isolate (the run continues, the summary names every failure,
-the exit code is 1).
-
-### The plane (shared services, optional)
-
-`fleet.yaml`'s `plane:` block turns on the shared-services plane:
-
-```yaml
-plane:
-  enabled: true
-  name: my-plane        # network becomes my-plane-net
-  litellm: shared       # shared | none
-  observability: true   # prometheus + loki + alloy + grafana
-```
-
-Everything under `plane/` is derived state + secrets and is gitignored
-wholesale: `plane/compose.yml`, the litellm seed config, the
-observability configs, and `plane/.env` (the ONLY authored file —
-copy `plane/.env.example`, fill every GENERATE_ME; it is both the
-compose interpolation source and the proxy's env_file, so provider
-keys set there serve the whole fleet).
-
-- `plane.litellm: shared` renders the `litellm-db` (postgres; budgets
-  and virtual keys REQUIRE the database — db-less LiteLLM fails budgets
-  open) plus one shared proxy. Agents with `litellm: shared` (or unset,
-  inheriting the plane) drop their local sidecar and litellm/ tree,
-  join `my-plane-net` with a per-agent alias, and hold a per-agent
-  virtual key instead of the master key.
-- Lifecycle: `agentctl fleet plane up|down|status|logs` (`down`
-  keeps the named volumes unless `--volumes`). `fleet render`
-  materializes every derived artifact without touching an engine.
-- Virtual keys: `agentctl fleet key <agent>` mints a key through the
-  running proxy (master key from `plane/.env`) and writes it to
-  `agents/<agent>/.env` as `LITELLM_API_KEY`. Neither key value is
-  ever printed; `doctor` checks presence by shape only.
-- Observability: agents' gateways are scrape targets by plane-net
-  alias; alloy collects container logs by compose project (the engine
-  socket mounts read-only at a fixed in-container path — the host side
-  follows `defaults.compose.engine`, and rootless podman sets
-  `PLANE_ENGINE_SOCK` in `plane/.env`).
-- Resilience contract: the plane is a shared dependency, not a
-  lifecycle owner — with the plane down, agents' gateways stay up and
-  answer /healthz; only model traffic degrades until `fleet plane up`.
-- Gateway operator surface: `agentctl fleet status --live` probes each
-  agent's gateway over WS (version, sessions, pending approvals) and
-  `agentctl approvals [--agent X] [--id ID --approve|--deny]` lists and
-  resolves pending exec/plugin approvals. Both authenticate with the
-  agent's gateway token on the loopback publish and never print token
-  material.
-- Control-plane API: `agentctl fleet serve` runs a loopback-only
-  HTTP API (bearer token under `~/.local/state/agentctl/`, minted on
-  first run) with the roster, live status, approvals list/resolve,
-  async deploy jobs (202 + `/api/v1/jobs/{id}`), and an SSE event
-  stream (`/api/v1/events`). Jobs run concurrently through the
-  dir-scoped runner — the server never chdirs. `agentctl fleet
-  serve-init` writes a systemd user unit; remote access goes through
-  a local TLS-terminating reverse proxy, never a wider bind.
-  The server also hosts an embedded operator console at `/` (vanilla
-  JS, no build step): overview, deploy with live job output, jobs,
-  approvals, and upgrades — the upgrades page previews each agent's
-  era crossings for a target tag and applies the retag + converge
-  through the same job machinery, per-agent confirm.
-
-Each guide below is the exact cutover for that project onto
-`ghcr.io/tankdonut/agent-base:2026.08.24.1`. Both keep their existing named
-volumes: the base swap changes the image and entrypoint only, never volume
-data.
 
 ### grow-agent
 
