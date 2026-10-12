@@ -2,10 +2,7 @@
 __pycache__/
 *.py[cod]
 
-# Go (agentctl binary built at repo root)
-/agentctl
-
-# smoke-test log artifacts (scripts/smoke.sh)
+# smoke-test log artifacts
 logs/
 
 # oh-my-openagent working state

@@ -28,17 +28,8 @@ Targets:
   lint    Run pre-commit on all files
   smoke   Build the smoke image: fixture boots + graceful-shutdown drain
           (python3 tests/smoke_test.py; SMOKE_ENGINE overrides engine detection)
-  agentctl-e2e
-          Front-door e2e: init → doctor → deploy → health → stop/start →
-          destroy volume semantics → dev overlay (python3 tests/agentctl_e2e.py;
-          E2E_ENGINE overrides engine detection)
   build   Build $IMAGE:<AGENT_BASE_VERSION or today's date>
   push    Push $IMAGE:\$AGENT_BASE_VERSION (env var must be set explicitly)
-  agentctl         Run agentctl via go run (args pass through: ./make.sh
-                   agentctl <command> [flags])
-  agentctl-test    Run agentctl Go tests (go test ./...)
-  agentctl-build   Build the agentctl binary to ./agentctl (gitignored)
-  agentctl-install Install agentctl into \$(go env GOPATH)/bin
   help    Show this help
 
 Environment:
@@ -58,14 +49,6 @@ case $target in
     ;;
   smoke)
     python3 tests/smoke_test.py
-    ;;
-  agentctl-e2e)
-    python3 tests/agentctl_e2e.py
-    ;;
-  agentctl-frontdoor)
-    # Slim PR gate: the shipped-binary user journey only. The full
-    # matrix runs nightly (see .github/workflows/nightly.yml).
-    python3 tests/e2e_frontdoor.py
     ;;
   build)
     version=${AGENT_BASE_VERSION:-$(date +%Y.%m.%d)}
@@ -87,26 +70,6 @@ case $target in
     version=${AGENT_BASE_VERSION:?set AGENT_BASE_VERSION=YYYY.MM.DD[.N] to push}
     eng=$(engine)
     "$eng" push "$IMAGE:$version"
-    ;;
-  agentctl)
-    # Forward to go run — args pass through (e.g. ./make.sh agentctl help).
-    shift
-    go run ./cmd/agentctl "$@"
-    ;;
-  agentctl-test)
-    go test ./...
-    ;;
-  agentctl-integration)
-    # Tier A (e2e re-imagining): real-engine integration tests,
-    # contained by internal/e2e — budgeted, group-killed, artifacts on
-    # breach under logs/e2e/.
-    go test -tags=integration -count=1 -timeout 15m ./internal/integration/
-    ;;
-  agentctl-build)
-    go build -o agentctl ./cmd/agentctl
-    ;;
-  agentctl-install)
-    go install ./cmd/agentctl
     ;;
   help | -h | --help)
     usage

@@ -25,14 +25,3 @@ repos:
     rev: v0.23.3
     hooks:
       - id: markdownlint-cli2
-
-  # agentctl (Go module at repo root): golangci-lint via the official
-  # mirror — depguard layering (see .golangci.yml), govet, and gofmt
-  # (--fix auto-formats). pre-commit builds the pinned binary itself;
-  # a local Go toolchain is required.
-  - repo: https://github.com/golangci/golangci-lint
-    rev: v2.14.0
-    hooks:
-      - id: golangci-lint
-        args: [--fix]
-        files: ^(cmd|internal)/

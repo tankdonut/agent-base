@@ -65,49 +65,6 @@ jobs:
       - name: Run container test suites
         run: python3 -m unittest discover -s container -v
 
-  agentctl:
-    # Tag pushes run promotion only — these gates ran as candidate gates on main.
-    if: github.ref_type != 'tag'
-    # Go operator-CLI quality gate (module at repo root); mirrors the
-    # local pre-commit go-fmt/go-vet hooks and gates the release chain
-    # via the image-* jobs' needs.
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: go.mod
-
-      - name: Version constants consistency
-        # Release-time version==tag gating arrives too late to be cheap;
-        # both constants must parse as date tags and agree on every PR,
-        # so drift surfaces in review, not as a fix-forward .N release.
-        run: |
-          v=$(sed -n 's/^const Version = "\(.*\)"$/\1/p' internal/cli/root.go)
-          b=$(sed -n 's/.*DefaultBaseTag[[:space:]]*=[[:space:]]*"\(.*\)".*/\1/p' internal/scaffold/config.go)
-          for x in "$v" "$b"; do
-            echo "$x" | grep -Eq '^[0-9]{4}\.[0-9]{2}\.[0-9]{2}(\.[0-9]+)?$' \
-              || { echo "::error::version constant '$x' is not a date tag (YYYY.MM.DD[.N])"; exit 1; }
-          done
-          [ "$v" = "$b" ] \
-            || { echo "::error::internal/cli Version ($v) != scaffold DefaultBaseTag ($b)"; exit 1; }
-
-      - name: Check formatting (gofmt)
-        run: test -z "$(gofmt -l cmd internal)"
-
-      - name: License allowlist (no GPL into the binary)
-        run: scripts/check-deps.sh
-
-      - name: Vet
-        run: go vet ./...
-
-      - name: Test
-        run: go test ./...
-
   contract:
     # Tag pushes run promotion only — these gates ran as candidate gates on main.
     if: github.ref_type != 'tag'
@@ -209,10 +166,7 @@ jobs:
   image-amd64:
     # Tag pushes run promotion only — these gates ran as candidate gates on main.
     if: github.ref_type != 'tag'
-    # Build once, test in parallel: the image is exported as an artifact
-    # and loaded by the integration/front-door jobs, so a flaky front-door
-    # retry never rebuilds, and the two suites don't serialize.
-    needs: [agentctl, lint, test]
+    needs: [lint, test]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -235,88 +189,13 @@ jobs:
           TAG="${GITHUB_REF_NAME//\//-}"
           docker build --platform linux/amd64 -f container/Dockerfile \
             --build-arg AGENT_BASE_VERSION="${GITHUB_REF_NAME:-dev}" \
-            -t "$IMAGE:${TAG}-amd64" \
-            -t "$IMAGE:2099.12.31" .
+            -t "$IMAGE:${TAG}-amd64" .
           if [ "${GITHUB_REF_TYPE}" = "tag" ]; then docker push "$IMAGE:${TAG}-amd64"; fi
-      - name: Export image artifact
-        run: docker save --output /tmp/image-amd64.tar "$IMAGE:2099.12.31"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: image-amd64-${{ github.sha }}
-          path: /tmp/image-amd64.tar
-          retention-days: 3
-          compression-level: 6
-
-  gates-pr-integration:
-    # Tier A + B against the PR-built image — the same suites the
-    # candidate gates run on main, consuming the exported artifact.
-    needs: [image-amd64]
-    if: github.ref_type != 'tag'
-    runs-on: ubuntu-latest
-    timeout-minutes: 40
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: go.mod
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: image-amd64-${{ github.sha }}
-          path: /tmp
-      - name: Load the PR image
-        run: docker load --input /tmp/image-amd64.tar
-      - name: Integration (Tier A + B, against THIS branch's image)
-        env:
-          AGENT_E2E_ENGINE: docker
-          AGENT_E2E_IMAGE: ghcr.io/tankdonut/agent-base:2099.12.31
-          AGENT_E2E_TMPDIR: ${{ github.workspace }}/tierb
-        run: go test -tags=integration -count=1 -timeout 30m -v ./internal/integration/
-      - name: Upload integration forensics
-        if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: integration-forensics
-          path: |
-            tierb/
-            logs/
-
-  gates-pr-frontdoor:
-    # Shipped-binary user journey against the PR-built image.
-    needs: [image-amd64]
-    if: github.ref_type != 'tag'
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: image-amd64-${{ github.sha }}
-          path: /tmp
-      - name: Load the PR image
-        run: docker load --input /tmp/image-amd64.tar
-      - name: Front-door (shipped-binary user journey)
-        env:
-          E2E_ENGINE: docker
-        run: ./make.sh agentctl-frontdoor
-      - name: Upload front-door forensics
-        if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: frontdoor-forensics
-          path: logs/
 
   image-arm64:
     # Tag pushes run promotion only — these gates ran as candidate gates on main.
     if: github.ref_type != 'tag'
-    needs: [agentctl, lint, test]
+    needs: [lint, test]
     # Free native arm64 runners are available to public repos.
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 20
@@ -344,13 +223,13 @@ jobs:
           if [ "${GITHUB_REF_TYPE}" = "tag" ]; then docker push "$IMAGE:${TAG}-arm64"; fi
 
   # --- Phase 2: candidate architecture --------------------------------
-  # A main push whose constants name an unused date version V bakes V
+  # A main push whose VERSION file names an unused date version V bakes V
   # into per-arch images in the PRIVATE staging package, qualifies the
   # exact index digest I, and issues an eligibility receipt. A later
   # tag push PROMOTES those bytes (release job) — it never rebuilds.
   # Non-version main pushes skip this flow entirely (normal CI).
   candidate-version:
-    needs: [agentctl]
+    needs: [lint, test]
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -367,10 +246,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          v=$(sed -n 's/^const Version = "\(.*\)"$/\1/p' internal/cli/root.go)
-          b=$(sed -n 's/.*DefaultBaseTag[[:space:]]*=[[:space:]]*"\(.*\)".*/\1/p' internal/scaffold/config.go)
-          if [ "$v" != "$b" ] || ! echo "$v" | grep -Eq '^[0-9]{4}\.[0-9]{2}\.[0-9]{2}(\.[0-9]+)?$'; then
-            echo "no release intent (constants not both = date tag V) — skipping candidate flow"
+          v=$(tr -d '[:space:]' < VERSION)
+          if ! echo "$v" | grep -Eq '^[0-9]{4}\.[0-9]{2}\.[0-9]{2}(\.[0-9]+)?$'; then
+            echo "no release intent (VERSION is not a date tag V) — skipping candidate flow"
             echo "push=false" >>"$GITHUB_OUTPUT"
             exit 0
           fi
@@ -562,7 +440,7 @@ jobs:
           registry: ghcr.io
       - name: CLI contract test against the candidate index
         run: |
-          baseline=$(sed -n 's/.*DefaultBaseTag[[:space:]]*=[[:space:]]*"\(.*\)".*/\1/p' internal/scaffold/config.go)
+          baseline=$(tr -d '[:space:]' < VERSION)
           CONTRACT_BASELINE_IMAGE="ghcr.io/tankdonut/agent-base:$baseline" \
             python3 tests/contract_test.py \
             "ghcr.io/tankdonut/agent-base-staging@${{ needs.candidate-index.outputs.digest }}"
@@ -572,70 +450,6 @@ jobs:
         with:
           name: contract-candidate-forensics-${{ matrix.arch }}
           path: logs/
-
-  gates-integration:
-    needs: [candidate-version, candidate-index]
-    if: needs.candidate-version.outputs.push == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    permissions:
-      contents: read
-      packages: read
-    env:
-      AGENT_E2E_IMAGE: ghcr.io/tankdonut/agent-base-staging@${{ needs.candidate-index.outputs.digest }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: go.mod
-      - uses: tankdonut/github-actions/actions/ghcr-login@246ecbe1d54fe84165f0b9f7d8aae44a0e5fa373 # v1
-        with:
-          runtime: docker
-          registry: ghcr.io
-      - name: Integration tiers A + B against the candidate index
-        run: go test -tags=integration -count=1 -timeout 30m -v ./internal/integration/
-      - name: Upload integration forensics
-        if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: integration-candidate-forensics
-          path: |
-            tierb/
-            logs/
-
-  gates-frontdoor:
-    # Shipped-binary journey against the candidate bytes: prepared
-    # binary (release flags) + overrides.image pin.
-    needs: [candidate-version, candidate-index, candidate-binaries]
-    if: needs.candidate-version.outputs.push == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    permissions:
-      contents: read
-      packages: read
-    env:
-      AGENT_E2E_IMAGE: ghcr.io/tankdonut/agent-base-staging@${{ needs.candidate-index.outputs.digest }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: tankdonut/github-actions/actions/ghcr-login@246ecbe1d54fe84165f0b9f7d8aae44a0e5fa373 # v1
-        with:
-          runtime: docker
-          registry: ghcr.io
-      - name: Download prepared binaries
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: agentctl-bin-${{ github.sha }}
-          path: dist-bin
-      - name: Front-door journey against the candidate
-        env:
-          E2E_AGENTCTL: ${{ github.workspace }}/dist-bin/agentctl-linux-amd64
-        run: |
-          chmod +x "$E2E_AGENTCTL"
-          python3 tests/e2e_frontdoor.py
 
   gates-arm64-sanity:
     # arm64 boots the real bytes: version ENV + gh CLI present (the
@@ -664,62 +478,22 @@ jobs:
           docker run --rm --entrypoint gh "$REF" --version >/dev/null
           echo "arm64: boots, version ENV == $VERSION, gh present"
 
-  candidate-binaries:
-    # Binaries built on main with release flags and attested HERE — the
-    # release passes the same artifacts through (no tag-time build).
-    needs: [candidate-version]
-    if: needs.candidate-version.outputs.push == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    permissions:
-      contents: read
-      id-token: write
-      attestations: write
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: go.mod
-      - name: Build + checksum
-        run: |
-          for arch in amd64 arm64; do
-            CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath -ldflags "-s -w" \
-              -o "dist/agentctl-linux-$arch" ./cmd/agentctl
-          done
-          (cd dist && sha256sum agentctl-linux-* > agentctl-SHA256SUMS)
-          cat dist/agentctl-SHA256SUMS
-      - name: Attest binaries
-        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
-        with:
-          subject-path: |
-            dist/agentctl-linux-amd64
-            dist/agentctl-linux-arm64
-      - name: Upload binaries
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: agentctl-bin-${{ github.sha }}
-          path: dist/
-
   receipt:
     # The promotion ticket: binds the source sha, the version, the
-    # exact index/arch digests, the binary hashes, and every suite
-    # result. The release job refuses to promote without a green one.
+    # exact index/arch digests, and every suite result. The release
+    # job refuses to promote without a green one.
     needs:
       [candidate-version, candidate-amd64, candidate-arm64, candidate-index,
-       gates-smoke, gates-contract, gates-integration, gates-frontdoor,
-       gates-arm64-sanity, candidate-attest, candidate-binaries]
+       gates-smoke, gates-contract, gates-arm64-sanity, candidate-attest]
     if: needs.candidate-version.outputs.push == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: read
     steps:
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          name: agentctl-bin-${{ github.sha }}
-          path: dist-bin
+          persist-credentials: false
       - name: Assemble receipt
         env:
           VERSION: ${{ needs.candidate-version.outputs.version }}
@@ -734,18 +508,12 @@ jobs:
           for pair in \
             "gates-smoke:${{ needs.gates-smoke.result }}" \
             "gates-contract:${{ needs.gates-contract.result }}" \
-            "gates-integration:${{ needs.gates-integration.result }}" \
-            "gates-frontdoor:${{ needs.gates-frontdoor.result }}" \
             "gates-arm64-sanity:${{ needs.gates-arm64-sanity.result }}" \
-            "candidate-attest:${{ needs.candidate-attest.result }}" \
-            "candidate-binaries:${{ needs.candidate-binaries.result }}"; do
+            "candidate-attest:${{ needs.candidate-attest.result }}"; do
             name=${pair%%:*}; r=${pair#*:}
             [ "$r" = "success" ] || { echo "::error::$name concluded $r"; fail=1; }
           done
           [ "$fail" = "0" ] || exit 1
-          cd dist-bin
-          sha256sum agentctl-linux-amd64 agentctl-linux-arm64 > /tmp/bin-hashes
-          cd -
           jq -n \
             --arg sha "$GITHUB_SHA" \
             --arg run_id "$GITHUB_RUN_ID" \
@@ -755,15 +523,12 @@ jobs:
             --arg index "$INDEX" \
             --arg amd64 "$AMD64" \
             --arg arm64 "$ARM64" \
-            --arg baseline "$(curl -sf "https://raw.githubusercontent.com/$GITHUB_REPOSITORY/$GITHUB_SHA/internal/scaffold/config.go" | sed -n 's/.*DefaultBaseTag[[:space:]]*=[[:space:]]*"\(.*\)".*/\1/p')" \
-            --rawfile bins /tmp/bin-hashes \
+            --arg baseline "$(tr -d '[:space:]' < VERSION)" \
             '{sha: $sha, run_id: $run_id, run_url: $run_url, version: $version,
               idx_tag: $idx_tag, index: $index, amd64: $amd64, arm64: $arm64,
               baseline: $baseline,
-              binaries: {sha256sums: ($bins | rtrimstr("\n"))},
-              suites: {smoke: "success", contract: "success", integration: "success",
-                       frontdoor: "success", arm64_sanity: "success",
-                       attest: "success", binaries: "success"},
+              suites: {smoke: "success", contract: "success",
+                       arm64_sanity: "success", attest: "success"},
               issued_at: (now | todate)}' > receipt.json
           cat receipt.json
       - name: Upload receipt
@@ -869,14 +634,12 @@ jobs:
             echo "run_id=$run_id"
           } >>"$GITHUB_OUTPUT"
 
-      - name: Download receipt + prepared binaries
+      - name: Download receipt
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh run download "${{ steps.candidate.outputs.run_id }}" -n receipt -D receipt
-          gh run download "${{ steps.candidate.outputs.run_id }}" \
-            -n "agentctl-bin-${{ steps.candidate.outputs.sha }}" -D dist-bin
-          ls receipt dist-bin
+          ls receipt
 
       - name: Validate receipt against the tag
         id: validate
@@ -950,12 +713,6 @@ jobs:
             echo "Verify provenance: \`gh attestation verify oci://ghcr.io/tankdonut/agent-base:$TAG@$I -R $GITHUB_REPOSITORY\`"
             echo "Verify SBOM subject: \`sha256sum sbom.spdx.json\` against the attestation-free asset digest"
             echo
-            echo "### agentctl"
-            echo
-            echo "Operator CLI for downstream agent projects — binaries: \`agentctl-linux-amd64\`, \`agentctl-linux-arm64\` (checksums: \`agentctl-SHA256SUMS\`), built and attested at qualification time."
-            echo
-            echo "Verify binary provenance: \`gh attestation verify dist/agentctl-linux-amd64 -R $GITHUB_REPOSITORY\`"
-            echo
             echo "### Changes"
             echo
             if [ -n "$PREV" ]; then
@@ -974,9 +731,6 @@ jobs:
             --verify-tag \
             --title "agent-base $TAG" \
             --notes-file release-notes.md \
-            dist-bin/agentctl-linux-amd64 \
-            dist-bin/agentctl-linux-arm64 \
-            dist-bin/agentctl-SHA256SUMS \
             sbom.spdx.json \
             receipt/receipt.json
           echo "released $TAG (promoted $(jq -r .index receipt/receipt.json))"

@@ -14,10 +14,11 @@
 .pre-commit-config.yaml
 .gitignore
 .dockerignore
+VERSION
 docs
 README.md
 AGENTS.md
 scripts
-fixtures
-templates
+tests
+examples
 container/test_*.py
