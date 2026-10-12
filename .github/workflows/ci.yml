@@ -371,10 +371,10 @@ jobs:
           for arch in amd64 arm64; do
             echo "$index" | jq -e ".manifests[] | select(.platform.architecture == \"$arch\")" >/dev/null \
               || { echo "::error::$arch missing from index"; exit 1; }
-            docker pull -q --platform "linux/$arch" "$STAGING@$IDX" >/dev/null
-            hc=$(docker inspect --format '{{json .Config.Healthcheck.Test}}' "$STAGING@$IDX")
+            docker pull -q --platform "linux/$arch" "$STAGING:$IDX" >/dev/null
+            hc=$(docker inspect --format '{{json .Config.Healthcheck.Test}}' "$STAGING:$IDX")
             echo "$hc" | grep -q healthz || { echo "::error::$arch HEALTHCHECK missing"; exit 1; }
-            got=$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$STAGING@$IDX" | sed -n 's/^AGENT_BASE_VERSION=//p' | tr -d '\r')
+            got=$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$STAGING:$IDX" | sed -n 's/^AGENT_BASE_VERSION=//p' | tr -d '\r')
             [ "$got" = "$VERSION" ] || { echo "::error::$arch baked version '$got' != $VERSION"; exit 1; }
             echo "$arch: HEALTHCHECK present, version ENV == $VERSION"
           done
