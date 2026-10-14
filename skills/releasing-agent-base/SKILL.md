@@ -19,6 +19,7 @@ and fix forward if a job fails.
 ## Version scheme (hard rules)
 
 - Image: `ghcr.io/tankdonut/agent-base`, date tags only: `YYYY.MM.DD`.
+  Per-arch companions `<tag>-amd64`/`<tag>-arm64` are tagged at promotion.
 - No `latest`. Published tags are immutable — never move, re-point, or
   delete one.
 - Same-day follow-up: append a run suffix — `2026.08.24`, then
@@ -92,8 +93,10 @@ git push origin 2026.08.28
 The tag run is validation + copy, never a rebuild: it resolves the
 successful candidate run for the tagged commit, downloads the receipt,
 greenlights it (sha, version, all suites), promotes the qualified index
-with `oras cp --recursive`, asserts digest identity, then publishes the
-GitHub release (SBOM, receipt, digest-pinned notes).
+with `oras cp --recursive`, asserts digest identity, tags the per-arch
+children `<tag>-amd64`/`<tag>-arm64` (cosmetic, never blocks the
+release), then publishes the GitHub release (SBOM, receipt,
+digest-pinned notes).
 
 ```sh
 gh run list --branch 2026.08.28 --limit 1   # tag runs carry the tag as branch

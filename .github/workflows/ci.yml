@@ -675,6 +675,26 @@ jobs:
           [ "$got" = "$I" ] || { echo "::error::promoted digest $got != qualified $I — refusing to publish"; exit 1; }
           echo "identity asserted: $PUBLIC:$TAG == $I"
 
+      - name: Tag per-arch children
+        # oras cp --recursive lands the index's arch manifests as
+        # digest-only versions; GHCR renders those as sha256-<digest>
+        # rows on the package page (plus a duplicate row for the tagged
+        # index itself). Tagging each child <tag>-<arch> gives the rows
+        # readable names. Cosmetic: must never fail a promoted release.
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          oras login ghcr.io -u "$GITHUB_ACTOR" --password-stdin < <(printf '%s' "$GH_TOKEN")
+          RAW=$(docker buildx imagetools inspect --raw "$PUBLIC:$TAG")
+          echo "$RAW" | jq -r '.manifests[]
+            | select(.platform.os == "linux" and .platform.architecture != "unknown")
+            | "\(.platform.architecture) \(.digest)"' \
+          | while read -r arch digest; do
+              oras tag "$PUBLIC@$digest" "$TAG-$arch"
+              echo "tagged $TAG-$arch -> $digest"
+            done
+
       - name: Verify tracked image refs exist in GHCR
         # PENDING_TAG: the tag being promoted right now is validly
         # absent (promotion IS this run) — the gate still catches every
