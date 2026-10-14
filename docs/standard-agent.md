@@ -546,7 +546,8 @@ wrapper entrypoint.
 3. **First boot** (`first_boot_setup`, only when `{data}/openclaw.json` is
    absent): `openclaw setup --auth-choice <setup.auth_choice>`, register
    `model.fallback`, add each channel, install
-   `@openclaw/llama-cpp-provider` (key-free local embeddings for memory
+   `@openclaw/llama-cpp-provider` at the runtime's own version, falling
+   back to the unpinned name (key-free local embeddings for memory
    search; this one is base-image behaviour, not spec-configurable).
 4. **Reconcile** (when `AGENT_MANAGE_CONFIG=1`): `reconcile_config`, then
    `reconcile_mcp`, then `reconcile_plugins`. All idempotent; failures

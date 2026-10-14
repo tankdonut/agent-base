@@ -430,6 +430,13 @@ class FirstBootSequence(EntrypointTestCase):
         spec = copy.deepcopy(MINIMAL_SPEC)
         spec["channels"] = [{"type": "telegram"}, {"type": "discord", "use_env": False}]
         self._write_spec(spec)
+
+        def handler(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+            if cmd[:2] == ["openclaw", "--version"]:
+                return subprocess.CompletedProcess(cmd, 0, stdout="openclaw 2026.10.2\n", stderr="")
+            return self._ok(cmd)
+
+        self.handler = handler
         result = self.boot()
         self.assertEqual(0, result.code)
         self.assertEqual(self.SETUP_CMD, self.calls[0])
@@ -440,8 +447,39 @@ class FirstBootSequence(EntrypointTestCase):
             ["openclaw", "channels", "add", "--channel", "telegram", "--use-env"], self.calls[2]
         )
         self.assertEqual(["openclaw", "channels", "add", "--channel", "discord"], self.calls[3])
+        self.assertEqual(["openclaw", "--version"], self.calls[4])
         self.assertEqual(
-            ["openclaw", "plugins", "install", "@openclaw/llama-cpp-provider"], self.calls[4]
+            ["openclaw", "plugins", "install", "@openclaw/llama-cpp-provider@2026.10.2"],
+            self.calls[5],
+        )
+
+    def test_llama_cpp_falls_back_when_runtime_build_not_installable(self) -> None:
+        def handler(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+            if cmd[:2] == ["openclaw", "--version"]:
+                return subprocess.CompletedProcess(cmd, 0, stdout="openclaw 2026.10.9\n", stderr="")
+            if cmd[-1] == "@openclaw/llama-cpp-provider@2026.10.9":
+                return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="no such build")
+            return self._ok(cmd)
+
+        self.handler = handler
+        self._write_spec(MINIMAL_SPEC)
+        result = self.boot()
+        self.assertEqual(0, result.code)
+        self.assertLess(
+            self.index_of(
+                "openclaw", "plugins", "install", "@openclaw/llama-cpp-provider@2026.10.9"
+            ),
+            self.index_of("openclaw", "plugins", "install", "@openclaw/llama-cpp-provider"),
+        )
+
+    def test_llama_cpp_unpinned_when_runtime_version_unreadable(self) -> None:
+        # Default handler: --version exits 0 with no parsable version.
+        self._write_spec(MINIMAL_SPEC)
+        result = self.boot()
+        self.assertEqual(0, result.code)
+        installs = self.calls_with("openclaw", "plugins", "install")
+        self.assertEqual(
+            [["openclaw", "plugins", "install", "@openclaw/llama-cpp-provider"]], installs
         )
 
     def test_auth_choice_and_fallback_come_from_spec(self) -> None:

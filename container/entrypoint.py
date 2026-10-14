@@ -10,8 +10,9 @@ need, and adds their own logic between them.
 First boot (one-time, only when openclaw.json is absent):
   1. openclaw setup --auth-choice {spec.setup.auth_choice} + fallback model
   2. openclaw channels add for each spec.channels entry
-  3. openclaw plugins install @openclaw/llama-cpp-provider (always: memory
-     search via local embeddings is base-image behaviour)
+  3. openclaw plugins install @openclaw/llama-cpp-provider@<runtime
+     version>, falling back to the unpinned name (always: memory search
+     via local embeddings is base-image behaviour)
 
 Every boot (declarative reconciliation — idempotent, self-healing volumes):
   4. reconcile_config   — spec config entries via value-compared config set
@@ -82,6 +83,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -288,6 +290,42 @@ def guard_satisfied(if_env: tuple[str, ...], env: Mapping[str, str]) -> bool:
 # --- phases (each independently callable from a wrapper entrypoint) ---
 
 
+def _runtime_version() -> str | None:
+    """The openclaw runtime's own version (e.g. '2026.10.2'), best-effort:
+    None when the CLI will not run or names no version."""
+    result = run("openclaw", "--version", check=False, capture=True, timeout=30.0)
+    if result is None or result.returncode != 0:
+        return None
+    match = re.search(r"\d{4}\.\d{2}\.\d+(?:\.\d+)?", f"{result.stdout}\n{result.stderr}")
+    return match.group(0) if match else None
+
+
+def _install_embedding_provider() -> None:
+    """Local embedding provider — memory search via local embeddings is
+    base-image behaviour. Plugins and the runtime release in lockstep, so
+    try the plugin build matching the runtime's own version first: the
+    registry's 'latest' can require a newer plugin API than the runtime
+    exposes, and the llama-cpp clawhub resolution path has no
+    newest-compatible fallback (unpinned installs broke fresh boots when
+    @openclaw/llama-cpp-provider@2026.10.3 demanded API 2026.10.3 against
+    runtime 2026.10.2). Fall back to the unpinned name when no matching
+    build installs; total failure stays fatal like every first-boot step."""
+    version = _runtime_version()
+    if version is not None:
+        result = run(
+            "openclaw",
+            "plugins",
+            "install",
+            f"@openclaw/llama-cpp-provider@{version}",
+            check=False,
+        )
+        if result is None or result.returncode != 0:
+            warn(f"llama-cpp build for runtime {version} not installable — trying latest")
+        else:
+            return
+    run("openclaw", "plugins", "install", "@openclaw/llama-cpp-provider")
+
+
 def first_boot_setup(spec: Spec) -> None:
     """One-time infrastructure setup; the caller gates this on openclaw.json
     being absent. Invariant: every call here is idempotent-safe to re-run
@@ -342,7 +380,7 @@ def first_boot_setup(spec: Spec) -> None:
             raise SystemExit(1) from exc
 
     log("Installing local embedding provider (key-free semantic search)")
-    run("openclaw", "plugins", "install", "@openclaw/llama-cpp-provider")
+    _install_embedding_provider()
 
     _snapshot_base_plugins()
 
