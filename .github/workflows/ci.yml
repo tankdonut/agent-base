@@ -117,7 +117,7 @@ jobs:
 
       - name: Upload contract forensics
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: contract-forensics
           path: logs/
@@ -151,7 +151,7 @@ jobs:
         # make.sh smoke keeps logs/smoke-*.log on failure (deleted on
         # success) — surface them as run artifacts.
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: smoke-forensics
           path: logs/
@@ -447,7 +447,7 @@ jobs:
             "ghcr.io/tankdonut/agent-base-staging@${{ needs.candidate-index.outputs.digest }}"
       - name: Upload contract forensics
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: contract-candidate-forensics-${{ matrix.arch }}
           path: logs/
@@ -533,7 +533,7 @@ jobs:
               issued_at: (now | todate)}' > receipt.json
           cat receipt.json
       - name: Upload receipt
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: receipt
           path: receipt.json
