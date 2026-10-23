@@ -197,7 +197,7 @@ jobs:
     if: github.ref_type != 'tag'
     needs: [lint, test]
     # Free native arm64 runners are available to public repos.
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-26.04-arm
     timeout-minutes: 20
     permissions:
       contents: read
@@ -304,7 +304,7 @@ jobs:
     needs: [candidate-version]
     if: needs.candidate-version.outputs.push == 'true'
     # Free native arm64 runners are available to public repos.
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-26.04-arm
     timeout-minutes: 30
     permissions:
       contents: read
@@ -458,7 +458,7 @@ jobs:
     # arm64 manifest is a bootable agent image).
     needs: [candidate-version, candidate-index]
     if: needs.candidate-version.outputs.push == 'true'
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-26.04-arm
     timeout-minutes: 10
     permissions:
       contents: read
