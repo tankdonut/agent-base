@@ -319,7 +319,7 @@ and every error message starts with the JSON path of the offending node
 | `setup` | `auth_choice` | Required. Passed to `openclaw setup --auth-choice` on first boot (e.g. `litellm-api-key`, `zai-coding-global`). `zai-coding-*` choices require `ZAI_API_KEY`; `litellm-api-key` requires `LITELLM_API_KEY` (see [Environment contract](#environment-contract)). |
 | `model` | `fallback`, `thinking` | `fallback` required; registered via `openclaw models fallbacks add` on first boot. `thinking` optional: the reasoning effort, seeded to `agents.defaults.thinkingDefault` (OpenClaw's global thinking default, resolved per turn) on every boot unless a config entry owns the path. Allowed values: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `adaptive`, `max`; anything else is a load error. Providers map the level onto their own request field (e.g. the Z.AI provider sends `reasoning_effort`; for GLM-5.x an explicit `off` still maps to that API's lowest effort). The base merges `fallback` into an existing `agents.defaults.models` allowlist (see [Boot sequence](#boot-sequence)). |
 | `automations` | `model`, `default_tools` | `model` required: the model for cron agent turns. No default exists by design (see [Standardization decisions](#standardization-decisions)). `default_tools` optional: the default tool allow-list for seeded jobs without their own `tools:` header; `["*"]` restores unrestricted. |
-| `config` | `path`, `value`, `strict`, `if_env`, `split_csv` | `path` and `value` required; the rest are optional booleans / string lists. Applied in spec order. `path` accepts `{env:...}` tokens (chat IDs stop being baked into git); resolution mirrors `value`, including guard deferral. An item may instead be exactly `{"include": "<preset>"}.` See [config entries](#config-entries). |
+| `config` | `path`, `value`, `strict`, `if_env`, `split_csv`, `merge` | `path` and `value` required; the rest are optional booleans / string lists. Applied in spec order. `path` accepts `{env:...}` tokens (chat IDs stop being baked into git); resolution mirrors `value`, including guard deferral. An item may instead be exactly `{"include": "<preset>"}.` See [config entries](#config-entries). |
 | `presets` | name → list of config entries | Named groups spliced into `config` in place via `{"include": ...}`. Names are `lowercase-identifier-ish`. Fail-closed: unknown names, nesting (include inside a preset), and malformed shapes are load errors. Spliced entries behave identically to inline ones (templating, guard deferral, split_csv). |
 | `channels` | `type`, `use_env` | `type` required. `use_env` (default `true`) feeds the channel credentials from the environment; the pinned CLI (2026.10+) validates them at add time, so a missing credential aborts first boot with the env var named by the CLI. |
 | `mcp_servers` | `name`, `command` or `url`, `args`, `env`, `headers`, `no_probe`, `timeout`, `if_env`, `config`, `auth`, `oauth`, `transport` | Exactly one of `command` (local stdio) and `url` (remote HTTP); specifying both or neither is an error. See [mcp_servers entries](#mcp_servers-entries). |
@@ -365,6 +365,13 @@ from the resolved value:
   `TELEGRAM_ALLOWED_USERS=123,456` becomes a real array config value. An
   empty result is a load error naming the referenced env var(s); a
   configured CSV that yields nothing is a misconfiguration, not a skip.
+- `merge: true`: the value (post `split_csv`) must resolve to a JSON list.
+  Instead of overwriting the stored list, reconcile unions it with the
+  spec's items — current order first, additions in spec order — and skips
+  the CLI entirely when every spec item is already present. This is how a
+  spec-owned `plugins.allow` coexists with plugins that `openclaw doctor`
+  or the operator adds later: the spec guarantees its own items are
+  present, it never reverts anyone else's.
 - `if_env`: the entry is applied only when every listed variable is
   present. An unsatisfied guard is a logged skip, never an error. Guards
   must pair the knobs they make optional: `channels.telegram.dmPolicy`
@@ -377,7 +384,9 @@ from the resolved value:
 
 On warm volumes the entrypoint compares each desired value against
 `openclaw.json` directly and shells out only for keys that actually drift,
-so a rebooting container costs one JSON read, not N CLI spawns.
+so a rebooting container costs one JSON read, not N CLI spawns. Merge
+entries skip on subset containment rather than exact equality, so items
+added to the stored list outside the spec never look like drift.
 
 ### mcp_servers entries
 

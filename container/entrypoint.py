@@ -254,6 +254,32 @@ def config_set(key: str, value: str, *extra: str) -> None:
         warn(f"config set failed: {key}")
 
 
+def config_merge_list(key: str, desired_items: list) -> None:
+    """Union-apply a merge-flagged list entry: skip the CLI when every spec
+    item is already stored, otherwise write the union — current order
+    first, spec additions in spec order — so items added outside the spec
+    (doctor allowlist expansions, operator edits) survive reconcile. A
+    missing or non-list stored value converges to the spec list. An
+    unreadable config skips the drift check (mirror of config_set).
+    Failure warns (naming the key only) and never raises."""
+    merged: list | None = None
+    config = read_openclaw_config()
+    if config is not None:
+        current = lookup_config_path(config, key)
+        if isinstance(current, list):
+            missing = [item for item in desired_items if item not in current]
+            if not missing:
+                config_reconcile_stats["skipped"] += 1
+                return
+            merged = [*current, *missing]
+    if merged is None:
+        merged = list(desired_items)
+    config_reconcile_stats["applied"] += 1
+    result = run("openclaw", "config", "set", key, json.dumps(merged), "--strict-json", check=False)
+    if result is not None and result.returncode != 0:
+        warn(f"config set failed: {key}")
+
+
 def config_set_batch(ops: list[tuple[str, object]], *, force: bool = False) -> None:
     """Set several config keys in ONE ``openclaw config set --batch-json``
     call. Ops whose stored value already matches are dropped first (the
@@ -474,7 +500,10 @@ def reconcile_config(spec: Spec, env: Mapping[str, str]) -> None:
         if not entry.env_guard_satisfied(env):
             log(f"skipped (if_env unsatisfied: {entry.path})")
             continue
-        if entry.use_strict_json:
+        if entry.merge:
+            # parser guarantees merge entries carry a strict-JSON list in cli_value
+            config_merge_list(entry.path, json.loads(entry.cli_value))
+        elif entry.use_strict_json:
             config_set(entry.path, entry.cli_value, "--strict-json")
         else:
             config_set(entry.path, entry.cli_value)

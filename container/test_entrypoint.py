@@ -410,6 +410,124 @@ class ConfigSetSkipMatrix(EntrypointTestCase):
         self.assert_applied("agents.defaults.utilityModel", "zai/glm-5.3-flash")
 
 
+class ConfigMergeMatrix(EntrypointTestCase):
+    """merge-flagged entries union with the stored list: items added outside
+    the spec (doctor allowlist expansions, operator edits) survive reconcile
+    instead of being reverted to the exact spec value."""
+
+    def call(self, key: str, items: list) -> tuple[str, str]:
+        return self.capture(lambda: entrypoint.config_merge_list(key, items))
+
+    def assert_skipped(self) -> None:
+        self.assertEqual([], self.calls_with("openclaw", "config", "set"))
+        self.assertEqual({"applied": 0, "skipped": 1}, entrypoint.config_reconcile_stats)
+
+    def assert_applied(self, key: str, value: object) -> None:
+        self.assertEqual(
+            [["openclaw", "config", "set", key, json.dumps(value), "--strict-json"]],
+            self.calls_with("openclaw", "config", "set"),
+        )
+        self.assertEqual({"applied": 1, "skipped": 0}, entrypoint.config_reconcile_stats)
+
+    def test_missing_key_writes_spec_items(self) -> None:
+        self.write_openclaw_config('{"plugins": {}}')
+        self.call("plugins.allow", ["grow-approval-gate", "llama-cpp"])
+        self.assert_applied("plugins.allow", ["grow-approval-gate", "llama-cpp"])
+
+    def test_missing_items_union_preserves_current_order(self) -> None:
+        self.write_openclaw_config('{"plugins": {"allow": ["llama-cpp", "memory-core"]}}')
+        self.call("plugins.allow", ["grow-approval-gate", "llama-cpp"])
+        self.assert_applied("plugins.allow", ["llama-cpp", "memory-core", "grow-approval-gate"])
+
+    def test_superset_skips_cli(self) -> None:
+        self.write_openclaw_config(
+            '{"plugins": {"allow": ["grow-approval-gate", "llama-cpp", "memory-core"]}}'
+        )
+        self.call("plugins.allow", ["grow-approval-gate", "llama-cpp"])
+        self.assert_skipped()
+
+    def test_exact_match_skips_cli(self) -> None:
+        self.write_openclaw_config('{"plugins": {"allow": ["a", "b"]}}')
+        self.call("plugins.allow", ["a", "b"])
+        self.assert_skipped()
+
+    def test_non_list_current_converges_to_spec(self) -> None:
+        self.write_openclaw_config('{"plugins": {"allow": "wildcard"}}')
+        self.call("plugins.allow", ["a", "b"])
+        self.assert_applied("plugins.allow", ["a", "b"])
+
+    def test_missing_config_file_writes_spec_items(self) -> None:
+        self.assertFalse((self.data / "openclaw.json").exists())
+        self.call("plugins.allow", ["a", "b"])
+        self.assert_applied("plugins.allow", ["a", "b"])
+
+    def test_malformed_config_file_writes_spec_items(self) -> None:
+        self.write_openclaw_config('{"plugins": "not closed')
+        self.call("plugins.allow", ["a", "b"])
+        self.assert_applied("plugins.allow", ["a", "b"])
+
+    def test_failed_write_warns_with_key_but_never_value(self) -> None:
+        def failing(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")
+
+        self.handler = failing
+        _out, err = self.call("plugins.allow", ["secret-plugin"])
+        self.assertIn("config set failed: plugins.allow", err)
+
+    def test_reconcile_applies_merge_entry_as_union(self) -> None:
+        spec_doc = copy.deepcopy(MINIMAL_SPEC)
+        spec_doc["config"] = [
+            {
+                "path": "plugins.allow",
+                "value": ["grow-approval-gate", "llama-cpp"],
+                "merge": True,
+            }
+        ]
+        spec = self.load_spec_with(spec_doc)
+        self.write_openclaw_config('{"plugins": {"allow": ["llama-cpp", "memory-core"]}}')
+        self.capture(lambda: entrypoint.reconcile_config(spec, os.environ))
+        self.assertEqual(
+            [
+                [
+                    "openclaw",
+                    "config",
+                    "set",
+                    "plugins.allow",
+                    json.dumps(["llama-cpp", "memory-core", "grow-approval-gate"]),
+                    "--strict-json",
+                ],
+                [
+                    "openclaw",
+                    "config",
+                    "set",
+                    "tools.deny",
+                    json.dumps(list(entrypoint.TOOLS_DENY_DEFAULT)),
+                    "--strict-json",
+                ],
+                ["openclaw", "config", "set", "gateway.bind", "lan"],
+            ],
+            self.calls_with("openclaw", "config", "set"),
+        )
+
+    def test_reconcile_skips_merge_entry_when_guard_unsatisfied(self) -> None:
+        spec_doc = copy.deepcopy(MINIMAL_SPEC)
+        spec_doc["config"] = [
+            {
+                "path": "plugins.allow",
+                "value": ["a"],
+                "merge": True,
+                "if_env": ["TELEGRAM_CHAT_ID"],
+            }
+        ]
+        spec = self.load_spec_with(spec_doc)
+        out, _err = self.capture(lambda: entrypoint.reconcile_config(spec, os.environ))
+        self.assertIn("skipped (if_env unsatisfied: plugins.allow)", out)
+        allow_calls = [
+            c for c in self.calls_with("openclaw", "config", "set") if c[3] == "plugins.allow"
+        ]
+        self.assertEqual([], allow_calls)
+
+
 class FirstBootSequence(EntrypointTestCase):
     SETUP_CMD = [
         "openclaw",
