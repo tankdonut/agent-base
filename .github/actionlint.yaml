@@ -1,0 +1,6 @@
+# actionlint v1.7.12's embedded label list predates the ubuntu-26.04-arm
+# rollout (rhysd/actionlint#682 still open); these keys only ADD known
+# labels, so this becomes a harmless no-op once actionlint catches up.
+self-hosted-runner:
+  labels:
+    - ubuntu-26.04-arm
