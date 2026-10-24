@@ -13,7 +13,7 @@
 # slim, USER node uid 1000, tini, openclaw CLI, gateway :18789) — and by
 # manifest digest: upstream tags are mutable, digest pinning keeps rebuilds
 # bit-reproducible (Renovate digest PRs keep it current).
-FROM ghcr.io/openclaw/openclaw:2026.10.2@sha256:32490a7091ca02acde649af3a214704d5c0fa9d774890f6ab231a8c2c958c36f
+FROM ghcr.io/openclaw/openclaw:2026.10.6@sha256:7dbff0fe5f5359b1badefe90a23efa9f203cd0d3c36bee095f4896c7a1d3864b
 
 # Image version (OCI label + io.agent.base.version); date-tag default.
 # Promoted to ENV so the entrypoint's upgrade-backup phase can detect
@@ -88,7 +88,7 @@ RUN mkdir -p /opt/agent/automations /opt/agent/scripts /opt/seed/workspace /opt/
 LABEL org.opencontainers.image.title="agent-base" \
       org.opencontainers.image.description="Standard OpenClaw agent base image: spec-driven entrypoint, config/MCP/plugin reconciliation, content seeding" \
       org.opencontainers.image.version="${AGENT_BASE_VERSION}" \
-      org.opencontainers.image.base.name="ghcr.io/openclaw/openclaw:2026.10.2" \
+      org.opencontainers.image.base.name="ghcr.io/openclaw/openclaw:2026.10.6" \
       io.agent.spec-version="1" \
       io.agent.base.version="${AGENT_BASE_VERSION}"
 

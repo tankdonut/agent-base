@@ -317,7 +317,7 @@ def guard_satisfied(if_env: tuple[str, ...], env: Mapping[str, str]) -> bool:
 
 
 def _runtime_version() -> str | None:
-    """The openclaw runtime's own version (e.g. '2026.10.2'), best-effort:
+    """The openclaw runtime's own version (e.g. '2026.10.6'), best-effort:
     None when the CLI will not run or names no version."""
     result = run("openclaw", "--version", check=False, capture=True, timeout=30.0)
     if result is None or result.returncode != 0:
