@@ -188,6 +188,7 @@ jobs:
         run: |
           TAG="${GITHUB_REF_NAME//\//-}"
           docker build --platform linux/amd64 -f container/Dockerfile \
+            --provenance=false --sbom=false \
             --build-arg AGENT_BASE_VERSION="${GITHUB_REF_NAME:-dev}" \
             -t "$IMAGE:${TAG}-amd64" .
           if [ "${GITHUB_REF_TYPE}" = "tag" ]; then docker push "$IMAGE:${TAG}-amd64"; fi
@@ -218,6 +219,7 @@ jobs:
         run: |
           TAG="${GITHUB_REF_NAME//\//-}"
           docker build --platform linux/arm64 -f container/Dockerfile \
+            --provenance=false --sbom=false \
             --build-arg AGENT_BASE_VERSION="${GITHUB_REF_NAME:-dev}" \
             -t "$IMAGE:${TAG}-arm64" .
           if [ "${GITHUB_REF_TYPE}" = "tag" ]; then docker push "$IMAGE:${TAG}-arm64"; fi
@@ -289,8 +291,12 @@ jobs:
       - name: Build + push amd64 candidate
         # Native docker builder: docker media types + HEALTHCHECK (the
         # OCI exporter drops it — see the plan's rejected alternatives).
+        # Attestations off: per-arch tags must stay bare single manifests
+        # (index assembly counts 2; the digest feeds attestation subjects
+        # and the receipt) — newer runner Docker enables them by default.
         run: |
           docker build -f container/Dockerfile \
+            --provenance=false --sbom=false \
             --build-arg AGENT_BASE_VERSION="${{ needs.candidate-version.outputs.version }}" \
             -t "$STAGING:$IDX-amd64" .
           docker push "$STAGING:$IDX-amd64"
@@ -323,8 +329,11 @@ jobs:
           runtime: docker
           registry: ghcr.io
       - name: Build + push arm64 candidate
+        # Same bare-manifest contract as amd64 (see comment there) — the
+        # 26.04 arm runner's Docker defaults to attached attestations.
         run: |
           docker build -f container/Dockerfile \
+            --provenance=false --sbom=false \
             --build-arg AGENT_BASE_VERSION="${{ needs.candidate-version.outputs.version }}" \
             -t "$STAGING:$IDX-arm64" .
           docker push "$STAGING:$IDX-arm64"
