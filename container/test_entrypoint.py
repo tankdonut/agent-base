@@ -550,8 +550,12 @@ class FirstBootSequence(EntrypointTestCase):
         self._write_spec(spec)
 
         def handler(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+            # 2099.12.31 is deliberately synthetic — the runtime version is
+            # arbitrary input here, never a claim about the image's pin.
             if cmd[:2] == ["openclaw", "--version"]:
-                return subprocess.CompletedProcess(cmd, 0, stdout="openclaw 2026.10.2\n", stderr="")
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout="openclaw 2099.12.31\n", stderr=""
+                )
             return self._ok(cmd)
 
         self.handler = handler
@@ -567,15 +571,17 @@ class FirstBootSequence(EntrypointTestCase):
         self.assertEqual(["openclaw", "channels", "add", "--channel", "discord"], self.calls[3])
         self.assertEqual(["openclaw", "--version"], self.calls[4])
         self.assertEqual(
-            ["openclaw", "plugins", "install", "@openclaw/llama-cpp-provider@2026.10.2"],
+            ["openclaw", "plugins", "install", "@openclaw/llama-cpp-provider@2099.12.31"],
             self.calls[5],
         )
 
     def test_llama_cpp_falls_back_when_runtime_build_not_installable(self) -> None:
         def handler(cmd: list[str]) -> subprocess.CompletedProcess[str]:
             if cmd[:2] == ["openclaw", "--version"]:
-                return subprocess.CompletedProcess(cmd, 0, stdout="openclaw 2026.10.9\n", stderr="")
-            if cmd[-1] == "@openclaw/llama-cpp-provider@2026.10.9":
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout="openclaw 2099.12.30\n", stderr=""
+                )
+            if cmd[-1] == "@openclaw/llama-cpp-provider@2099.12.30":
                 return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="no such build")
             return self._ok(cmd)
 
@@ -585,7 +591,7 @@ class FirstBootSequence(EntrypointTestCase):
         self.assertEqual(0, result.code)
         self.assertLess(
             self.index_of(
-                "openclaw", "plugins", "install", "@openclaw/llama-cpp-provider@2026.10.9"
+                "openclaw", "plugins", "install", "@openclaw/llama-cpp-provider@2099.12.30"
             ),
             self.index_of("openclaw", "plugins", "install", "@openclaw/llama-cpp-provider"),
         )
