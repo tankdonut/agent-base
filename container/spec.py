@@ -83,6 +83,10 @@ class ConfigEntry:
       strict-JSON list of items. An empty result is a SpecError naming the
       referenced env var(s) — a configured CSV that yields nothing is a
       misconfiguration.
+    - merge=true requires the final value (post split_csv) to be a JSON list;
+      cli_value stays the strict-JSON list of spec items, and the entrypoint
+      applies it as a UNION with the stored list — items added outside the
+      spec (doctor allowlist expansions, operator edits) survive reconcile.
     """
 
     path: str
@@ -92,6 +96,7 @@ class ConfigEntry:
     use_strict_json: bool
     if_env: tuple[str, ...] = ()
     split_csv: bool = False
+    merge: bool = False
 
     def env_guard_satisfied(self, env: Mapping[str, str]) -> bool:
         """True iff every name in if_env is present in env; empty guard always passes."""
@@ -398,7 +403,7 @@ _MODEL_KEYS = frozenset({"fallback", "thinking"})
 _THINKING_LEVELS = frozenset(
     {"off", "minimal", "low", "medium", "high", "xhigh", "adaptive", "max"}
 )
-_CONFIG_ENTRY_KEYS = frozenset({"path", "value", "strict", "if_env", "split_csv"})
+_CONFIG_ENTRY_KEYS = frozenset({"path", "value", "strict", "if_env", "split_csv", "merge"})
 _INCLUDE_ONLY_KEYS = frozenset({"include"})
 _PRESET_NAME_RE = re.compile(r"[a-z0-9][a-z0-9_-]*")
 _CONFIG_KEY_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
@@ -487,6 +492,7 @@ def _parse_config_entries(
         _reject_unknown_keys(node, _CONFIG_ENTRY_KEYS, base)
         strict = _expect_bool(node.get("strict", False), _join(base, "strict"))
         split_csv = _expect_bool(node.get("split_csv", False), _join(base, "split_csv"))
+        merge = _expect_bool(node.get("merge", False), _join(base, "merge"))
         if_env = tuple(_expect_str_list(node.get("if_env", []), _join(base, "if_env")))
         lookup = _env_for(if_env, env)
         path = _resolve_string(
@@ -513,9 +519,13 @@ def _parse_config_entries(
                 _fail(_join(base, "value"), f"split_csv produced no non-empty items{hint}")
             cli_value = json.dumps(items)
             use_strict = True
+            final_value: JSONValue = items
         else:
             use_strict = strict or not isinstance(resolved, str)
             cli_value = json.dumps(resolved) if use_strict else str(resolved)
+            final_value = resolved
+        if merge and not isinstance(final_value, list):
+            _fail(_join(base, "merge"), "merge requires the value to resolve to a list")
         entries.append(
             ConfigEntry(
                 path=path,
@@ -525,6 +535,7 @@ def _parse_config_entries(
                 use_strict_json=use_strict,
                 if_env=if_env,
                 split_csv=split_csv,
+                merge=merge,
             )
         )
     return entries

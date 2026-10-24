@@ -422,6 +422,49 @@ class AutomationsDefaultTools(SpecTestCase):
                 )
 
 
+class MergeConfigEntries(SpecTestCase):
+    """config entry `merge` flag (default false): union semantics for list
+    values — cli_value stays the strict-JSON spec list and the entrypoint
+    unions it with the stored list instead of overwriting it."""
+
+    def test_merge_defaults_false(self) -> None:
+        loaded = self.load(self.config_spec(["a"]), env={"ZAI_API_KEY": "zai-key"})
+        self.assertFalse(loaded.config_entries[0].merge)
+
+    def test_merge_list_value_parses(self) -> None:
+        loaded = self.load(
+            self.config_spec(["grow-approval-gate", "llama-cpp"], merge=True),
+            env={"ZAI_API_KEY": "zai-key"},
+        )
+        entry = loaded.config_entries[0]
+        self.assertTrue(entry.merge)
+        self.assertTrue(entry.use_strict_json)
+        self.assertEqual('["grow-approval-gate", "llama-cpp"]', entry.cli_value)
+
+    def test_merge_with_split_csv_parses(self) -> None:
+        loaded = self.load(
+            self.config_spec("grow-approval-gate, llama-cpp", merge=True, split_csv=True),
+            env={"ZAI_API_KEY": "zai-key"},
+        )
+        entry = loaded.config_entries[0]
+        self.assertTrue(entry.merge)
+        self.assertEqual('["grow-approval-gate", "llama-cpp"]', entry.cli_value)
+
+    def test_merge_scalar_value_fails_closed(self) -> None:
+        self.load_expect_error(
+            self.config_spec("allowlist", merge=True),
+            env={"ZAI_API_KEY": "zai-key"},
+            containing="merge",
+        )
+
+    def test_merge_object_value_fails_closed(self) -> None:
+        self.load_expect_error(
+            self.config_spec({"deep": {"merge": True}}, merge=True),
+            env={"ZAI_API_KEY": "zai-key"},
+            containing="merge",
+        )
+
+
 class PluginPruneFeature(SpecTestCase):
     """features.plugin_prune (default false): opt-in removal of de-specified
     plugins the base itself installed (ownership via
