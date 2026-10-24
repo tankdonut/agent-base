@@ -118,9 +118,9 @@ split with copy-paste entries.
 | `AGENT_AUTOMATIONS_DIR` | `/opt/agent/automations` | Override the automations directory. |
 | `AGENT_SCRIPTS_DIR` | `/opt/agent/scripts` | Override the trigger-scripts directory resolved for `trigger-script:` automation headers (sibling of the automations directory). |
 | `AGENT_AUTOMATION_TRIGGERS` | unset | `1` opts the deployment into cron trigger scripts: the cron seed arms the Gateway's `cron.triggers.enabled` config and `trigger-script:` automations seed normally. Without the opt-in, a trigger automation aborts cron seeding loudly. See [Cron trigger scripts](#cron-trigger-scripts). |
-| `AUTOMATION_MODEL` | unset | Cron model fallback when `--model` is not passed. The entrypoint always passes `spec.automations.model`, so this matters only for manual `seed_automations.py` runs. A job's `model:` header overrides it for that job. |
-| `TELEGRAM_CHAT_ID` | unset | Chat ID for cron delivery (base-standardized). Unset means jobs run without Telegram delivery. |
-| `AGENT_BASE_VERSION` | baked `ENV` | Image version, from the build ARG; also the OCI label. Read-only signal for the upgrade-backup phase: a delta against `{data}/last-image-version` triggers a verified backup before migration. |
+| `AGENT_AUTOMATION_MODEL` | unset | Cron model fallback when `--model` is not passed. The entrypoint always passes `spec.automations.model`, so this matters only for manual `seed_automations.py` runs. A job's `model:` header overrides it for that job. `AUTOMATION_MODEL` is a deprecated alias, still honored with a warning. |
+| `TELEGRAM_CHAT_ID` | unset | Chat ID for cron delivery (base-standardized; a deliberate exception to the naming rules below — the one name both the base and project specs may reference). Unset means jobs run without Telegram delivery. |
+| `AGENT_BASE_VERSION` | baked `ENV` | Image version, from the build ARG; also the OCI label. Read-only signal for the upgrade-backup phase: a delta against `{data}/last-image-version` triggers a verified backup before migration. **Do not set** — an override skips or re-runs the upgrade path on every boot. |
 | `AGENT_BACKUP_DIR` | `/backups` | Destination for the upgrade backup (the CLI refuses output inside `{data}`). Mount a named volume at `/backups` to keep archives across containers. |
 | `AGENT_SHUTDOWN_GRACE` | `600` | Seconds a shutdown signal (SIGTERM/SIGINT) waits for the gateway and its in-flight automations before their process group is force-killed. `0` forwards the signal, then force-kills at once; invalid values warn and fall back. Keep the engine stop timeout above it. See [Graceful shutdown](#graceful-shutdown). |
 
@@ -153,6 +153,34 @@ double-nests the data dir. The default (`~/.openclaw`, i.e.
 Resolved secret values never reach logs. Reconciliation warnings name the
 config key that failed, never the value being set; loader warnings name
 env vars, never values. Canary tests lock this.
+
+### Environment naming rules
+
+Namespaces follow the plane a variable lives on:
+
+| Prefix | Plane | Rule |
+| --- | --- | --- |
+| `AGENT_*` | Read by base-image code | Every new base variable uses this prefix. `examples/env.example` section 1 is the authoritative list; a meta-test pins it both ways against `container/` sources. |
+| `OPENCLAW_*` | OpenClaw runtime | The runtime's namespace — the base never invents one (`OPENCLAW_SERVICE_REPAIR_POLICY`/`OPENCLAW_NO_AUTO_UPDATE` are set by the image, `OPENCLAW_GATEWAY_TOKEN` is read by the runtime). `OPENCLAW_HOME` is forbidden. |
+| provider/channel names (`ZAI_API_KEY`, `TELEGRAM_BOT_TOKEN`, …) | Spec-dependent | Owned by the provider; appear only inside `spec.json` `{env:}` refs, `if_env` guards, and `split_csv` values — never read by base code (the load-gated `ZAI_API_KEY`/`LITELLM_API_KEY` pair is the documented exception). |
+| `AGENT_HOST_*` | Host-side compose interpolation | Never enters the container (`AGENT_HOST_GATEWAY_PORT`). The prefix makes the plane visible in the name. |
+
+Additional rules:
+
+- **Polarity**: positive-action names where unset/`0` is the default and `1`
+  performs the named action; a variable whose whole job is disabling may be
+  named `AGENT_SKIP_*` (`AGENT_SKIP_SEED`, `AGENT_SYNC` are grandfathered
+  mixed forms — do not add more).
+- **Secrets** end in `_TOKEN`/`_KEY`/`_PASSWORD` and flow only through
+  `{env:}` refs — never config raw values.
+- **Deprecated aliases**: renamed variables keep the old name honored with a
+  one-line warning for at least one release line. Current: `AUTOMATION_MODEL`
+  → `AGENT_AUTOMATION_MODEL`.
+- **Documented exception**: `TELEGRAM_CHAT_ID` is deliberately dual-plane —
+  the base reads it for cron delivery while project specs may template the
+  same name (`{env:TELEGRAM_CHAT_ID}` in `if_env` guards), so one variable
+  serves both planes. Do not copy this pattern for new variables.
+- `AGENT_BASE_VERSION` is image-owned; do not set it in deployments.
 
 ## Model providers via LiteLLM
 

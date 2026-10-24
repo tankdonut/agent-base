@@ -40,7 +40,7 @@ internals only.
 ## Anti-Patterns
 
 - Silent skip, best-effort parse, or empty-string fallback — every violation aborts with the JSON path / env var name.
-- Default for `automations.model` — hard error naming `--model` + `AUTOMATION_MODEL`.
+- Default for `automations.model` — hard error naming `--model` + `AGENT_AUTOMATION_MODEL` (deprecated alias `AUTOMATION_MODEL` still honored).
 - Splitting a module or adding a fourth file (`spec.py:26-28` forbids it).
 - Logging values that may carry secrets — keys/env names only; SecretsCanary tests lock this.
 - Caching `data_dir()` or the `openclaw.json` snapshot across reconcile.

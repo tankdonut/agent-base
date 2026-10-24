@@ -85,7 +85,7 @@ Symbols relative to `container/`.
 
 ## Anti-Patterns
 
-- Baked default for `automations.model` — hard error naming `--model` + `AUTOMATION_MODEL`; defaults drift silently between agents sharing the image.
+- Baked default for `automations.model` — hard error naming `--model` + `AGENT_AUTOMATION_MODEL` (deprecated alias `AUTOMATION_MODEL` still honored); defaults drift silently between agents sharing the image.
 - Bind-mounting automations in any mode — writable cron prompts are an agent self-modification surface (and there is no overlay: content is image-baked in every mode).
 - Setting `OPENCLAW_HOME` — double-nests `{data}`; the entrypoint pops it at import.
 - Writing docs to `{data}/docs` — the hard standard is `{data}/workspace/docs`.

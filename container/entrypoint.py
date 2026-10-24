@@ -45,6 +45,9 @@ split_csv):
                          operators who manage config manually (default 1).
   AGENT_SKIP_SEED        "1" skips CONTENT SEEDING ONLY — reconciliation
                          still runs (dev overlays bind-mount the content).
+  AGENT_SYNC             "1" for ONE boot forces a workspace re-seed on
+                         an existing volume (seeded files overwritten,
+                         agent-written files outside the seed set survive).
   AGENT_MEMORY_REINDEX   "0" skips the post-startup memory reindex
                           (default 1).
   AGENT_GIT_TOKEN        gh auth token, used only when features.gh_auth.
@@ -53,6 +56,9 @@ split_csv):
                           before their process group is force-killed
                           (default 600; 0 forwards then force-kills at
                           once).
+  AGENT_BACKUP_DIR       Destination for the automatic upgrade backup
+                          (default /backups; the CLI refuses output
+                          inside {data}).
   AGENT_AUTOMATIONS_DIR  Automations directory; resolved inside
                           seed_automations (default /opt/agent/automations)
                           — deliberately not duplicated here.

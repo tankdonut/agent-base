@@ -114,7 +114,7 @@ not a snippet. The directives it locks in, and why:
 | --- | --- |
 | dedicated `agent-net` network | the gateway port is a bearer-auth-only surface; sibling containers sharing a network with the agent must be a deliberate choice (the reverse proxy), not an accident of `docker compose up` |
 | both named volumes (`{data}` **and** `/backups`) | without the `/backups` volume, upgrade archives vanish with the container. The entrypoint still writes them; they just die on redeploy. |
-| `127.0.0.1:${AGENT_GATEWAY_PORT:-18789}:18789` publish | remote exposure only ever happens through your TLS proxy |
+| `127.0.0.1:${AGENT_HOST_GATEWAY_PORT:-18789}:18789` publish | remote exposure only ever happens through your TLS proxy |
 | healthcheck re-declared in compose | matches the image HEALTHCHECK explicitly; matters on platforms that ignore image metadata (ECS) and for `--wait` deployments |
 | `stop_grace_period: 11m` | exceeds `AGENT_SHUTDOWN_GRACE` (600s default), so the engine's stop-timeout `SIGKILL` never cuts an automation drain short (docs/standard-agent.md "Graceful shutdown") |
 | `security_opt: [no-new-privileges:true]`, `cap_drop: [ALL]`, `read_only: true`, tmpfs `/tmp` | named volumes already cover every writable path the base needs, so the root filesystem can be immutable and the capability set empty |
@@ -423,11 +423,11 @@ host-wide; everything else derives from them.
 | Resource | How it stays unique |
 | --- | --- |
 | Compose project name | Pin a top-level `name:` in the compose file (the lowercased project name). It prefixes the containers, volumes, and `agent-net` network, and keeps them stable across directory renames (or export `COMPOSE_PROJECT_NAME`). |
-| Host gateway bind | A distinct `AGENT_GATEWAY_PORT` per agent, in each project's `.env`. The container-internal port stays 18789; only the host bind moves. |
+| Host gateway bind | A distinct `AGENT_HOST_GATEWAY_PORT` per agent, in each project's `.env`. The container-internal port stays 18789; only the host bind moves. |
 
 `docker/podman compose up` fails loudly when the host bind is already
 taken: either this stack is already up (ignore), or another agent owns the
-port and the new one needs its own `AGENT_GATEWAY_PORT`.
+port and the new one needs its own `AGENT_HOST_GATEWAY_PORT`.
 
 The rest of the playbook:
 

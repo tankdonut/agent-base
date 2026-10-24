@@ -48,13 +48,15 @@ Standard agent contract (union of the grow-agent and trade-agent originals):
   TELEGRAM_CHAT_ID       Chat ID for delivery (optional; if unset, jobs
                          run without Telegram delivery).
   TELEGRAM_TOPIC_*       Telegram forum topic IDs per job (via topic-env).
-  --model / AUTOMATION_MODEL
+  --model / AGENT_AUTOMATION_MODEL
                          Global model for cron agent turns (the
                          entrypoint passes spec.automations.model). There
                          is deliberately no baked default — a default
                          would silently drift models between agents
                          sharing this image. --model wins over
-                         AUTOMATION_MODEL; when neither is set the run
+                         AGENT_AUTOMATION_MODEL (AUTOMATION_MODEL is a
+                         deprecated alias, still honored with a warning);
+                         when neither is set the run
                          aborts before any mutation. A job's ``model:``
                          header overrides the global model for that job
                          alone (stored as the per-job model override on
@@ -108,6 +110,25 @@ def error(msg: str) -> None:
 
 
 CHAT = os.environ.get("TELEGRAM_CHAT_ID", "")
+
+MODEL_ENV = "AGENT_AUTOMATION_MODEL"
+MODEL_ENV_DEPRECATED = "AUTOMATION_MODEL"
+_model_env_warned = False
+
+
+def _model_env() -> str:
+    """AGENT_AUTOMATION_MODEL, falling back to the deprecated
+    AUTOMATION_MODEL (warned once); empty when neither is set."""
+    global _model_env_warned
+    model = os.environ.get(MODEL_ENV, "").strip()
+    if model:
+        return model
+    legacy = os.environ.get(MODEL_ENV_DEPRECATED, "").strip()
+    if legacy and not _model_env_warned:
+        warn(f"{MODEL_ENV_DEPRECATED} is deprecated — rename to {MODEL_ENV} (still honored)")
+        _model_env_warned = True
+    return legacy
+
 
 WORKSPACE = Path.home() / ".openclaw" / "workspace"
 DOCS = WORKSPACE / "docs"
@@ -183,7 +204,7 @@ class AutomationSpecError(ValueError):
 
 
 class ModelResolutionError(RuntimeError):
-    """No automation model was configured via --model or AUTOMATION_MODEL."""
+    """No automation model was configured via --model or AGENT_AUTOMATION_MODEL."""
 
 
 @dataclass(frozen=True)
@@ -207,20 +228,20 @@ class JobSpec:
 
 def _effective_model(spec: JobSpec, fallback: str) -> str:
     """Resolve a job's model: a declared `model:` header wins over the
-    global model (--model / AUTOMATION_MODEL)."""
+    global model (--model / AGENT_AUTOMATION_MODEL)."""
     return spec.model or fallback
 
 
 def resolve_model(cli_model: str | None) -> str:
-    """Resolve the cron-agent model: --model beats AUTOMATION_MODEL.
+    """Resolve the cron-agent model: --model beats AGENT_AUTOMATION_MODEL.
 
     There is deliberately no baked default — a default would silently
     drift models between agents sharing this base image, so an empty
     resolution is a hard error naming both sources."""
-    model = (cli_model or "").strip() or os.environ.get("AUTOMATION_MODEL", "").strip()
+    model = (cli_model or "").strip() or _model_env()
     if not model:
         raise ModelResolutionError(
-            "no automation model configured — pass --model or set AUTOMATION_MODEL"
+            "no automation model configured — pass --model or set AGENT_AUTOMATION_MODEL"
         )
     return model
 
@@ -797,7 +818,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--model",
         default="",
-        help="model for cron agent turns (overrides AUTOMATION_MODEL)",
+        help="model for cron agent turns (overrides AGENT_AUTOMATION_MODEL)",
     )
     parser.add_argument(
         "--default-tools",

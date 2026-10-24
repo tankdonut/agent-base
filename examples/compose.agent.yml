@@ -28,10 +28,11 @@ services:
     volumes:
       - <project>-agent-data:/home/node/.openclaw
     # Bind the gateway to localhost only; put a reverse proxy in front for
-    # remote access. AGENT_GATEWAY_PORT is host-side compose interpolation
-    # (examples/env.example section 4), never enters the container.
+    # remote access. AGENT_HOST_GATEWAY_PORT is host-side compose
+    # interpolation (examples/env.example section 4), never enters the
+    # container.
     ports:
-      - "127.0.0.1:${AGENT_GATEWAY_PORT:-18789}:18789"
+      - "127.0.0.1:${AGENT_HOST_GATEWAY_PORT:-18789}:18789"
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://localhost:18789/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 30s

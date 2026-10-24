@@ -56,11 +56,11 @@ services:
       # archives vanish with the container.
       - agent-backups:/backups
     # Loopback-only bind; remote access goes through a TLS-terminating
-    # reverse proxy (docs/deployment.md). AGENT_GATEWAY_PORT is host-side
-    # compose interpolation (examples/env.example section 4), and never
-    # enters the container.
+    # reverse proxy (docs/deployment.md). AGENT_HOST_GATEWAY_PORT is
+    # host-side compose interpolation (examples/env.example section 4),
+    # and never enters the container.
     ports:
-      - "127.0.0.1:${AGENT_GATEWAY_PORT:-18789}:18789"
+      - "127.0.0.1:${AGENT_HOST_GATEWAY_PORT:-18789}:18789"
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://localhost:18789/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 30s

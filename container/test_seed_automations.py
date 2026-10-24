@@ -9,7 +9,8 @@ Union of the grow-agent and trade-agent suites, rebased onto the standard contra
   key/name, name/stem mismatch, every-xor-cron, deliver enum, bad
   topic-env, empty dir/body), token substitution, and single-line
   canonical rendering. All against throwaway temp directories.
-- ModelResolution — the --model / AUTOMATION_MODEL ladder with no baked
+- ModelResolution — the --model / AGENT_AUTOMATION_MODEL ladder (with
+  the deprecated AUTOMATION_MODEL alias) and no baked
   default (silent model drift forbidden); neither source aborts.
 - JobModelPolicy — the per-job `model:` header: overrides the global
   model on `cron add`; empty declaration fails closed; stored-model
@@ -128,26 +129,49 @@ class ModuleImportSafety(unittest.TestCase):
 
 
 class ModelResolution(unittest.TestCase):
-    """--model wins over AUTOMATION_MODEL; no baked default exists — an
-    empty resolution is a hard error naming both sources."""
+    """--model wins over AGENT_AUTOMATION_MODEL; no baked default exists —
+    an empty resolution is a hard error naming both sources. The
+    deprecated AUTOMATION_MODEL alias still resolves (warned once)."""
 
     def test_cli_model_wins_over_env(self) -> None:
-        with mock.patch.dict(os.environ, {"AUTOMATION_MODEL": "env/model"}):
+        with mock.patch.dict(os.environ, {seed_automations.MODEL_ENV: "env/model"}):
             self.assertEqual(seed_automations.resolve_model("cli/model"), "cli/model")
 
     def test_env_model_used_when_cli_absent(self) -> None:
-        with mock.patch.dict(os.environ, {"AUTOMATION_MODEL": "env/model"}):
+        with mock.patch.dict(os.environ, {seed_automations.MODEL_ENV: "env/model"}):
             self.assertEqual(seed_automations.resolve_model(""), "env/model")
             self.assertEqual(seed_automations.resolve_model(None), "env/model")
 
-    def test_neither_source_raises_naming_both(self) -> None:
+    def test_deprecated_alias_still_resolves_and_warns_once(self) -> None:
+        stdout = io.StringIO()
+        with (
+            mock.patch.dict(os.environ, {seed_automations.MODEL_ENV_DEPRECATED: "legacy/model"}),
+            contextlib.redirect_stdout(stdout),
+        ):
+            seed_automations._model_env_warned = False
+            self.assertEqual(seed_automations.resolve_model(""), "legacy/model")
+            self.assertEqual(seed_automations.resolve_model(""), "legacy/model")
+        output = stdout.getvalue()
+        self.assertIn("deprecated", output)
+        self.assertEqual(1, output.count("deprecated"), "alias warning must fire once")
+
+    def test_new_name_wins_over_deprecated_alias(self) -> None:
+        env = {
+            seed_automations.MODEL_ENV: "new/model",
+            seed_automations.MODEL_ENV_DEPRECATED: "legacy/model",
+        }
+        with mock.patch.dict(os.environ, env):
+            self.assertEqual(seed_automations.resolve_model(""), "new/model")
+
+    def test_neither_source_raises_naming_both_sources(self) -> None:
         with mock.patch.dict(os.environ):
-            os.environ.pop("AUTOMATION_MODEL", None)
+            os.environ.pop(seed_automations.MODEL_ENV, None)
+            os.environ.pop(seed_automations.MODEL_ENV_DEPRECATED, None)
             with self.assertRaises(seed_automations.ModelResolutionError) as ctx:
                 seed_automations.resolve_model("")
         message = str(ctx.exception)
         self.assertIn("--model", message)
-        self.assertIn("AUTOMATION_MODEL", message)
+        self.assertIn(seed_automations.MODEL_ENV, message)
 
 
 class TempSpecDir(unittest.TestCase):
@@ -1461,7 +1485,7 @@ class MainFlow(unittest.TestCase):
     def test_cli_model_wins_and_flows_into_cron_add(self) -> None:
         spec = make_spec()
         with (
-            mock.patch.dict(os.environ, {"AUTOMATION_MODEL": "env/model"}),
+            mock.patch.dict(os.environ, {seed_automations.MODEL_ENV: "env/model"}),
             mock.patch.object(seed_automations, "build_jobs", return_value=[spec]),
             mock.patch.object(seed_automations, "list_cron_jobs", return_value=[]),
             mock.patch.object(seed_automations, "openclaw") as oc,
@@ -1499,13 +1523,14 @@ class MainFlow(unittest.TestCase):
             mock.patch.object(seed_automations, "openclaw") as oc,
             contextlib.redirect_stderr(stderr),
         ):
-            os.environ.pop("AUTOMATION_MODEL", None)
+            os.environ.pop(seed_automations.MODEL_ENV, None)
+            os.environ.pop(seed_automations.MODEL_ENV_DEPRECATED, None)
             with self.assertRaises(SystemExit) as ctx:
                 seed_automations.main([])
         self.assertEqual(ctx.exception.code, 1)
         output = stderr.getvalue()
         self.assertIn("--model", output)
-        self.assertIn("AUTOMATION_MODEL", output)
+        self.assertIn(seed_automations.MODEL_ENV, output)
         lst.assert_not_called()
         oc.assert_not_called()
 

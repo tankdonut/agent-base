@@ -219,6 +219,40 @@ class EnvExampleContract(unittest.TestCase):
         self.assertEqual(set(), missing, f"env.example does not document: {sorted(missing)}")
 
 
+class EnvNameContract(unittest.TestCase):
+    """The AGENT_* surface is pinned both ways against env.example: every
+    name mentioned in container sources is documented, and every
+    section-1 entry is actually mentioned by container code."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        container_dir = Path(__file__).resolve().parent
+        cls.mentions: set[str] = set()
+        for name in ("entrypoint.py", "spec.py", "seed_automations.py"):
+            cls.mentions |= set(
+                re.findall(r"(?<![A-Z_])AGENT_[A-Z0-9_]+", (container_dir / name).read_text())
+            )
+
+    def test_code_mentions_are_documented(self) -> None:
+        missing = self.mentions - env_example_keys()
+        self.assertEqual(
+            set(),
+            missing,
+            f"AGENT_* names in container code missing from env.example: {sorted(missing)}",
+        )
+
+    def test_section_one_entries_are_mentioned_by_code(self) -> None:
+        section_one = ENV_EXAMPLE.read_text().split("# --- 1.")[1].split("# --- 2.")[0]
+        entries = set(
+            re.findall(r"^#\s*((?<![A-Z_])AGENT_[A-Z0-9_]+)\s*=", section_one, re.MULTILINE)
+        )
+        self.assertGreater(len(entries), 10, "env.example section 1 parse collapsed")
+        not_read = entries - self.mentions
+        self.assertEqual(
+            set(), not_read, f"section-1 entries no container code mentions: {sorted(not_read)}"
+        )
+
+
 class ModelThinking(SpecTestCase):
     """model.thinking: optional reasoning-effort level, fail-closed value set."""
 
