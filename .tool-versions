@@ -9,4 +9,4 @@
 python 3.15.1
 pre-commit 4.7.0
 hadolint 2.15.1
-markdownlint-cli2 0.23.3
+markdownlint-cli2 0.24.0
