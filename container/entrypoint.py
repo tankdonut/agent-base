@@ -20,8 +20,11 @@ Every boot (declarative reconciliation — idempotent, self-healing volumes):
   6. reconcile_plugins  — local: force-install each boot; registry: install
                           when absent
   7. authenticate_gh    — only when features.gh_auth is true
-  8. seed_content       — workspace first-boot-only; skills + docs full
-                          replacement every boot
+  8. seed_content       — workspace: first-boot copy + three-way reconcile
+                          of later image updates against agent edits
+                          (untouched files fast-forward, modified files get
+                          the image version staged at .seed-updates/);
+                          skills + docs full replacement every boot
   9. fork; the child runs post_startup (gateway wait, cron seeding via
      seed_automations in-process, memory reindex, skill disable) while the
      parent supervise()s the container CMD: the CMD runs in its own
@@ -47,7 +50,9 @@ split_csv):
                          still runs (dev overlays bind-mount the content).
   AGENT_SYNC             "1" for ONE boot forces a workspace re-seed on
                          an existing volume (seeded files overwritten,
-                         agent-written files outside the seed set survive).
+                         agent-written files outside the seed set survive;
+                         the seed baseline resets and staged .seed-updates/
+                         copies clear).
   AGENT_MEMORY_REINDEX   "0" skips the post-startup memory reindex
                           (default 1).
   AGENT_GIT_TOKEN        gh auth token, used only when features.gh_auth.
@@ -1073,17 +1078,243 @@ def _seed_dir_safe(path: Path) -> bool:
     return not path.exists() or path.is_dir()
 
 
+def _file_digest(path: Path) -> str | None:
+    """sha256 of file bytes; None when the file is missing or unreadable.
+    Callers treat None as "absent" — an unreadable file must never be
+    mistaken for present-with-content."""
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def _read_seed_baselines() -> dict[str, str]:
+    """Workspace-relative path → digest of the seeded content the boot last
+    wrote (or the agent last matched). Unreadable or malformed markers read
+    as empty: on the next boot live files identical to the image self-heal
+    the marker, differing files surface as conflicts, and nothing is
+    clobbered. The docs/ subtree is untracked (full-replaced every boot),
+    so its keys are dropped here."""
+    try:
+        raw = (data_dir() / "seed-baselines").read_text(encoding="utf-8")
+    except OSError:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    return {
+        k: v
+        for k, v in parsed.items()
+        if isinstance(k, str) and isinstance(v, str) and not k.startswith("docs/")
+    }
+
+
+def _write_seed_baselines(baselines: Mapping[str, str]) -> None:
+    """Persist the seed baselines; best-effort (warn on failure, never
+    raise). An empty map removes the marker — nothing is tracked."""
+    path = data_dir() / "seed-baselines"
+    try:
+        if not baselines:
+            path.unlink(missing_ok=True)
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(dict(sorted(baselines.items()))), encoding="utf-8")
+    except OSError:
+        warn("could not update seed-baselines marker")
+
+
+def _seeded_workspace_relpaths() -> list[str]:
+    """Relative POSIX paths of files under SEED_BASE/workspace, docs/
+    subtree excluded."""
+    workspace_src = SEED_BASE / "workspace"
+    if not workspace_src.is_dir():
+        return []
+    rels: list[str] = []
+    for path in workspace_src.rglob("*"):
+        rel = path.relative_to(workspace_src).as_posix()
+        if rel.startswith("docs/"):
+            continue
+        if path.is_file():
+            rels.append(rel)
+    return sorted(rels)
+
+
+def _image_baselines() -> dict[str, str]:
+    """Digest map of every tracked file in the current seed tree."""
+    workspace_src = SEED_BASE / "workspace"
+    return {
+        rel: digest
+        for rel in _seeded_workspace_relpaths()
+        if (digest := _file_digest(workspace_src / rel)) is not None
+    }
+
+
+def _live_path_safe(workspace: Path, live: Path) -> bool:
+    """False when live (or any node between it and the workspace) is a
+    symlink — writing through it would redirect into the target."""
+    probe = live
+    while probe != workspace:
+        if probe.is_symlink():
+            return False
+        probe = probe.parent
+    return True
+
+
+def _remove_conflict_copy(workspace: Path, rel: str) -> None:
+    """Delete a resolved conflict copy and prune its now-empty parent
+    directories; best-effort."""
+    root = workspace / ".seed-updates"
+    target = root / rel
+    try:
+        if target.is_symlink() or target.is_file():
+            target.unlink()
+        parent = target.parent
+        while parent != root and parent != workspace:
+            if any(parent.iterdir()):
+                break
+            parent.rmdir()
+            parent = parent.parent
+        if root.is_dir() and not any(root.iterdir()):
+            root.rmdir()
+    except OSError:
+        warn(f"could not clean up .seed-updates/{rel}")
+
+
+def _write_conflict_copy(workspace: Path, rel: str, image: Path) -> bool:
+    """Stage the image version at .seed-updates/<rel> so the agent (or the
+    operator) can merge it. Refuses symlinked or non-directory nodes on
+    the destination path — never write through them. Returns False when
+    the copy could not be staged (the caller warns once either way)."""
+    root = workspace / ".seed-updates"
+    target = root / rel
+    try:
+        if root.exists() and not _seed_dir_safe(root):
+            warn(f"refusing to stage .seed-updates/{rel}: symlink or not a directory")
+            return False
+        root.mkdir(parents=True, exist_ok=True)
+        if target.is_symlink():
+            warn(f"refusing to stage .seed-updates/{rel}: destination is a symlink")
+            return False
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(image, target)
+    except OSError:
+        warn(f"could not stage .seed-updates/{rel}")
+        return False
+    return True
+
+
+def _clear_seed_conflicts(workspace: Path) -> None:
+    """Remove the .seed-updates staging dir on a forced re-seed (the image
+    version became live, so staged copies are resolved). Refuses unsafe
+    nodes with a warn instead of deleting through them."""
+    root = workspace / ".seed-updates"
+    if not root.exists() and not root.is_symlink():
+        return
+    if not _seed_dir_safe(root):
+        warn(f"refusing to clear {root}: symlink or not a directory")
+        return
+    try:
+        shutil.rmtree(root)
+    except OSError:
+        warn(f"could not clear {root}")
+
+
+def _reconcile_workspace_seed(workspace: Path, spec: Spec, env: Mapping[str, str]) -> None:
+    """Three-way reconcile of seeded workspace files: image copy vs recorded
+    baseline vs live file (rows evaluated first-match):
+
+      unchanged image   B == I                       nothing
+      adopted           L == I                       self-heal the baseline
+      untouched         L == B                       copy the image over live
+      agent-deleted     L missing, B/I present       warn, never restore
+      removed from      I missing (marker key         drop the baseline,
+      seed              without an image file)        leave live untouched
+      conflict          otherwise                    leave live untouched,
+                                                   stage the image at
+                                                   .seed-updates/
+
+    A missing or malformed marker reads as every B absent: identical live
+    files self-heal, differing ones conflict, missing ones are seeded. The
+    docs/ subtree is untracked (full-replaced every boot by seed_content)."""
+    workspace_src = SEED_BASE / "workspace"
+    original = _read_seed_baselines()
+    baselines = dict(original)
+    for rel in sorted(set(_seeded_workspace_relpaths()) | set(baselines)):
+        image = workspace_src / rel
+        live = workspace / rel
+        image_digest = _file_digest(image)
+        baseline = baselines.get(rel)
+        live_digest = _file_digest(live)
+
+        if image_digest is None and image.exists():
+            warn(f"cannot read seeded workspace source {rel} — left untouched")
+            continue
+        if baseline == image_digest:
+            continue
+        if image_digest is None:
+            del baselines[rel]
+            warn(
+                f"seeded workspace file {rel} is no longer shipped — "
+                "baseline dropped, live file untouched"
+            )
+            continue
+        if live_digest == image_digest:
+            baselines[rel] = image_digest
+            _remove_conflict_copy(workspace, rel)
+            log(f"seeded workspace file {rel} fast-forwarded to image version")
+            continue
+        if live_digest == baseline:
+            if not _live_path_safe(workspace, live):
+                warn(
+                    f"seeded workspace file {rel} is a symlink — not "
+                    "overwritten, image version staged"
+                )
+                _write_conflict_copy(workspace, rel, image)
+                continue
+            try:
+                live.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(image, live)
+            except OSError:
+                warn(f"could not fast-forward seeded workspace file {rel}")
+                continue
+            baselines[rel] = image_digest
+            _remove_conflict_copy(workspace, rel)
+            log(f"seeded workspace file {rel} fast-forwarded to image version")
+            continue
+        if live_digest is None:
+            warn(
+                f"seeded workspace file {rel} is missing (agent-deleted?) — "
+                "not restored; AGENT_SYNC=1 re-seeds"
+            )
+            continue
+        if _write_conflict_copy(workspace, rel, image):
+            warn(
+                f"seeded workspace file {rel} was modified by the agent — "
+                f"image version staged at .seed-updates/{rel}"
+            )
+    if baselines != original:
+        _write_seed_baselines(baselines)
+
+
 def seed_content(spec: Spec, env: Mapping[str, str]) -> None:
     """Seed content from SEED_BASE subdirs into {data}.
 
-    workspace/ is copied on first boot only (the agent evolves it at
-    runtime); skills/ and docs/ are fully replaced every boot (image-baked
-    reference content; docs land at {data}/workspace/docs). journal/ is
-    created with parents. Seeded roots that are symlinks or non-directory
-    nodes are refused with a warning (never followed, never deleted
-    through) — the boot continues with that root unseeded. AGENT_SKIP_SEED=1
-    skips content seeding only — config/mcp/plugin reconciliation is the
-    caller's business and still runs."""
+    workspace/ is copied on first boot with a digest baseline recorded per
+    seeded file; on later boots the baseline reconciles image updates
+    against agent edits (_reconcile_workspace_seed): untouched files
+    fast-forward to the image version, agent-modified files keep their live
+    content with the image version staged at
+    {data}/workspace/.seed-updates/. AGENT_SYNC=1 forces a full re-seed and
+    resets the baseline. skills/ and docs/ are fully replaced every boot
+    (image-baked reference content; docs land at {data}/workspace/docs).
+    journal/ is created with parents. Seeded roots that are symlinks or
+    non-directory nodes are refused with a warning (never followed, never
+    deleted through) — the boot continues with that root unseeded.
+    AGENT_SKIP_SEED=1 skips content seeding only — config/mcp/plugin
+    reconciliation is the caller's business and still runs."""
     if env.get("AGENT_SKIP_SEED", "0") == "1":
         log("Content seeding skipped (AGENT_SKIP_SEED=1 — dev mode bind mounts)")
         return
@@ -1096,13 +1327,17 @@ def seed_content(spec: Spec, env: Mapping[str, str]) -> None:
     if workspace_src.is_dir():
         if not workspace.exists():
             shutil.copytree(workspace_src, workspace)
+            _write_seed_baselines(_image_baselines())
         elif env.get("AGENT_SYNC", "0") == "1":
             log("AGENT_SYNC=1 — re-seeding workspace (seeded files overwritten)")
             shutil.copytree(workspace_src, workspace, dirs_exist_ok=True)
+            _write_seed_baselines(_image_baselines())
+            _clear_seed_conflicts(workspace)
         else:
-            workspace.mkdir(parents=True, exist_ok=True)
+            _reconcile_workspace_seed(workspace, spec, env)
     else:
         workspace.mkdir(parents=True, exist_ok=True)
+        _reconcile_workspace_seed(workspace, spec, env)
 
     skills_src = SEED_BASE / "skills"
     if skills_src.is_dir():

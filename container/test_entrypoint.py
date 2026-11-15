@@ -1492,6 +1492,209 @@ class SeedContentSemantics(EntrypointTestCase):
         self.assertEqual("keep\n", (victim / "keep.md").read_text("utf-8"))
 
 
+class SeedWorkspaceReconcile(EntrypointTestCase):
+    """Decision-table coverage for the three-way workspace seed reconcile:
+    image copy vs recorded baseline vs live file."""
+
+    def make_workspace_seed(self, text: str = "# seed\n", rel: str = "AGENTS.md") -> Path:
+        src = self.seed_base / "workspace" / rel
+        src.parent.mkdir(parents=True, exist_ok=True)
+        src.write_text(text, encoding="utf-8")
+        return src
+
+    def seed(self, env: dict[str, str] | None = None) -> tuple[str, str]:
+        spec = self.load_default_spec()
+        return self.capture(lambda: entrypoint.seed_content(spec, env or dict(os.environ)))
+
+    def baselines(self) -> dict[str, str]:
+        return entrypoint._read_seed_baselines()
+
+    def test_first_boot_records_baselines(self) -> None:
+        src = self.make_workspace_seed()
+        self.seed()
+        self.assertEqual({"AGENTS.md": entrypoint._file_digest(src)}, self.baselines())
+
+    def test_untouched_file_fast_forwards_to_image_version(self) -> None:
+        src = self.make_workspace_seed()
+        self.seed()
+        src.write_text("# new image version\n", encoding="utf-8")
+        out, err = self.seed()
+        live = self.data / "workspace" / "AGENTS.md"
+        self.assertEqual("# new image version\n", live.read_text("utf-8"))
+        self.assertEqual({"AGENTS.md": entrypoint._file_digest(src)}, self.baselines())
+        self.assertIn("seeded workspace file AGENTS.md fast-forwarded to image version", out)
+        self.assertEqual("", err)
+        self.assertFalse((self.data / "workspace" / ".seed-updates").exists())
+
+    def test_unchanged_image_is_noop(self) -> None:
+        self.make_workspace_seed()
+        self.seed()
+        out, err = self.seed()
+        self.assertNotIn("fast-forwarded", out)
+        self.assertEqual("", err)
+
+    def test_agent_modified_file_conflicts(self) -> None:
+        src = self.make_workspace_seed()
+        self.seed()
+        src.write_text("# new image version\n", encoding="utf-8")
+        live = self.data / "workspace" / "AGENTS.md"
+        live.write_text("# agent edit\n", encoding="utf-8")
+        _out, err = self.seed()
+        self.assertEqual("# agent edit\n", live.read_text("utf-8"))
+        staged = self.data / "workspace" / ".seed-updates" / "AGENTS.md"
+        self.assertEqual("# new image version\n", staged.read_text("utf-8"))
+        self.assertIn("AGENTS.md", err)
+        self.assertIn(".seed-updates/AGENTS.md", err)
+        for content in ("# agent edit", "# new image version"):
+            self.assertNotIn(content, err)
+        # Baseline keeps the old digest (the agent has not adopted anything).
+        self.assertEqual(
+            {"AGENTS.md": entrypoint.hashlib.sha256(b"# seed\n").hexdigest()},
+            self.baselines(),
+        )
+
+    def test_adopting_image_content_resolves_conflict(self) -> None:
+        src = self.make_workspace_seed()
+        self.seed()
+        src.write_text("# new image version\n", encoding="utf-8")
+        live = self.data / "workspace" / "AGENTS.md"
+        live.write_text("# agent edit\n", encoding="utf-8")
+        self.seed()
+        live.write_text("# new image version\n", encoding="utf-8")
+        out, err = self.seed()
+        self.assertFalse((self.data / "workspace" / ".seed-updates").exists())
+        self.assertEqual({"AGENTS.md": entrypoint._file_digest(src)}, self.baselines())
+        self.assertIn("fast-forwarded", out)
+        self.assertEqual("", err)
+
+    def test_agent_deleted_file_not_restored_when_image_changed(self) -> None:
+        src = self.make_workspace_seed()
+        self.seed()
+        src.write_text("# new image version\n", encoding="utf-8")
+        (self.data / "workspace" / "AGENTS.md").unlink()
+        _out, err = self.seed()
+        self.assertFalse((self.data / "workspace" / "AGENTS.md").exists())
+        self.assertIn(
+            "seeded workspace file AGENTS.md is missing (agent-deleted?) — "
+            "not restored; AGENT_SYNC=1 re-seeds",
+            err,
+        )
+
+    def test_agent_deleted_file_with_unchanged_image_stays_silent(self) -> None:
+        self.make_workspace_seed()
+        self.seed()
+        (self.data / "workspace" / "AGENTS.md").unlink()
+        _out, err = self.seed()
+        self.assertFalse((self.data / "workspace" / "AGENTS.md").exists())
+        self.assertEqual("", err)
+
+    def test_removed_from_seed_drops_baseline_and_warns_once(self) -> None:
+        src = self.make_workspace_seed()
+        self.seed()
+        src.unlink()
+        _out, err = self.seed()
+        self.assertIn("no longer shipped", err)
+        live = self.data / "workspace" / "AGENTS.md"
+        self.assertEqual("# seed\n", live.read_text("utf-8"))
+        self.assertEqual({}, self.baselines())
+        self.assertFalse((self.data / "seed-baselines").exists())
+        _out2, err2 = self.seed()
+        self.assertNotIn("no longer shipped", err2)
+
+    def test_agent_sync_resets_baselines_and_clears_conflicts(self) -> None:
+        src = self.make_workspace_seed()
+        self.seed()
+        src.write_text("# new image version\n", encoding="utf-8")
+        live = self.data / "workspace" / "AGENTS.md"
+        live.write_text("# agent edit\n", encoding="utf-8")
+        self.seed()
+        staged = self.data / "workspace" / ".seed-updates" / "AGENTS.md"
+        self.assertTrue(staged.is_file())
+        self.seed({"AGENT_SYNC": "1"})
+        self.assertEqual("# new image version\n", live.read_text("utf-8"))
+        self.assertFalse((self.data / "workspace" / ".seed-updates").exists())
+        self.assertEqual({"AGENTS.md": entrypoint._file_digest(src)}, self.baselines())
+
+    def test_malformed_marker_self_heals_identical_and_conflicts_differing(
+        self,
+    ) -> None:
+        src = self.make_workspace_seed()
+        self.make_workspace_seed("# two\n", rel="SOUL.md")
+        self.seed()
+        (self.data / "seed-baselines").write_text("not json", encoding="utf-8")
+        diverged = self.data / "workspace" / "SOUL.md"
+        diverged.write_text("# agent soul\n", encoding="utf-8")
+        out, err = self.seed()
+        # Identical live file (AGENTS.md) self-heals; differing one conflicts.
+        self.assertIn("AGENTS.md fast-forwarded", out)
+        staged_soul = self.data / "workspace" / ".seed-updates" / "SOUL.md"
+        self.assertEqual("# two\n", staged_soul.read_text("utf-8"))
+        self.assertEqual("# agent soul\n", diverged.read_text("utf-8"))
+        self.assertIn("SOUL.md", err)
+        self.assertEqual({"AGENTS.md": entrypoint._file_digest(src)}, self.baselines())
+
+    def test_malformed_marker_reseeds_missing_live_files(self) -> None:
+        src = self.make_workspace_seed()
+        self.seed()
+        (self.data / "seed-baselines").write_text("[]", encoding="utf-8")
+        (self.data / "workspace" / "AGENTS.md").unlink()
+        self.seed()
+        live = self.data / "workspace" / "AGENTS.md"
+        self.assertEqual("# seed\n", live.read_text("utf-8"))
+        self.assertEqual({"AGENTS.md": entrypoint._file_digest(src)}, self.baselines())
+
+    def test_symlinked_conflict_dir_refused(self) -> None:
+        src = self.make_workspace_seed()
+        self.seed()
+        src.write_text("# new image version\n", encoding="utf-8")
+        live = self.data / "workspace" / "AGENTS.md"
+        live.write_text("# agent edit\n", encoding="utf-8")
+        victim = self.home / "victim"
+        victim.mkdir()
+        (victim / "keep.md").write_text("keep\n", encoding="utf-8")
+        os.symlink(victim, self.data / "workspace" / ".seed-updates")
+        _out, err = self.seed()
+        self.assertIn("refusing to stage .seed-updates/AGENTS.md", err)
+        self.assertEqual("keep\n", (victim / "keep.md").read_text("utf-8"))
+        self.assertEqual(["keep.md"], sorted(p.name for p in victim.iterdir()))
+
+    def test_docs_subtree_excluded_from_baselines(self) -> None:
+        self.make_workspace_seed()
+        self.make_workspace_seed("# wd\n", rel="docs/guide.md")
+        self.seed()
+        expected = {
+            "AGENTS.md": entrypoint._file_digest(self.seed_base / "workspace" / "AGENTS.md")
+        }
+        self.assertEqual(expected, self.baselines())
+
+    def test_nested_path_conflict_stages_with_parents(self) -> None:
+        src = self.make_workspace_seed("# tpl\n", rel="templates/x.md")
+        self.seed()
+        src.write_text("# tpl new\n", encoding="utf-8")
+        live = self.data / "workspace" / "templates" / "x.md"
+        live.write_text("# agent tpl\n", encoding="utf-8")
+        self.seed()
+        staged = self.data / "workspace" / ".seed-updates" / "templates" / "x.md"
+        self.assertEqual("# tpl new\n", staged.read_text("utf-8"))
+        self.assertEqual("# agent tpl\n", live.read_text("utf-8"))
+
+    def test_symlinked_live_file_staged_not_overwritten(self) -> None:
+        src = self.make_workspace_seed()
+        self.seed()
+        src.write_text("# new image version\n", encoding="utf-8")
+        live = self.data / "workspace" / "AGENTS.md"
+        target = self.home / "agent-copy.md"
+        target.write_text("# seed\n", encoding="utf-8")
+        live.unlink()
+        os.symlink(target, live)
+        _out, err = self.seed()
+        self.assertTrue(live.is_symlink())
+        self.assertEqual("# seed\n", target.read_text("utf-8"))
+        staged = self.data / "workspace" / ".seed-updates" / "AGENTS.md"
+        self.assertEqual("# new image version\n", staged.read_text("utf-8"))
+        self.assertIn("symlink", err)
+
+
 class MemoryStatusLadder(EntrypointTestCase):
     def status(self, payload: str) -> str:
         def handler(cmd: list[str]) -> subprocess.CompletedProcess[str]:
