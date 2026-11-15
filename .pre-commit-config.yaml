@@ -52,3 +52,7 @@ repos:
     rev: v0.24.0
     hooks:
       - id: markdownlint-cli2
+        # Pinned node: an unpinned node-language hook makes nodeenv resolve
+        # "latest", and a prerelease at the top of nodejs.org's index
+        # crashes nodeenv's own version parsing.
+        language_version: 26.13.1
