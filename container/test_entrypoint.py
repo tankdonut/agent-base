@@ -1694,6 +1694,70 @@ class SeedWorkspaceReconcile(EntrypointTestCase):
         self.assertEqual("# new image version\n", staged.read_text("utf-8"))
         self.assertIn("symlink", err)
 
+    def test_unsafe_marker_keys_dropped_not_joined(self) -> None:
+        # Marker keys are joined into filesystem paths; an absolute or
+        # traversal key used to escape the workspace and, via the adopted
+        # row, unlink out-of-tree files. Unsafe entries must be dropped at
+        # read time instead.
+        src = self.make_workspace_seed()
+        self.seed()
+        victim = self.home / "precious-agent-file.txt"
+        victim.write_text("precious\n", encoding="utf-8")
+        good = entrypoint._file_digest(src) or ""
+        self.data.mkdir(parents=True, exist_ok=True)
+        (self.data / "seed-baselines").write_text(
+            json.dumps(
+                {
+                    str(victim): "deadbeef",
+                    "../escape": "x",
+                    ".": "x",
+                    "": "x",
+                    "a\x00b": "x",
+                    "AGENTS.md": good,
+                }
+            ),
+            encoding="utf-8",
+        )
+        _out, err = self.seed()
+        self.assertEqual("precious\n", victim.read_text("utf-8"))
+        self.assertFalse((self.data / "workspace" / "escape").exists())
+        self.assertEqual({"AGENTS.md": good}, self.baselines())
+        self.assertEqual("", err)
+
+    def test_agent_sync_restores_agent_deleted_file(self) -> None:
+        self.make_workspace_seed()
+        self.seed()
+        (self.data / "workspace" / "AGENTS.md").unlink()
+        self.seed({"AGENT_SYNC": "1"})
+        live = self.data / "workspace" / "AGENTS.md"
+        self.assertEqual("# seed\n", live.read_text("utf-8"))
+
+    def test_symlinked_staged_target_refused(self) -> None:
+        src = self.make_workspace_seed()
+        self.seed()
+        src.write_text("# new image version\n", encoding="utf-8")
+        live = self.data / "workspace" / "AGENTS.md"
+        live.write_text("# agent edit\n", encoding="utf-8")
+        staging = self.data / "workspace" / ".seed-updates"
+        staging.mkdir(parents=True)
+        victim = self.home / "staging-victim.md"
+        victim.write_text("keep\n", encoding="utf-8")
+        os.symlink(victim, staging / "AGENTS.md")
+        _out, err = self.seed()
+        self.assertIn("destination is a symlink", err)
+        self.assertEqual("keep\n", victim.read_text("utf-8"))
+
+    def test_unreadable_image_source_left_untouched(self) -> None:
+        src = self.make_workspace_seed()
+        self.seed()
+        src.write_text("# new image version\n", encoding="utf-8")
+        src.chmod(0o000)
+        self.addCleanup(src.chmod, 0o644)
+        _out, err = self.seed()
+        self.assertIn("cannot read seeded workspace source AGENTS.md", err)
+        live = self.data / "workspace" / "AGENTS.md"
+        self.assertEqual("# seed\n", live.read_text("utf-8"))
+
 
 class MemoryStatusLadder(EntrypointTestCase):
     def status(self, payload: str) -> str:

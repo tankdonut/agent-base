@@ -103,7 +103,7 @@ import time
 from collections.abc import Callable, Mapping
 from contextlib import suppress
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import seed_automations
 from spec import (
@@ -1084,8 +1084,24 @@ def _file_digest(path: Path) -> str | None:
     mistaken for present-with-content."""
     try:
         return hashlib.sha256(path.read_bytes()).hexdigest()
-    except OSError:
+    except (OSError, ValueError):
         return None
+
+
+def _seed_marker_key_safe(key: str) -> bool:
+    """False for keys that are not plain workspace-relative paths:
+    absolute paths, empty strings, `.`/`..` components, or embedded
+    NULs. Marker keys are joined into filesystem paths on both the image
+    and the live side — an unsafe key redirects those reads/writes
+    outside the workspace, and the marker is agent-writable state, so a
+    stray entry must never become a file-deletion or out-of-tree write
+    primitive."""
+    if not key or "\x00" in key:
+        return False
+    path = PurePosixPath(key)
+    if path.is_absolute() or key in (".", ".."):
+        return False
+    return not any(part in (".", "..") for part in path.parts)
 
 
 def _read_seed_baselines() -> dict[str, str]:
@@ -1108,7 +1124,12 @@ def _read_seed_baselines() -> dict[str, str]:
     return {
         k: v
         for k, v in parsed.items()
-        if isinstance(k, str) and isinstance(v, str) and not k.startswith("docs/")
+        if (
+            isinstance(k, str)
+            and isinstance(v, str)
+            and not k.startswith("docs/")
+            and _seed_marker_key_safe(k)
+        )
     }
 
 
