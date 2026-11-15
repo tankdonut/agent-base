@@ -112,7 +112,7 @@ split with copy-paste entries.
 | `AGENT_SPEC_PATH` | `/opt/agent/spec.json` | Override the spec location (tests, fixtures, wrapper entrypoints). |
 | `AGENT_MANAGE_CONFIG` | `1` | `0` skips config/MCP/plugin reconciliation, for operators who manage `openclaw.json` manually. |
 | `AGENT_SKIP_SEED` | `0` | `1` skips content seeding only; reconciliation still runs. (The former dev-overlay consumer is retired: seeding is image-baked.) |
-| `AGENT_SYNC` | `0` | `1` for one boot forces a workspace re-seed on an existing volume: seeded persona files are overwritten with image content, while agent-written files outside the seed set (journal, memories) survive. The named alternative to deleting the volume. |
+| `AGENT_SYNC` | `0` | `1` for one boot forces a workspace re-seed on an existing volume: seeded persona files are overwritten with image content, while agent-written files outside the seed set (journal, memories) survive. The seed baseline resets and staged `.seed-updates/` copies clear. The named alternative to deleting the volume. |
 | `AGENT_MEMORY_REINDEX` | `1` | `0` skips the post-startup memory reindex. |
 | `AGENT_GIT_TOKEN` | unset | gh token, used only when `features.gh_auth` is true. Never logged. |
 | `AGENT_AUTOMATIONS_DIR` | `/opt/agent/automations` | Override the automations directory. |
@@ -543,7 +543,9 @@ The base image bakes seed content under `/opt/seed/` and automations under
 
 | Image source | Live destination | When | Policy |
 | --- | --- | --- | --- |
-| `/opt/seed/workspace/` | `{data}/workspace/` | First boot only | Copied when absent. The agent owns and evolves it afterwards. |
+| `/opt/seed/workspace/` | `{data}/workspace/` | First boot + every boot (reconcile) | Copied when absent, with a per-file digest baseline recorded; on later boots three-way reconciled (image vs baseline vs live): files the agent never touched fast-forward to the image version, agent-edited files keep their live content with the image version staged at `.seed-updates/`. |
+| (marker) | `{data}/seed-baselines` | Every boot | Per-file digests of the seeded content the base last wrote (or the agent last matched) — the baseline for the workspace reconcile. Malformed markers read as empty: identical live files self-heal, differing ones conflict, nothing is clobbered. |
+| (staging) | `{data}/workspace/.seed-updates/` | On conflict | When the agent has edited a seeded file and the image ships a new version, the image copy lands here for the agent or the operator to merge; cleared once the live file adopts the image content (or on `AGENT_SYNC=1`). OpenClaw injects only its fixed persona filename set, so the staging dir never becomes prompt context. |
 | `/opt/seed/skills/` | `{data}/skills/` | Every boot | Full replacement; image-baked skills must track the image. |
 | `/opt/seed/docs/` | `{data}/workspace/docs/` | Every boot | Full replacement. Docs are reference content, not agent state. |
 | (created) | `{data}/workspace/journal/` | Every boot | `mkdir -p`; the agent's append-only territory. |
@@ -825,13 +827,20 @@ guardrails around this surface:
   a rebuild + review.
 - Seeded skills and docs are replaced wholesale every boot; drift heals on
   restart.
+- Persona updates ship as image rebuilds, never as agent-relayed edits:
+  the boot reconcile fast-forwards files the agent has not touched and
+  stages the image version of agent-edited files at
+  `{data}/workspace/.seed-updates/` instead of overwriting them. The
+  agent merges the staged copy into its live file (the conflict clears
+  once they match), or the operator forces the issue with `AGENT_SYNC=1`.
 - The tool defaults above keep scheduled turns off the self-replication
   paths.
 
 For tamper-evidence beyond that, keep `{data}/workspace` in a private git
 repository (the agent commits its own history): the volume is the
-authoritative record, and the verified upgrade backup snapshots it on
-every image bump.
+authoritative record, the verified upgrade backup snapshots it on
+every image bump, and staged `.seed-updates/` merges read cleanly in the
+diff.
 
 ## Runaway and budget controls
 

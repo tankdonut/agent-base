@@ -251,6 +251,16 @@ start period plus the upgrade backup. Expected log lines: `Image changed
 (<old> → <new>) — creating verified backup`, then the normal boot
 sequence.
 
+Persona and workspace seed updates ride the same flow. If the new image
+ships a changed `AGENTS.md` (or any seeded workspace file), the boot
+reconcile delivers it without volume surgery: files the agent never
+touched fast-forward to the image version (one `fast-forwarded to image
+version` log line each), and files the agent has edited keep their live
+content with the image's new version staged at
+`{data}/workspace/.seed-updates/<file>` — a warning names the file; the
+agent or an operator merges it. `AGENT_SYNC=1` for one boot forces the
+image content over agent edits and resets the baseline.
+
 Rollback is the same dance with the old tag: revert the Dockerfile bump,
 rebuild, `up -d --wait`. Date tags are immutable, so the old base layers
 are still local and nothing has moved underneath you. The version marker
