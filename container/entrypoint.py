@@ -1207,6 +1207,8 @@ def _remove_conflict_copy(workspace: Path, rel: str) -> None:
             target.unlink()
         parent = target.parent
         while parent != root and parent != workspace:
+            if not parent.exists():
+                return
             if any(parent.iterdir()):
                 break
             parent.rmdir()

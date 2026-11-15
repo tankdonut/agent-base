@@ -1795,6 +1795,18 @@ class SeedWorkspaceReconcile(EntrypointTestCase):
         self.assertEqual("precious\n", (victim / "x.md").read_text("utf-8"))
         self.assertEqual("# agent\n", live.read_text("utf-8"))
 
+    def test_nested_fast_forward_without_staging_is_silent(self) -> None:
+        # No prior conflict means no staging tree; pruning must not warn
+        # about the missing parents of a copy it never staged.
+        src = self.make_workspace_seed("# tpl\n", rel="persona/x.md")
+        self.seed()
+        src.write_text("# tpl new\n", encoding="utf-8")
+        out, err = self.seed()
+        live = self.data / "workspace" / "persona" / "x.md"
+        self.assertEqual("# tpl new\n", live.read_text("utf-8"))
+        self.assertIn("fast-forwarded", out)
+        self.assertEqual("", err)
+
     def test_symlinked_intermediate_staging_dir_refused_for_cleanup(self) -> None:
         src = self.make_workspace_seed("# tpl\n", rel="persona/x.md")
         self.seed()
