@@ -1174,15 +1174,17 @@ def _image_baselines() -> dict[str, str]:
 
 
 def _path_chain_safe(root: Path, target: Path) -> bool:
-    """False when target (or any existing node between it and root) is a
-    symlink — writing or deleting through it would redirect into the
-    target. Nodes that do not exist yet are fine (they will be created)."""
+    """False when target, any existing node between it and root, or the
+    root itself is a symlink — writing or deleting through it would
+    redirect into the target. Nodes that do not exist yet are fine (they
+    will be created). The root is probed too: a planted staging root
+    would otherwise redirect every cleanup unlink out of the workspace."""
     probe = target
     while probe != root:
         if probe.is_symlink():
             return False
         probe = probe.parent
-    return True
+    return not root.is_symlink()
 
 
 def _live_path_safe(workspace: Path, live: Path) -> bool:

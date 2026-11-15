@@ -31,6 +31,7 @@ import copy
 import io
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -1812,6 +1813,26 @@ class SeedWorkspaceReconcile(EntrypointTestCase):
         _out, err = self.seed()
         self.assertIn("refusing to clean up .seed-updates/persona/x.md", err)
         self.assertEqual("precious\n", (victim / "x.md").read_text("utf-8"))
+
+    def test_symlinked_staging_root_refused_for_cleanup(self) -> None:
+        src = self.make_workspace_seed()
+        self.seed()
+        src.write_text("# new image version\n", encoding="utf-8")
+        live = self.data / "workspace" / "AGENTS.md"
+        live.write_text("# agent edit\n", encoding="utf-8")
+        self.seed()
+        staging = self.data / "workspace" / ".seed-updates"
+        shutil.rmtree(staging)
+        victim = self.home / "root-cleanup-victim"
+        victim.mkdir()
+        (victim / "AGENTS.md").write_text("staged\n", encoding="utf-8")
+        os.symlink(victim, staging)
+        live.write_text("# new image version\n", encoding="utf-8")
+        _out, err = self.seed()
+        self.assertIn("refusing to clean up .seed-updates/AGENTS.md", err)
+        self.assertIn("symlink in the path", err)
+        self.assertEqual("staged\n", (victim / "AGENTS.md").read_text("utf-8"))
+        self.assertTrue(victim.is_dir())
 
 
 class MemoryStatusLadder(EntrypointTestCase):
