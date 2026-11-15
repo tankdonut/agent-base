@@ -1744,7 +1744,8 @@ class SeedWorkspaceReconcile(EntrypointTestCase):
         victim.write_text("keep\n", encoding="utf-8")
         os.symlink(victim, staging / "AGENTS.md")
         _out, err = self.seed()
-        self.assertIn("destination is a symlink", err)
+        self.assertIn("refusing to stage .seed-updates/AGENTS.md", err)
+        self.assertIn("symlink in the path", err)
         self.assertEqual("keep\n", victim.read_text("utf-8"))
 
     def test_unreadable_image_source_left_untouched(self) -> None:
@@ -1757,6 +1758,60 @@ class SeedWorkspaceReconcile(EntrypointTestCase):
         self.assertIn("cannot read seeded workspace source AGENTS.md", err)
         live = self.data / "workspace" / "AGENTS.md"
         self.assertEqual("# seed\n", live.read_text("utf-8"))
+        # The untrackable entry drops: no repeat warn on the next boot.
+        self.assertEqual({}, self.baselines())
+
+    def test_unreadable_source_marker_entry_dropped_after_one_warn(self) -> None:
+        # A marker key naming a node the seed tree does not ship as a file
+        # ("docs", no slash) can never reconcile; it must be dropped with
+        # one warn instead of firing on every boot.
+        self.make_workspace_seed()
+        self.seed()
+        kept = self.baselines()["AGENTS.md"]
+        marker = self.data / "seed-baselines"
+        marker.write_text(json.dumps({"docs": "x", "AGENTS.md": kept}), encoding="utf-8")
+        _out, err = self.seed()
+        self.assertIn("seeded workspace file docs", err)
+        self.assertEqual({"AGENTS.md": kept}, self.baselines())
+        _out2, err2 = self.seed()
+        self.assertNotIn("seeded workspace file docs", err2)
+
+    def test_symlinked_intermediate_staging_dir_refused_for_staging(self) -> None:
+        src = self.make_workspace_seed("# tpl\n", rel="persona/x.md")
+        self.seed()
+        src.write_text("# tpl new\n", encoding="utf-8")
+        live = self.data / "workspace" / "persona" / "x.md"
+        live.write_text("# agent\n", encoding="utf-8")
+        victim = self.home / "staging-victim"
+        victim.mkdir()
+        (victim / "x.md").write_text("precious\n", encoding="utf-8")
+        staging = self.data / "workspace" / ".seed-updates"
+        staging.mkdir()
+        os.symlink(victim, staging / "persona")
+        _out, err = self.seed()
+        self.assertIn("refusing to stage .seed-updates/persona/x.md", err)
+        self.assertIn("symlink in the path", err)
+        self.assertEqual("precious\n", (victim / "x.md").read_text("utf-8"))
+        self.assertEqual("# agent\n", live.read_text("utf-8"))
+
+    def test_symlinked_intermediate_staging_dir_refused_for_cleanup(self) -> None:
+        src = self.make_workspace_seed("# tpl\n", rel="persona/x.md")
+        self.seed()
+        src.write_text("# tpl new\n", encoding="utf-8")
+        live = self.data / "workspace" / "persona" / "x.md"
+        live.write_text("# agent\n", encoding="utf-8")
+        self.seed()
+        staged_parent = self.data / "workspace" / ".seed-updates" / "persona"
+        staged_parent.joinpath("x.md").unlink()
+        staged_parent.rmdir()
+        victim = self.home / "cleanup-victim"
+        victim.mkdir()
+        (victim / "x.md").write_text("precious\n", encoding="utf-8")
+        os.symlink(victim, staged_parent)
+        live.write_text("# tpl new\n", encoding="utf-8")
+        _out, err = self.seed()
+        self.assertIn("refusing to clean up .seed-updates/persona/x.md", err)
+        self.assertEqual("precious\n", (victim / "x.md").read_text("utf-8"))
 
 
 class MemoryStatusLadder(EntrypointTestCase):

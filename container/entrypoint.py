@@ -1173,23 +1173,34 @@ def _image_baselines() -> dict[str, str]:
     }
 
 
-def _live_path_safe(workspace: Path, live: Path) -> bool:
-    """False when live (or any node between it and the workspace) is a
-    symlink — writing through it would redirect into the target."""
-    probe = live
-    while probe != workspace:
+def _path_chain_safe(root: Path, target: Path) -> bool:
+    """False when target (or any existing node between it and root) is a
+    symlink — writing or deleting through it would redirect into the
+    target. Nodes that do not exist yet are fine (they will be created)."""
+    probe = target
+    while probe != root:
         if probe.is_symlink():
             return False
         probe = probe.parent
     return True
 
 
+def _live_path_safe(workspace: Path, live: Path) -> bool:
+    """Chain guard for live seeded files (see _path_chain_safe)."""
+    return _path_chain_safe(workspace, live)
+
+
 def _remove_conflict_copy(workspace: Path, rel: str) -> None:
     """Delete a resolved conflict copy and prune its now-empty parent
-    directories; best-effort."""
+    directories; best-effort. Refuses to unlink through a symlinked
+    chain (agent-writable staging tree — a mid-chain link would redirect
+    the delete out of the workspace)."""
     root = workspace / ".seed-updates"
     target = root / rel
     try:
+        if not _path_chain_safe(root, target):
+            warn(f"refusing to clean up .seed-updates/{rel}: symlink in the path")
+            return
         if target.is_symlink() or target.is_file():
             target.unlink()
         parent = target.parent
@@ -1215,10 +1226,10 @@ def _write_conflict_copy(workspace: Path, rel: str, image: Path) -> bool:
         if root.exists() and not _seed_dir_safe(root):
             warn(f"refusing to stage .seed-updates/{rel}: symlink or not a directory")
             return False
-        root.mkdir(parents=True, exist_ok=True)
-        if target.is_symlink():
-            warn(f"refusing to stage .seed-updates/{rel}: destination is a symlink")
+        if not _path_chain_safe(root, target):
+            warn(f"refusing to stage .seed-updates/{rel}: symlink in the path")
             return False
+        root.mkdir(parents=True, exist_ok=True)
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(image, target)
     except OSError:
@@ -1272,6 +1283,8 @@ def _reconcile_workspace_seed(workspace: Path, spec: Spec, env: Mapping[str, str
 
         if image_digest is None and image.exists():
             warn(f"cannot read seeded workspace source {rel} — left untouched")
+            if rel in baselines:
+                del baselines[rel]
             continue
         if baseline == image_digest:
             continue
