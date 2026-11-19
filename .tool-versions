@@ -9,7 +9,7 @@
 python 3.15.2
 pre-commit 4.7.0
 hadolint 2.15.1
-markdownlint-cli2 0.24.0
+markdownlint-cli2 0.24.1
 # markdownlint-cli2's hook env builds its own node (language_version in
 # .pre-commit-config.yaml); this pin mirrors it so direct CLI runs match.
 nodejs 26.13.1
