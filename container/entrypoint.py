@@ -1522,7 +1522,10 @@ def reindex_memory(
             # fully usable, and the cause — no embedding provider — is
             # deterministic, so retrying cannot upgrade it.
             if degraded:
-                warn(
+                # Informational, not a warn: the index was rebuilt and FTS
+                # recall works; the gateway surfaces the semantic-recall
+                # remediation itself at startup ([gateway] log namespace).
+                log(
                     "memory reindex succeeded with degraded recall — "
                     "semantic vectors unavailable (FTS-only)"
                 )

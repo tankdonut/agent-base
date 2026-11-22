@@ -1980,8 +1980,9 @@ class ReindexRetryMatrix(EntrypointTestCase):
         degraded = subprocess.CompletedProcess([], 0, stdout="", stderr="chunks_vec not updated")
         out, err = self.reindex([degraded])
         self.assertEqual(1, len(self.memory_index_calls()))
-        self.assertIn("memory reindex succeeded with degraded recall", err)
-        self.assertIn("semantic vectors unavailable (FTS-only)", err)
+        self.assertIn("memory reindex succeeded with degraded recall", out)
+        self.assertIn("semantic vectors unavailable (FTS-only)", out)
+        self.assertEqual("", err)
         self.assertNotIn("memory reindex failed after 3 attempts", err)
 
     def test_timeout_retries_then_gives_up(self) -> None:
