@@ -25,8 +25,11 @@ Every boot (declarative reconciliation — idempotent, self-healing volumes):
                           (untouched files fast-forward, modified files get
                           the image version staged at .seed-updates/);
                           skills + docs full replacement every boot
-  9. fork; the child runs post_startup (gateway wait, cron seeding via
-     seed_automations in-process, memory reindex, skill disable) while the
+  9. offline memory reindex (skipped with AGENT_MEMORY_REINDEX=0; runs in
+     the parent because memory.cli requires exclusive offline state
+     ownership in openclaw 2026.11.3+)
+  10. fork; the child runs post_startup (gateway wait, cron seeding via
+     seed_automations in-process, skill disable) while the
      parent supervise()s the container CMD: the CMD runs in its own
      process group, a shutdown signal is forwarded to the CMD only, and
      in-flight automations drain for up to AGENT_SHUTDOWN_GRACE seconds
@@ -53,7 +56,7 @@ split_csv):
                          agent-written files outside the seed set survive;
                          the seed baseline resets and staged .seed-updates/
                          copies clear).
-  AGENT_MEMORY_REINDEX   "0" skips the post-startup memory reindex
+  AGENT_MEMORY_REINDEX   "0" skips the offline memory reindex
                           (default 1).
   AGENT_GIT_TOKEN        gh auth token, used only when features.gh_auth.
   AGENT_SHUTDOWN_GRACE   Seconds a shutdown signal (SIGTERM/SIGINT) waits
@@ -913,7 +916,19 @@ def reconcile_plugins(spec: Spec) -> None:
     for plugin in spec.plugins:
         if plugin.source is not None:
             log(f"Reconciling local plugin '{plugin.name}'")
-            result = run("openclaw", "plugins", "install", plugin.source, "--force", check=False)
+            # --accept-capabilities: openclaw 2026.11.3+ refuses plugins that
+            # declare capabilities without explicit consent. Local sources
+            # are image-baked and operator-trusted (the operator put them in
+            # the image and the spec), so consent is granted on their behalf.
+            result = run(
+                "openclaw",
+                "plugins",
+                "install",
+                plugin.source,
+                "--force",
+                "--accept-capabilities",
+                check=False,
+            )
             if result is not None and result.returncode != 0:
                 warn(f"plugin install failed: {plugin.name}")
         elif not plugin_exists(plugin.name):
@@ -1466,11 +1481,11 @@ def check_memory_status(agent: str = "main") -> str:
 def reindex_memory(
     agent: str = "main", force: bool = True, attempts: int = 3, backoff_s: int = 10
 ) -> None:
-    """Memory reindex with retry. The embedding provider loads during the sync
-    call, so the first attempt may fail before the plugin is ready — retry
-    until it comes up. A degraded success (vectors skipped, FTS-only) exits 0
-    but emits ``chunks_vec not updated`` on stderr; detect it and treat as
-    retryable, since it is the memory-search-offline case.
+    """Memory reindex with retry. Genuine failures (nonzero exit, timeout)
+    retry; a degraded success (exit 0 with ``chunks_vec not updated`` on
+    stderr — vectors skipped, FTS-only recall) is accepted on the first
+    attempt, since the cause is a missing embedding provider and retries
+    cannot change it.
 
     force=True for a full rebuild (model change, missing index); force=False
     for incremental (only re-embed changed files)."""
@@ -1500,17 +1515,25 @@ def reindex_memory(
         stderr = (result.stderr or "").strip()
         degraded = "chunks_vec not updated" in stderr
 
-        if result.returncode == 0 and not degraded:
-            log(f"memory reindex succeeded (attempt {attempt}/{attempts})")
+        if result.returncode == 0:
+            # Exit 0 means the index WAS updated. A degraded run (openclaw
+            # 2026.11.3+: "chunks_vec not updated — semantic vector
+            # embeddings unavailable") leaves FTS-only recall that is
+            # fully usable, and the cause — no embedding provider — is
+            # deterministic, so retrying cannot upgrade it.
+            if degraded:
+                # Informational, not a warn: the index was rebuilt and FTS
+                # recall works; the gateway surfaces the semantic-recall
+                # remediation itself at startup ([gateway] log namespace).
+                log(
+                    "memory reindex succeeded with degraded recall — "
+                    "semantic vectors unavailable (FTS-only)"
+                )
+            else:
+                log(f"memory reindex succeeded (attempt {attempt}/{attempts})")
             if stdout:
                 log(f"memory index stdout: {stdout}")
             return
-
-        if degraded:
-            warn(
-                f"memory reindex attempt {attempt}/{attempts} degraded — "
-                "vectors skipped (FTS-only recall)"
-            )
         else:
             warn(f"memory reindex attempt {attempt}/{attempts} failed (exit {result.returncode})")
         if stderr:
@@ -1757,16 +1780,34 @@ def run_seed_automations(model: str, default_tools: tuple[str, ...] = ()) -> int
     return 0
 
 
+def reconcile_memory_index(env: Mapping[str, str]) -> None:
+    """Offline-phase memory reindex, run in the parent BEFORE the gateway
+    starts. openclaw 2026.11.3+ admits memory.cli only with exclusive
+    offline state ownership, so this can no longer run post-startup while
+    the gateway is up. Skipped entirely with AGENT_MEMORY_REINDEX=0."""
+    if env.get("AGENT_MEMORY_REINDEX", "1") == "0":
+        log("memory reindex: skipped (AGENT_MEMORY_REINDEX=0)")
+        return
+    locks = list((data_dir() / "agents").glob("*/agent/*.reindex-lock.sqlite"))
+    if locks:
+        log(f"removing {len(locks)} stale reindex lock(s)")
+        for lock_file in locks:
+            lock_file.unlink(missing_ok=True)
+    action = check_memory_status()
+    if action != "skip":
+        reindex_memory(force=(action == "force"))
+    log("memory reindex: complete")
+
+
 def post_startup(spec: Spec, env: Mapping[str, str]) -> None:
     """Forked-child phase: everything here needs the gateway up. Waits for
-    health, seeds cron jobs, reindexes memory (unless
-    AGENT_MEMORY_REINDEX=0), disables unavailable skills, and runs
-    warn-only config validation. Never called on the parent path."""
+    health, seeds cron jobs, disables unavailable skills, and runs
+    warn-only config validation. Memory reindex moved to the offline
+    parent phase (reconcile_memory_index) — memory.cli requires exclusive
+    offline state ownership in openclaw 2026.11.3+. Never called on the
+    parent path."""
     if not wait_for_gateway():
-        warn(
-            "gateway did not become healthy within 180s — "
-            "skipping post-startup (cron + memory reindex)"
-        )
+        warn("gateway did not become healthy within 180s — skipping post-startup (cron seeding)")
         return
 
     log("Gateway healthy — running post-startup tasks")
@@ -1777,19 +1818,6 @@ def post_startup(spec: Spec, env: Mapping[str, str]) -> None:
         warn(f"cron seeding failed (exit {cron_exit}, non-fatal)")
     else:
         log("cron seeding: complete")
-
-    if env.get("AGENT_MEMORY_REINDEX", "1") != "0":
-        locks = list((data_dir() / "agents").glob("*/agent/*.reindex-lock.sqlite"))
-        if locks:
-            log(f"removing {len(locks)} stale reindex lock(s)")
-            for lock_file in locks:
-                lock_file.unlink(missing_ok=True)
-        action = check_memory_status()
-        if action != "skip":
-            reindex_memory(force=(action == "force"))
-        log("memory reindex: complete")
-    else:
-        log("memory reindex: skipped (AGENT_MEMORY_REINDEX=0)")
 
     doctor_result = run("openclaw", "doctor", "--lint", check=False, capture=True)
     doctor_data = _parse_doctor_stdout(doctor_result) if doctor_result is not None else None
@@ -2215,12 +2243,17 @@ def main(argv: list[str] | None = None) -> int:
 
     seed_content(spec, env)
 
+    # Offline memory reindex must finish before the gateway starts:
+    # memory.cli requires exclusive offline state ownership (openclaw
+    # 2026.11.3+), so it can no longer run in the post-startup child.
+    reconcile_memory_index(env)
+
     pid = os.fork()
     if pid == 0:
         post_startup(spec, env)
         os._exit(0)
 
-    log("Scheduled post-startup: cron seeding + memory reindex (background)")
+    log("Scheduled post-startup: cron seeding (background)")
 
     return supervise(command, parse_shutdown_grace(env), forward_pids=(pid,))
 

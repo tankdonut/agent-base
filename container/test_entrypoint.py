@@ -1281,9 +1281,16 @@ class ReconcilePluginsMatrix(EntrypointTestCase):
         )
         for call in self.calls_with("openclaw", "plugins", "install"):
             self.assertIn("--force", call)
+            self.assertIn("--accept-capabilities", call)
         # No first boot ran here → no agent-managed-plugins marker → the
         # orphan report is disabled and never lists.
         self.assertEqual([], self.calls_with("openclaw", "plugins", "list", "--json"))
+
+    def test_registry_plugin_install_has_no_capability_consent_flag(self) -> None:
+        spec = self.load_spec_with(self.REGISTRY_SPEC)
+        self.capture(lambda: entrypoint.reconcile_plugins(spec))
+        for call in self.calls_with("openclaw", "plugins", "install", "chart-renderer"):
+            self.assertNotIn("--accept-capabilities", call)
 
     def test_local_plugin_install_failure_warns(self) -> None:
         def failing(cmd: list[str]) -> subprocess.CompletedProcess[str]:
@@ -1966,22 +1973,16 @@ class ReindexRetryMatrix(EntrypointTestCase):
         self.assertEqual(3, len(self.memory_index_calls()))
         self.assertIn("memory reindex failed after 3 attempts", err)
 
-    def test_degraded_success_is_detected_and_retried(self) -> None:
+    def test_degraded_success_is_not_retried(self) -> None:
+        # Exit 0 with "chunks_vec not updated" (openclaw 2026.11.3+) means
+        # the index was rebuilt with FTS-only recall; the cause is a missing
+        # embedding provider — deterministic, so retrying cannot upgrade it.
         degraded = subprocess.CompletedProcess([], 0, stdout="", stderr="chunks_vec not updated")
-        _out, err = self.reindex([degraded, degraded, degraded])
-        self.assertEqual(3, len(self.memory_index_calls()))
-        self.assertIn("degraded — vectors skipped", err)
-        self.assertIn("memory reindex failed after 3 attempts", err)
-
-    def test_degraded_then_clean_succeeds(self) -> None:
-        out, err = self.reindex(
-            [
-                subprocess.CompletedProcess([], 0, stdout="", stderr="chunks_vec not updated"),
-                subprocess.CompletedProcess([], 0, stdout="", stderr=""),
-            ]
-        )
-        self.assertIn("degraded — vectors skipped", err)
-        self.assertIn("memory reindex succeeded (attempt 2/3)", out)
+        out, err = self.reindex([degraded])
+        self.assertEqual(1, len(self.memory_index_calls()))
+        self.assertIn("memory reindex succeeded with degraded recall", out)
+        self.assertIn("semantic vectors unavailable (FTS-only)", out)
+        self.assertEqual("", err)
         self.assertNotIn("memory reindex failed after 3 attempts", err)
 
     def test_timeout_retries_then_gives_up(self) -> None:
@@ -2022,18 +2023,16 @@ class PostStartupFlow(EntrypointTestCase):
         self.assertEqual("", err)
         self.assertIn("Gateway healthy — running post-startup tasks", out)
         health_idx = self.index_of("openclaw", "health")
-        status_idx = self.index_of("openclaw", "memory", "status")
-        index_idx = next(
-            i for i, c in enumerate(self.calls) if c[:2] == ["openclaw", "memory"] and "index" in c
-        )
         validate_idx = self.index_of("openclaw", "config", "validate")
         # One shared doctor run feeds the skills reconcile and the lint
         # summary — it precedes the final config validate now.
         doctor_idx = max(i for i, c in enumerate(self.calls) if c[:2] == ["openclaw", "doctor"])
-        self.assertLess(health_idx, status_idx)
-        self.assertLess(status_idx, index_idx)
-        self.assertLess(index_idx, doctor_idx)
+        self.assertLess(health_idx, doctor_idx)
         self.assertLess(doctor_idx, validate_idx)
+        # Memory reindex lives in the offline parent phase now — the
+        # post-startup child must not touch it while the gateway is up.
+        self.assertFalse(self.has_call("openclaw", "memory", "status"))
+        self.assertFalse(self.has_call("openclaw", "memory", "index"))
 
     def test_seed_automations_invoked_in_process_with_spec_model(self) -> None:
         self.run_post_startup()
@@ -2062,10 +2061,41 @@ class PostStartupFlow(EntrypointTestCase):
         self.assertEqual([], self.automation_argv)
         self.assertFalse(self.has_call("openclaw", "memory", "status"))
 
-    def test_memory_reindex_env_off_skips_ladder(self) -> None:
-        out, _err = self.run_post_startup({"AGENT_MEMORY_REINDEX": "0"})
+    def test_offline_reindex_env_off_skips_ladder(self) -> None:
+        out, err = self.capture(
+            lambda: entrypoint.reconcile_memory_index({"AGENT_MEMORY_REINDEX": "0"})
+        )
         self.assertIn("memory reindex: skipped (AGENT_MEMORY_REINDEX=0)", out)
+        self.assertEqual("", err)
         self.assertFalse(self.has_call("openclaw", "memory", "status"))
+
+    def test_offline_reindex_skips_clean_index(self) -> None:
+        def clean(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+            if cmd[:4] == ["openclaw", "memory", "status", "--agent"]:
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout='[{"status": {"files": 5, "dirty": false}}]', stderr=""
+                )
+            return self._ok(cmd)
+
+        self.handler = clean
+        out, err = self.capture(lambda: entrypoint.reconcile_memory_index({}))
+        self.assertIn("memory reindex: complete", out)
+        self.assertEqual("", err)
+        self.assertFalse(self.has_call("openclaw", "memory", "index"))
+
+    def test_offline_reindex_dirty_index_runs_incremental(self) -> None:
+        def dirty(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+            if cmd[:4] == ["openclaw", "memory", "status", "--agent"]:
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout='[{"status": {"files": 5, "dirty": true}}]', stderr=""
+                )
+            return self._ok(cmd)
+
+        self.handler = dirty
+        out, _err = self.capture(lambda: entrypoint.reconcile_memory_index({}))
+        self.assertTrue(self.has_call("openclaw", "memory", "index"))
+        for call in self.calls_with("openclaw", "memory", "index"):
+            self.assertNotIn("--force", call)
 
     def test_stale_reindex_locks_removed_before_status(self) -> None:
         lock = self.data / "agents" / "main" / "agent" / "stale.reindex-lock.sqlite"
@@ -2073,7 +2103,7 @@ class PostStartupFlow(EntrypointTestCase):
         lock.write_text("", encoding="utf-8")
         keeper = self.data / "agents" / "main" / "agent" / "other.sqlite"
         keeper.write_text("", encoding="utf-8")
-        out, _err = self.run_post_startup()
+        out, _err = self.capture(lambda: entrypoint.reconcile_memory_index({}))
         self.assertIn("removing 1 stale reindex lock(s)", out)
         self.assertFalse(lock.exists())
         self.assertTrue(keeper.exists())

@@ -84,6 +84,7 @@ if env.get("AGENT_MANAGE_CONFIG", "1") == "1":
 if spec.features.gh_auth:
     entrypoint.authenticate_gh(env)
 entrypoint.seed_content(spec, env)
+entrypoint.reconcile_memory_index(env)
 entrypoint.post_startup(spec, env)
 
 data = entrypoint.data_dir()
@@ -292,10 +293,16 @@ def smoke_fixture(
 
     o_setup, o_cfg = first_line(r"'setup'"), first_line(r"'config' 'set'")
     o_mcp, o_cron = first_line(r"'mcp' 'add'"), first_line(r"'cron' 'list'")
+    # The offline memory ladder runs in the parent between seeding and the
+    # forked post_startup — it must precede the gateway health wait.
+    o_mem = first_line(r"'memory' 'status'")
     if mcp_name is None:
-        order_ok = None not in (o_setup, o_cfg, o_cron) and o_setup < o_cfg < o_cron
+        order_ok = None not in (o_setup, o_cfg, o_mem, o_cron) and o_setup < o_cfg < o_mem < o_cron
     else:
-        order_ok = None not in (o_setup, o_cfg, o_mcp, o_cron) and o_setup < o_cfg < o_mcp < o_cron
+        order_ok = (
+            None not in (o_setup, o_cfg, o_mcp, o_mem, o_cron)
+            and o_setup < o_cfg < o_mcp < o_mem < o_cron
+        )
     if order_ok:
         pass_(f"phase order setup(l{o_setup}) < config set(l{o_cfg}) < ... < cron list(l{o_cron})")
     else:
