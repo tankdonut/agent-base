@@ -1481,11 +1481,11 @@ def check_memory_status(agent: str = "main") -> str:
 def reindex_memory(
     agent: str = "main", force: bool = True, attempts: int = 3, backoff_s: int = 10
 ) -> None:
-    """Memory reindex with retry. The embedding provider loads during the sync
-    call, so the first attempt may fail before the plugin is ready — retry
-    until it comes up. A degraded success (vectors skipped, FTS-only) exits 0
-    but emits ``chunks_vec not updated`` on stderr; detect it and treat as
-    retryable, since it is the memory-search-offline case.
+    """Memory reindex with retry. Genuine failures (nonzero exit, timeout)
+    retry; a degraded success (exit 0 with ``chunks_vec not updated`` on
+    stderr — vectors skipped, FTS-only recall) is accepted on the first
+    attempt, since the cause is a missing embedding provider and retries
+    cannot change it.
 
     force=True for a full rebuild (model change, missing index); force=False
     for incremental (only re-embed changed files)."""
@@ -1515,17 +1515,22 @@ def reindex_memory(
         stderr = (result.stderr or "").strip()
         degraded = "chunks_vec not updated" in stderr
 
-        if result.returncode == 0 and not degraded:
-            log(f"memory reindex succeeded (attempt {attempt}/{attempts})")
+        if result.returncode == 0:
+            # Exit 0 means the index WAS updated. A degraded run (openclaw
+            # 2026.11.3+: "chunks_vec not updated — semantic vector
+            # embeddings unavailable") leaves FTS-only recall that is
+            # fully usable, and the cause — no embedding provider — is
+            # deterministic, so retrying cannot upgrade it.
+            if degraded:
+                warn(
+                    "memory reindex succeeded with degraded recall — "
+                    "semantic vectors unavailable (FTS-only)"
+                )
+            else:
+                log(f"memory reindex succeeded (attempt {attempt}/{attempts})")
             if stdout:
                 log(f"memory index stdout: {stdout}")
             return
-
-        if degraded:
-            warn(
-                f"memory reindex attempt {attempt}/{attempts} degraded — "
-                "vectors skipped (FTS-only recall)"
-            )
         else:
             warn(f"memory reindex attempt {attempt}/{attempts} failed (exit {result.returncode})")
         if stderr:

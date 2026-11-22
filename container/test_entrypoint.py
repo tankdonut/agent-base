@@ -1973,22 +1973,15 @@ class ReindexRetryMatrix(EntrypointTestCase):
         self.assertEqual(3, len(self.memory_index_calls()))
         self.assertIn("memory reindex failed after 3 attempts", err)
 
-    def test_degraded_success_is_detected_and_retried(self) -> None:
+    def test_degraded_success_is_not_retried(self) -> None:
+        # Exit 0 with "chunks_vec not updated" (openclaw 2026.11.3+) means
+        # the index was rebuilt with FTS-only recall; the cause is a missing
+        # embedding provider — deterministic, so retrying cannot upgrade it.
         degraded = subprocess.CompletedProcess([], 0, stdout="", stderr="chunks_vec not updated")
-        _out, err = self.reindex([degraded, degraded, degraded])
-        self.assertEqual(3, len(self.memory_index_calls()))
-        self.assertIn("degraded — vectors skipped", err)
-        self.assertIn("memory reindex failed after 3 attempts", err)
-
-    def test_degraded_then_clean_succeeds(self) -> None:
-        out, err = self.reindex(
-            [
-                subprocess.CompletedProcess([], 0, stdout="", stderr="chunks_vec not updated"),
-                subprocess.CompletedProcess([], 0, stdout="", stderr=""),
-            ]
-        )
-        self.assertIn("degraded — vectors skipped", err)
-        self.assertIn("memory reindex succeeded (attempt 2/3)", out)
+        out, err = self.reindex([degraded])
+        self.assertEqual(1, len(self.memory_index_calls()))
+        self.assertIn("memory reindex succeeded with degraded recall", err)
+        self.assertIn("semantic vectors unavailable (FTS-only)", err)
         self.assertNotIn("memory reindex failed after 3 attempts", err)
 
     def test_timeout_retries_then_gives_up(self) -> None:
